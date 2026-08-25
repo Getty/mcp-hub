@@ -19,6 +19,7 @@
 
 - Per-client instances of the same upstream (`sharing: per-client`, e.g. one Playwright browser per agent). The design leaves room for it; v1 shares every upstream.
 - HTTP/SSE upstreams (`url` entries). They are rejected at config load with a clear message.
+- Modern-only (`2026-07-28`) stdio upstreams. v1 opens every stdio upstream with the legacy `initialize` handshake, which every legacy and dual-era server (including Perl `MCP` ≥ 0.15) accepts; the `server/discover` probe with modern fallback is a follow-up.
 - Forwarding server-initiated requests (`sampling/createMessage`, `elicitation/create`) to the agent. They are answered with a JSON-RPC error.
 - Resource subscriptions and `resources/templates`.
 - A full-text index over the Claude history (932 MB, 1190 sessions here). v1 streams and filters.
@@ -73,7 +74,8 @@ Default listen address is `http://127.0.0.1:3080`. The daemon runs in the foregr
 | `MCP::Hub::Upstream::Stdio` | Child process management and the legacy JSON-RPC client. Builds its `server` from the manifest via `MCP::Hub::Facade`. |
 | `MCP::Hub::Upstream::Perl` | Instantiates a `class` once; `server` is that instance. |
 | `MCP::Hub::Facade` | Builds an `MCP::Server` from a manifest whose tools, prompts and resources forward to an upstream. |
-| `MCP::Hub::Facade::Tool` | `MCP::Tool` subclass with `validate_input` disabled (the upstream validates; `JSON::Schema::Tiny` rejects some `$ref`-heavy schemas). |
+| `MCP::Hub::Facade::Tool` | `MCP::Tool` subclass with `validate_input` disabled (the upstream validates; `JSON::Schema::Tiny` rejects some `$ref`-heavy schemas) and an `extra` hash (`title`, `icons`, `_meta`) for the list rendering. |
+| `MCP::Hub::Facade::Server` | `MCP::Server` subclass whose list rendering includes the `extra` fields of façade primitives. |
 | `MCP::Hub::Aggregate` | The `/all` server: union of every upstream's tools and prompts with a `<name>__` prefix. |
 | `MCP::Hub::Native::ClaudeHistory` | `MCP::Server` subclass: history tools. |
 | `MCP::Hub::Native::ClaudeSessions` | `MCP::Server` subclass: live session discovery. |
@@ -136,7 +138,7 @@ Server names must match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. `all` and names starting 
 
 ### `${VAR}` expansion
 
-`${VAR}` and `${VAR:-default}` are expanded in `command`, every element of `args`, every value of `env`, and `cwd` — the same places Claude Code expands them. An unset variable without a default is a config error at load time.
+`${VAR}` and `${VAR:-default}` are expanded in `command`, every element of `args`, every value of `env`, and `cwd` — the same places Claude Code expands them. An unset variable without a default is a config error at load time. (Claude Code only warns and keeps the literal `${VAR}`; a daemon that would then run `npx` with a literal `${API_KEY}` for hours is better off refusing to start.)
 
 ### `hub` block
 
@@ -175,7 +177,7 @@ Tokens are compared in constant time (`Crypt::Misc::slow_eq`, already a dependen
 
 | Route | Handler | Notes |
 |---|---|---|
-| `POST /<name>` | that upstream's `server->to_action` | Tool names unchanged. |
+| `POST /<name>` | that upstream's `server->to_action({streaming => 1})` | Tool names unchanged. `streaming` enables `subscriptions/listen`, which Claude Code's v2 runtime holds open to receive `notifications/tools/list_changed` after a manifest refresh; it is per-process state, which is fine in the single daemon process. |
 | `POST /all` | `MCP::Hub::Aggregate` | Tools and prompts of all servers the client may see, as `<name>__<tool>`. Resources are not aggregated (URIs are opaque and would collide); use the per-server endpoint. `instructions` is the concatenation `## <name>\n<instructions>` of the upstreams that have any. |
 | `GET /_hub/status` | admin | JSON: per upstream `name, type, state, pid, rss_kb, manifest_fetched_at, last_used, calls, errors`; clients currently known (name, last seen). |
 | `POST /_hub/refresh` | admin | Body `{"name": "context7"}` or empty for all. Re-fetches manifests; returns the new tool counts. |
@@ -264,7 +266,7 @@ Refetched when: the file is missing or its `hash` differs; `refresh` is requeste
 
 `MCP::Hub::Facade->build($upstream, $manifest)` returns an `MCP::Server` with `name`, `version` and `instructions` from the manifest and:
 
-- one `MCP::Hub::Facade::Tool` per manifest tool, carrying `name`, `description`, `input_schema`, `output_schema`, `annotations` verbatim. Its `code` returns `$upstream->call_tool($name, $args)`, a promise resolving to the upstream's `tools/call` result (`content`, `isError`, `structuredContent`) unchanged. A JSON-RPC error from the upstream becomes `text_result("upstream <name>: <message>", 1)`; a transport failure (timeout, crash, failed to start) likewise. Structured content is not re-validated against the output schema; the upstream is trusted.
+- one `MCP::Hub::Facade::Tool` per manifest tool, carrying `name`, `description`, `input_schema`, `output_schema`, `annotations` verbatim, plus the manifest entry's `title`, `icons` and `_meta` as an `extra` attribute. `MCP::Server` renders only name, description, inputSchema, outputSchema and annotations in `tools/list`, so the façade's server is an `MCP::Hub::Facade::Server` subclass that overrides the `tools/list` rendering to merge `extra` back in — otherwise Claude Code-specific annotations such as `_meta["anthropic/maxResultSizeChars"]` and `_meta["anthropic/requiresUserInteraction"]` would be lost on the way through the hub. Same for prompts (`title`, `icons`, `_meta`) and resources. Its `code` returns `$upstream->call_tool($name, $args)`, a promise resolving to the upstream's `tools/call` result (`content`, `isError`, `structuredContent`) unchanged. A JSON-RPC error from the upstream becomes `text_result("upstream <name>: <message>", 1)`; a transport failure (timeout, crash, failed to start) likewise. Structured content is not re-validated against the output schema; the upstream is trusted.
 - one prompt per manifest prompt forwarding to `prompts/get` (result `{description, messages}` passed through).
 - one resource per manifest resource forwarding to `resources/read` (result `{contents}` passed through).
 
@@ -348,7 +350,7 @@ Secrets stay out of the log: `env` values are never logged and tokens are never 
 - `t/config.t`: defaults, mode derivation, `${VAR}` expansion including `:-` defaults and the unset error, reserved names, `url` rejection, unknown keys, JSON path in messages.
 - `t/manifest.t`: round-trip, hash change detection, atomic write.
 - `t/auth.t`: token → profile, 401/404 decisions, `servers` wildcard, `tools` allow/deny composition.
-- `t/facade.t`: build from a manifest with a mock upstream returning canned promises; result pass-through; error mapping; `validate_input` disabled.
+- `t/facade.t`: build from a manifest with a mock upstream returning canned promises; result pass-through; error mapping; `validate_input` disabled; `tools/list` rendering keeps `title`, `icons` and `_meta` from the manifest.
 - `t/stdio.t`: against `echo.pl` — handshake, pagination, timeout with `sleep`, crash with `exit` and restart, `failed` after repeated exits, idle stop with `idle_timeout: 1`, `list_changed` refresh, stderr capture.
 - `t/hub.t`: `Test::Mojo` on `MCP::Hub` with a temp config and cache dir, driven by `MCP::Client`: lazy start (no pid before the first call), `tools/list` from cache without a process, per-server endpoints, `/all` prefixes, 404 outside profile, 503 while fetching, admin API, `config` command output.
 - `t/native/claude-history.t`, `t/native/claude-sessions.t`, `t/native/status.t`: against fixtures under `t/fixtures/claude/projects/` (two projects, three sessions, string and block content, an `ai-title` line); sessions test uses a fake `/proc` layout via an overridable root.
