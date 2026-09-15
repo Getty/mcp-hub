@@ -71,8 +71,46 @@ mcp-hub config
 }
 ```
 
+Or just open **<http://127.0.0.1:3080/>** in a browser — the hub serves its own
+setup page (see below).
+
 That's it. Nothing is spawned until an agent actually calls a tool; `tools/list`
 is answered from a cached manifest.
+
+## Web setup page
+
+Because everything is served over HTTP, the hub also serves a **setup page** at
+`GET /` that tells a user exactly what to do — no need to run a command:
+
+- the ready-to-paste `.mcp.json`, with a one-click **Copy** button;
+- a `claude mcp add --transport http …` line per server;
+- for each server, what it does (its own MCP `instructions`) and its tools.
+
+In **clients mode** the page shows only a sign-in field until you paste your
+token (or send an `Authorization: Bearer …` header). Once signed in, it shows
+exactly the servers *your* profile allows and a config that already carries your
+token — so it never reveals which servers exist to someone without a key.
+
+```
+┌───────────────────────────────────────────────┐
+│  MCP Hub                                        │
+│  A lot of MCP for very little RAM.              │
+│  Signed in as worker-1.                         │
+│                                                 │
+│  Add these to your client            [ Copy ]   │
+│  ┌───────────────────────────────────────────┐  │
+│  │ { "mcpServers": {                         │  │
+│  │     "context7": { "type": "http",         │  │
+│  │       "url": "http://…/context7",         │  │
+│  │       "headers": { "Authorization": … } } │  │
+│  │ } }                                       │  │
+│  └───────────────────────────────────────────┘  │
+│                                                 │
+│  context7  [stdio]                              │
+│  Up-to-date library documentation.              │
+│  Tools: resolve-library-id, get-library-docs    │
+└───────────────────────────────────────────────┘
+```
 
 ## Two modes
 
@@ -123,6 +161,7 @@ tools, applied to both `tools/list` and `tools/call`.
 
 | Route | What it is |
 |---|---|
+| `GET /` | The web setup page (public; token-gated in clients mode). |
 | `POST /<name>` | One endpoint per upstream, tool names unchanged. |
 | `POST /all` | Every tool and prompt the client may see, as `<name>__<tool>`. |
 | `GET /_hub/status` | Per-upstream state, pid, RSS, call counts; known clients. |
@@ -157,6 +196,51 @@ Any `MCP::Server` subclass can be mounted in-process with a `class` entry —
 
 ```json
 { "run": { "class": "MCP::Run", "args": { "allowed_commands": ["ls", "cat", "grep"] } } }
+```
+
+### Writing your own native server
+
+Any `MCP::Server` subclass works. Register your tools in `new` and it can be
+mounted in the hub with a `class` entry — and still works standalone over stdio:
+
+```perl
+package My::Weather;
+use Mojo::Base 'MCP::Server', -signatures;
+
+sub new ($class, %args) {
+  my $self = $class->SUPER::new(name => 'weather', %args);
+  $self->tool(
+    name         => 'forecast',
+    description  => 'Get the forecast for a city',
+    input_schema => {type => 'object', properties => {city => {type => 'string'}}, required => ['city']},
+    code         => sub ($tool, $args) { $tool->text_result("Sunny in $args->{city}") },
+  );
+  return $self;
+}
+1;
+```
+
+```json
+{ "weather": { "class": "My::Weather" } }
+```
+
+If your class has a `hub` attribute, the running `MCP::Hub` instance is injected
+into its constructor — that is how `MCP::Hub::Native::Status` reaches the hub.
+
+## Testing
+
+```bash
+dzil test          # or: prove -l -r t/
+```
+
+The suite spawns only one upstream, a tiny Perl stdio server
+(`t/upstream/echo.pl`) — no node, no network. A separate **live** integration
+test exercises the hub against a real classic npx MCP server
+(`@modelcontextprotocol/server-everything`); it is off by default and only runs
+when you ask for it and `npx` with a recent enough node is on `PATH`:
+
+```bash
+MCP_HUB_TEST_NPX=1 prove -l t/npx.t
 ```
 
 ## Running as a service

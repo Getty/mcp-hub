@@ -5,6 +5,7 @@ use Mojo::Base 'Mojolicious', -signatures;
 use MCP::Hub::Aggregate;
 use MCP::Hub::Auth;
 use MCP::Hub::Config;
+use MCP::Hub::Help;
 use MCP::Hub::Upstream;
 use MCP::Hub::Upstream::Perl;
 use MCP::Hub::Upstream::Stdio;
@@ -173,7 +174,14 @@ sub _build_aggregate ($self) {
 }
 
 sub _setup_routes ($self) {
-  my $r     = $self->routes;
+  my $r = $self->routes;
+
+  # Public help / landing page, outside the auth bridge. In clients mode it
+  # shows only a login form until a valid token is supplied, so it never leaks
+  # which servers exist.
+  $r->get('/'  => sub ($c) { $self->_route_help($c) });
+  $r->post('/' => sub ($c) { $self->_route_help($c) });
+
   my $under = $r->under('/' => sub ($c) { $self->auth->authenticate($c) });
 
   $under->get('/_hub/status'   => sub ($c) { $self->_route_status($c) });
@@ -224,6 +232,10 @@ sub _route_server ($self, $c, $up, $action) {
     if $up->type eq 'stdio' && !@{$up->server->tools} && !$up->manifest_fetched_at;
 
   return $action->($c);
+}
+
+sub _route_help ($self, $c) {
+  return $c->render(text => MCP::Hub::Help->page($self, $c), format => 'html');
 }
 
 sub _route_status ($self, $c) {
@@ -284,7 +296,37 @@ C</mcp> menu still lists servers separately. Servers start lazily on the first
 tool call and stop again when idle, so a browser's ~110 MB only exist while
 someone is using it.
 
+Because everything is served over HTTP, the hub also serves a setup page at
+C<GET /> (see L<MCP::Hub::Help>) that shows a user exactly what to paste into
+their client -- token-gated in clients mode, so it never reveals which servers
+exist to someone without a key.
+
 See L<mcp-hub> for the command line and F<README.md> for the full story.
+
+=head1 EXAMPLES
+
+Run against a config file, from the command line:
+
+  mcp-hub daemon                       # http://127.0.0.1:3080
+  mcp-hub config --client worker-1     # the mcpServers JSON that client needs
+
+Embed the hub in your own L<Mojolicious>-based tests or tooling:
+
+  my $hub = MCP::Hub->new(hub_config_input => {
+    mcpServers => {
+      context7 => {command => 'npx', args => ['-y', '@upstash/context7-mcp']},
+      run      => {class => 'MCP::Run', args => {allowed_commands => ['ls']}},
+    },
+  });
+
+  # what a given client may see, as ready-to-paste client config
+  my $data = $hub->export_config(url => 'http://127.0.0.1:3080');
+
+  # refresh one upstream's manifest and get the new tool count
+  $hub->refresh_p('context7')->then(sub ($counts) { say $counts->{context7} });
+
+A bare C<mcpServers> block is a valid open-mode config, so an existing
+F<.mcp.json> can be handed to the hub unchanged.
 
 =head2 Process model
 
@@ -368,6 +410,7 @@ The structure behind C<GET /_hub/status> and the C<hub_status> tool.
 
 =head1 SEE ALSO
 
-L<mcp-hub>, L<MCP::Hub::Config>, L<MCP::Hub::Upstream::Stdio>, L<MCP>.
+L<mcp-hub>, L<MCP::Hub::Config>, L<MCP::Hub::Auth>, L<MCP::Hub::Upstream::Stdio>,
+L<MCP::Hub::Help>, L<MCP>.
 
 =cut
