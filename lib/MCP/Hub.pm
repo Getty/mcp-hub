@@ -22,7 +22,9 @@ has upstreams         => sub { [] };
 has upstreams_by_name => sub { {} };
 
 sub startup ($self) {
-  push @{$self->commands->namespaces}, 'MCP::Hub::Command';
+  # Prepend, not append: our daemon command must win over the built-in
+  # Mojolicious::Command::daemon (which ignores the config listen address).
+  unshift @{$self->commands->namespaces}, 'MCP::Hub::Command';
 
   my $config = $self->_resolve_config;
   $self->hub_config($config);
