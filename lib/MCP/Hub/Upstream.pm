@@ -2,6 +2,8 @@ package MCP::Hub::Upstream;
 our $VERSION = '0.001';
 use Mojo::Base 'Mojo::EventEmitter', -signatures;
 
+use MCP::Hub::Facade;
+use MCP::Hub::Facade::Server;
 use Mojo::Log;
 use Mojo::Promise;
 
@@ -15,9 +17,14 @@ has 'server';
 has state     => 'stopped';
 has 'last_used';
 has stats     => sub { {calls => 0, errors => 0, started_at => undef, pid => undef} };
+has protocol_version => '2025-06-18';
+has request_timeout  => 60;
+
+my %IMPL = (perl => 'MCP::Hub::Upstream::Perl', stdio => 'MCP::Hub::Upstream::Stdio',
+  http => 'MCP::Hub::Upstream::Http', sse => 'MCP::Hub::Upstream::Http');
 
 sub build ($class, $entry, %opts) {
-  my $impl = $entry->{type} eq 'perl' ? 'MCP::Hub::Upstream::Perl' : 'MCP::Hub::Upstream::Stdio';
+  my $impl = $IMPL{$entry->{type}} // 'MCP::Hub::Upstream::Stdio';
   return $impl->new(name => $entry->{name}, config => $entry, %opts);
 }
 
@@ -25,11 +32,135 @@ sub type ($self) { return $self->config->{type} }
 
 sub manifest_fetched_at ($self) { return $self->{manifest_fetched_at} }
 
+sub always_on ($self) { return $self->config->{always_on} ? 1 : 0 }
+
 # Default lifecycle -- subclasses override what they need.
 sub start_p   ($self) { return Mojo::Promise->resolve($self) }
 sub stop      ($self) { return $self }
 sub refresh_p ($self) { return Mojo::Promise->resolve($self) }
 sub touch     ($self) { $self->last_used(time); return $self }
+
+# --- transport-agnostic MCP client (shared by stdio and http) --------------
+# Subclasses provide the transport: _request_p, _notify and _hash.
+
+sub call_tool ($self, $name, $args) {
+  $self->stats->{calls}++;
+  return $self->start_p->then(sub {
+    $self->touch;
+    return $self->_request_p('tools/call', {name => $name, arguments => $args});
+  })->catch(sub ($err) {
+    $self->stats->{errors}++;
+    return {content => [{type => 'text', text => "$err"}], isError => \1};
+  });
+}
+
+sub get_prompt ($self, $name, $args) {
+  return $self->start_p->then(sub {
+    $self->touch;
+    return $self->_request_p('prompts/get', {name => $name, arguments => $args});
+  })->catch(sub ($err) {
+    return {description => "$err", messages => [{role => 'user', content => {type => 'text', text => "$err"}}]};
+  });
+}
+
+sub read_resource ($self, $uri) {
+  return $self->start_p->then(sub {
+    $self->touch;
+    return $self->_request_p('resources/read', {uri => $uri});
+  })->catch(sub ($err) {
+    return {contents => [{uri => $uri, mimeType => 'text/plain', text => "$err"}]};
+  });
+}
+
+sub _build_server ($self) {
+  my $server = MCP::Hub::Facade::Server->new(name => $self->name, version => '0.0.0');
+  $self->server($server);
+  if (my $manifest = $self->{manifest}->load($self->name, $self->_hash)) {
+    MCP::Hub::Facade->apply($server, $self, $manifest);
+    $self->{manifest_fetched_at} = $manifest->{fetched_at};
+    $self->{server_protocol}     = $manifest->{protocol_version};
+    $self->{server_info}         = $manifest->{server_info};
+    $self->{capabilities}        = $manifest->{capabilities};
+    $self->{instructions}        = $manifest->{instructions};
+  }
+  return $server;
+}
+
+sub _manifest_from ($self, $lists) {
+  return {
+    name             => $self->name,
+    hash             => $self->_hash,
+    fetched_at       => _now_iso(),
+    protocol_version => $self->{server_protocol},
+    server_info      => $self->{server_info},
+    capabilities     => $self->{capabilities},
+    instructions     => $self->{instructions},
+    tools            => $lists->{tools},
+    prompts          => $lists->{prompts},
+    resources        => $lists->{resources},
+  };
+}
+
+sub _apply_manifest ($self, $manifest) {
+  $self->{manifest}->store($manifest);
+  $self->{manifest_fetched_at} = $manifest->{fetched_at};
+  MCP::Hub::Facade->apply($self->server, $self, $manifest);
+  $self->server->notify_list_changed('tools');
+  $self->hub->rebuild_aggregate if $self->hub && $self->hub->can('rebuild_aggregate');
+  return $self;
+}
+
+sub _handshake_p ($self) {
+  return $self->_request_p('initialize', {
+    protocolVersion => $self->protocol_version,
+    capabilities    => {},
+    clientInfo      => {name => 'mcp-hub', version => $VERSION},
+  })->then(sub ($result) {
+    $self->{server_protocol} = $result->{protocolVersion} // $self->protocol_version;
+    $self->{capabilities}    = $result->{capabilities}    // {};
+    $self->{server_info}     = $result->{serverInfo}      // {name => $self->name, version => '0.0.0'};
+    $self->{instructions}    = $result->{instructions};
+    $self->_notify('notifications/initialized');
+    return $self->_list_all_p;
+  })->then(sub ($lists) {
+    return $self->_manifest_from($lists);
+  });
+}
+
+sub _list_all_p ($self) {
+  my $caps = $self->{capabilities} // {};
+  my %out;
+  return $self->_paginate_p('tools/list', 'tools')->then(sub ($tools) {
+    $out{tools} = $tools;
+    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts')->catch(sub {[]}) : [];
+  })->then(sub ($prompts) {
+    $out{prompts} = $prompts;
+    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources')->catch(sub {[]}) : [];
+  })->then(sub ($resources) {
+    $out{resources} = $resources;
+    return \%out;
+  });
+}
+
+sub _paginate_p ($self, $method, $key, $cursor = undef, $acc = undef) {
+  $acc //= [];
+  my $params = defined $cursor ? {cursor => $cursor} : {};
+  return $self->_request_p($method, $params)->then(sub ($result) {
+    push @$acc, @{$result->{$key} // []};
+    my $next = $result->{nextCursor};
+    return (defined $next && length $next) ? $self->_paginate_p($method, $key, $next, $acc) : $acc;
+  });
+}
+
+# Subclasses must provide these.
+sub _request_p ($self, @) { return Mojo::Promise->reject('_request_p not implemented') }
+sub _notify    ($self, @) { return undef }
+sub _hash      ($self)    { return $self->name }
+
+sub _now_iso {
+  my @t = gmtime;
+  return sprintf '%04d-%02d-%02dT%02d:%02d:%02dZ', $t[5] + 1900, $t[4] + 1, @t[3, 2, 1, 0];
+}
 
 sub rss_kb ($self) {
   my $pid = $self->stats->{pid} or return undef;

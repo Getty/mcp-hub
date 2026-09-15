@@ -92,20 +92,34 @@ subtest 'bad server name' => sub {
   like $@, qr/must match/, 'invalid name rejected';
 };
 
-subtest 'url upstreams are rejected' => sub {
-  eval { MCP::Hub::Config->from_data({mcpServers => {remote => {url => 'http://x/mcp'}}}) };
-  like $@, qr/HTTP upstreams are not supported yet/, 'url rejected';
+subtest 'http and sse url upstreams' => sub {
+  my $c = MCP::Hub::Config->from_data({
+    mcpServers => {
+      remote => {url => 'http://x/mcp', headers => {Authorization => 'Bearer t'}},
+      legacy => {url => 'http://y/mcp/sse', type => 'sse'},
+    },
+  });
+  my $r = $c->server('remote');
+  is $r->{type}, 'http', 'url with no type -> streamable http';
+  is $r->{url},  'http://x/mcp', 'url kept';
+  is $r->{headers}{Authorization}, 'Bearer t', 'headers kept';
 
-  eval { MCP::Hub::Config->from_data({mcpServers => {remote => {command => 'x', type => 'sse'}}}) };
-  like $@, qr/HTTP upstreams are not supported yet/, 'type: sse rejected';
+  my $l = $c->server('legacy');
+  is $l->{type}, 'sse', 'type: sse -> sse transport';
+
+  eval { MCP::Hub::Config->from_data({mcpServers => {bad => {url => 'http://z', type => 'ftp'}}}) };
+  like $@, qr/unknown transport type 'ftp'/, 'unknown transport type rejected';
 };
 
-subtest 'exactly one of command or class' => sub {
+subtest 'exactly one of command, class or url' => sub {
   eval { MCP::Hub::Config->from_data({mcpServers => {x => {}}}) };
-  like $@, qr/exactly one of/, 'neither command nor class';
+  like $@, qr/exactly one of/, 'none given';
 
   eval { MCP::Hub::Config->from_data({mcpServers => {x => {command => 'a', class => 'B'}}}) };
-  like $@, qr/exactly one of/, 'both command and class';
+  like $@, qr/exactly one of/, 'command and class';
+
+  eval { MCP::Hub::Config->from_data({mcpServers => {x => {command => 'a', url => 'http://z'}}}) };
+  like $@, qr/exactly one of/, 'command and url';
 };
 
 subtest 'unknown keys surface with their path' => sub {

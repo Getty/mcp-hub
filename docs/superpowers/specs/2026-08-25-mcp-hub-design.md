@@ -18,7 +18,7 @@
 ## Non-goals (v1)
 
 - Per-client instances of the same upstream (`sharing: per-client`, e.g. one Playwright browser per agent). The design leaves room for it; v1 shares every upstream.
-- HTTP/SSE upstreams (`url` entries). They are rejected at config load with a clear message.
+- ~~HTTP/SSE upstreams (`url` entries). They are rejected at config load with a clear message.~~ **Implemented after v1** in `MCP::Hub::Upstream::Http`: both Streamable HTTP (`type: "http"`) and HTTP+SSE (`type: "sse"`) are supported, with `headers` for auth.
 - Modern-only (`2026-07-28`) stdio upstreams. v1 opens every stdio upstream with the legacy `initialize` handshake, which every legacy and dual-era server (including Perl `MCP` ≥ 0.15) accepts; the `server/discover` probe with modern fallback is a follow-up.
 - Forwarding server-initiated requests (`sampling/createMessage`, `elicitation/create`) to the agent. They are answered with a JSON-RPC error.
 - Resource subscriptions and `resources/templates`.

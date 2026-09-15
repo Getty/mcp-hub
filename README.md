@@ -3,10 +3,11 @@
 **A lot of MCP for very little RAM.**
 
 `mcp-hub` is a single HTTP MCP server that embeds any number of stdio MCP
-servers (context7, playwright, serper, …) and in-process Perl MCP servers, and
-hands each of them to every agent on the machine as its own endpoint. It runs
-each server **once per machine**, not once per agent session, starts them
-**lazily** on the first tool call, and stops them again when idle.
+servers (context7, playwright, serper, …), in-process Perl MCP servers, and
+remote HTTP MCP servers (Streamable HTTP or HTTP+SSE), and hands each of them to
+every agent on the machine as its own endpoint. It runs each server **once per
+machine**, not once per agent session, starts them **lazily** on the first tool
+call, and stops them again when idle.
 
 Today every Claude Code session spawns its own copy of every stdio server. On a
 busy machine that is easily ~2.2 GB of node processes (context7, playwright,
@@ -280,6 +281,7 @@ agent (Claude Code, …)          mcp-hub daemon (one Mojo::IOLoop process)     
 POST /context7  ─ Bearer ─▶     │ Auth ─▶ Facade(context7) ─▶ Upstream::Stdio ─▶ npx context7-mcp
 POST /playwright ────────▶      │      ─▶ Facade(playwright) ─▶ Upstream::Stdio ─▶ npx @playwright/mcp
 POST /run  ──────────────▶      │      ─▶ Upstream::Perl ───────────────▶ MCP::Run (in-process)
+POST /crawl4ai ──────────▶      │      ─▶ Upstream::Http ───────────────▶ remote server (HTTP / SSE)
 POST /all  ──────────────▶      │      ─▶ Aggregate ─▶ (all of the above, prefixed)
 GET  /_hub/status ───────▶      │      ─▶ admin API
                                 └────────────────────────────────────────┘
@@ -298,17 +300,32 @@ list cached as a manifest, and it is terminated again after an idle timeout.
 
 Exactly one of `command` or `class` is required.
 
+Exactly one of `command`, `class` or `url` is required.
+
 | Key | Meaning |
 |---|---|
-| `command`, `args`, `env`, `cwd` | As in `.mcp.json`. `env` is merged over the hub's environment. |
+| `command`, `args`, `env`, `cwd` | A stdio child, as in `.mcp.json`. `env` is merged over the hub's environment. |
 | `class` | A Perl `MCP::Server` subclass, loaded and mounted in-process. |
 | `args` (with `class`) | Hash passed to the class's `new`. |
-| `hub.idle_timeout` | Seconds; `0` means never stop. Overrides the global default. |
+| `url` | A remote HTTP MCP server. |
+| `type` (with `url`) | `http` (Streamable HTTP, the default) or `sse` (the older HTTP+SSE transport, e.g. a `…/sse` URL). |
+| `headers` (with `url`) | Extra request headers, such as `{ "Authorization": "Bearer …" }`. |
+| `hub.idle_timeout` | Seconds; `0` means never stop. Overrides the global default (stdio only). |
 | `hub.always_on` | Start at daemon start and never stop. |
 | `hub.request_timeout` | Seconds per request. |
 
-`${VAR}` and `${VAR:-default}` are expanded in `command`, `args`, `env` and
-`cwd`. An unset variable without a default is a config error at start.
+```json
+{
+  "mcpServers": {
+    "remote":   { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" } },
+    "crawl4ai": { "url": "http://10.0.0.5:11235/mcp/sse", "type": "sse" }
+  }
+}
+```
+
+`${VAR}` and `${VAR:-default}` are expanded in `command`, `args`, `env`, `cwd`,
+`url` and `headers`. An unset variable without a default is a config error at
+start.
 
 ### `hub` block
 
@@ -326,7 +343,6 @@ Exactly one of `command` or `class` is required.
 
 - Per-client instances of the same upstream (one browser per agent). v1 shares
   every upstream.
-- HTTP/SSE upstreams (`url` entries) — rejected at config load.
 - Forwarding server-initiated `sampling/createMessage` and `elicitation/create`
   to the agent — answered with an error.
 - Resource subscriptions and `resources/templates`.

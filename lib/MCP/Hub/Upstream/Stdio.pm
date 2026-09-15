@@ -17,11 +17,8 @@ use Socket qw(AF_UNIX SOCK_STREAM PF_UNSPEC);
 use constant MAX_LINE_BUFFER => 16 * 1024 * 1024;
 use constant KILL_GRACE      => 5;
 
-has cache_dir       => sub ($self) { $self->hub ? $self->hub->hub_config->cache_dir : '.' };
-has idle_timeout    => 300;
-has request_timeout => 60;
-has always_on       => 0;
-has protocol_version => '2025-06-18';
+has cache_dir    => sub ($self) { $self->hub ? $self->hub->hub_config->cache_dir : '.' };
+has idle_timeout => 300;
 
 sub new ($class, %args) {
   my $self = $class->SUPER::new(%args);
@@ -30,7 +27,6 @@ sub new ($class, %args) {
   $self->{manifest}         = MCP::Hub::Manifest->new(cache_dir => $self->cache_dir);
   $self->{idle_timeout}     = $c->{idle_timeout}    if defined $c->{idle_timeout};
   $self->{request_timeout}  = $c->{request_timeout} if defined $c->{request_timeout};
-  $self->{always_on}        = 1 if $c->{always_on};
   $self->{id}               = 0;
   $self->{pending}          = {};
   $self->{inbuf}            = '';
@@ -105,124 +101,11 @@ sub touch ($self) {
   return $self;
 }
 
-# --- forwarding ------------------------------------------------------------
-
-sub call_tool ($self, $name, $args) {
-  $self->stats->{calls}++;
-  return $self->start_p->then(sub {
-    $self->touch;
-    return $self->_request_p('tools/call', {name => $name, arguments => $args});
-  })->catch(sub ($err) {
-    $self->stats->{errors}++;
-    return {content => [{type => 'text', text => "$err"}], isError => \1};
-  });
-}
-
-sub get_prompt ($self, $name, $args) {
-  return $self->start_p->then(sub {
-    $self->touch;
-    return $self->_request_p('prompts/get', {name => $name, arguments => $args});
-  })->catch(sub ($err) {
-    return {description => "$err", messages => [{role => 'user', content => {type => 'text', text => "$err"}}]};
-  });
-}
-
-sub read_resource ($self, $uri) {
-  return $self->start_p->then(sub {
-    $self->touch;
-    return $self->_request_p('resources/read', {uri => $uri});
-  })->catch(sub ($err) {
-    return {contents => [{uri => $uri, mimeType => 'text/plain', text => "$err"}]};
-  });
-}
-
-# --- server / manifest -----------------------------------------------------
-
-sub _build_server ($self) {
-  my $server = MCP::Hub::Facade::Server->new(name => $self->name, version => '0.0.0');
-  $self->server($server);
-  if (my $manifest = $self->{manifest}->load($self->name, $self->_hash)) {
-    MCP::Hub::Facade->apply($server, $self, $manifest);
-    $self->{manifest_fetched_at} = $manifest->{fetched_at};
-    $self->{server_protocol}     = $manifest->{protocol_version};
-    $self->{server_info}         = $manifest->{server_info};
-    $self->{capabilities}        = $manifest->{capabilities};
-    $self->{instructions}        = $manifest->{instructions};
-  }
-  return $server;
-}
+# --- manifest hash ---------------------------------------------------------
 
 sub _hash ($self) {
   my $c = $self->config;
   return $self->{manifest}->hash($c->{command}, $c->{args}, $c->{cwd});
-}
-
-sub _manifest_from ($self, $lists) {
-  return {
-    name             => $self->name,
-    hash             => $self->_hash,
-    fetched_at       => _now_iso(),
-    protocol_version => $self->{server_protocol},
-    server_info      => $self->{server_info},
-    capabilities     => $self->{capabilities},
-    instructions     => $self->{instructions},
-    tools            => $lists->{tools},
-    prompts          => $lists->{prompts},
-    resources        => $lists->{resources},
-  };
-}
-
-sub _apply_manifest ($self, $manifest) {
-  $self->{manifest}->store($manifest);
-  $self->{manifest_fetched_at} = $manifest->{fetched_at};
-  MCP::Hub::Facade->apply($self->server, $self, $manifest);
-  $self->server->notify_list_changed('tools');
-  $self->hub->rebuild_aggregate if $self->hub && $self->hub->can('rebuild_aggregate');
-  return $self;
-}
-
-# --- handshake -------------------------------------------------------------
-
-sub _handshake_p ($self) {
-  return $self->_request_p('initialize', {
-    protocolVersion => $self->protocol_version,
-    capabilities    => {},
-    clientInfo      => {name => 'mcp-hub', version => $VERSION},
-  })->then(sub ($result) {
-    $self->{server_protocol} = $result->{protocolVersion} // $self->protocol_version;
-    $self->{capabilities}    = $result->{capabilities}    // {};
-    $self->{server_info}     = $result->{serverInfo}      // {name => $self->name, version => '0.0.0'};
-    $self->{instructions}    = $result->{instructions};
-    $self->_notify('notifications/initialized');
-    return $self->_list_all_p;
-  })->then(sub ($lists) {
-    return $self->_manifest_from($lists);
-  });
-}
-
-sub _list_all_p ($self) {
-  my $caps = $self->{capabilities} // {};
-  my %out;
-  return $self->_paginate_p('tools/list', 'tools')->then(sub ($tools) {
-    $out{tools} = $tools;
-    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts')->catch(sub {[]}) : [];
-  })->then(sub ($prompts) {
-    $out{prompts} = $prompts;
-    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources')->catch(sub {[]}) : [];
-  })->then(sub ($resources) {
-    $out{resources} = $resources;
-    return \%out;
-  });
-}
-
-sub _paginate_p ($self, $method, $key, $cursor = undef, $acc = undef) {
-  $acc //= [];
-  my $params = defined $cursor ? {cursor => $cursor} : {};
-  return $self->_request_p($method, $params)->then(sub ($result) {
-    push @$acc, @{$result->{$key} // []};
-    my $next = $result->{nextCursor};
-    return (defined $next && length $next) ? $self->_paginate_p($method, $key, $next, $acc) : $acc;
-  });
 }
 
 # --- JSON-RPC over the socket ----------------------------------------------
@@ -455,11 +338,6 @@ sub _log_level ($level) {
     error => 'error', critical => 'error', alert => 'error', emergency => 'fatal',
   };
   return $map->{$level} // 'info';
-}
-
-sub _now_iso {
-  my @t = gmtime;
-  return sprintf '%04d-%02d-%02dT%02d:%02d:%02dZ', $t[5] + 1900, $t[4] + 1, @t[3, 2, 1, 0];
 }
 
 1;

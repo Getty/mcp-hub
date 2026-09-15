@@ -19,7 +19,7 @@ has request_timeout => 60;
 has servers        => sub { [] };
 has source         => 'config';
 
-my %ENTRY_KEYS      = map { $_ => 1 } qw(command args env cwd class hub);
+my %ENTRY_KEYS      = map { $_ => 1 } qw(command args env cwd class url type headers hub);
 my %ENTRY_HUB_KEYS  = map { $_ => 1 } qw(idle_timeout always_on request_timeout);
 my %HUB_KEYS        = map { $_ => 1 } qw(listen cache_dir idle_timeout request_timeout profiles clients public_profile);
 my %PROFILE_KEYS    = map { $_ => 1 } qw(servers tools admin);
@@ -73,25 +73,18 @@ sub _parse_entry ($self, $name, $entry) {
     unless $name =~ /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
   _err($path, 'must be a JSON object') unless ref $entry eq 'HASH';
 
-  # HTTP/SSE upstreams are a documented non-goal for v1.
-  _err($path, 'HTTP upstreams are not supported yet') if defined $entry->{url};
-  _err($path, 'HTTP upstreams are not supported yet')
-    if defined $entry->{type} && ($entry->{type} eq 'http' || $entry->{type} eq 'sse');
-
   for my $key (sort keys %$entry) {
     _err("$path.$key", "unknown key '$key'") unless $ENTRY_KEYS{$key};
   }
 
-  my $has_command = defined $entry->{command};
-  my $has_class   = defined $entry->{class};
-  _err($path, "exactly one of 'command' or 'class' is required")
-    if $has_command == $has_class;
+  my @kinds = grep { defined $entry->{$_} } qw(command class url);
+  _err($path, "exactly one of 'command', 'class' or 'url' is required") unless @kinds == 1;
+  my $kind = $kinds[0];
 
   my %hub = $self->_parse_entry_hub($path, $entry->{hub});
-
   my %out = (name => $name, %hub);
 
-  if ($has_command) {
+  if ($kind eq 'command') {
     $out{type}    = 'stdio';
     $out{command} = $self->_expand($entry->{command}, "$path.command");
 
@@ -107,15 +100,30 @@ sub _parse_entry ($self, $name, $entry) {
       $out{cwd} = _tilde($self->_expand($entry->{cwd}, "$path.cwd"));
     }
   }
-  else {
+  elsif ($kind eq 'class') {
     $out{type}  = 'perl';
     $out{class} = $entry->{class};
     my $args = $entry->{args} // {};
     _err("$path.args", "must be a JSON object for a 'class' upstream") unless ref $args eq 'HASH';
     $out{class_args} = $args;
   }
+  else {
+    $out{type} = _http_type($path, $entry->{type});
+    $out{url}  = $self->_expand($entry->{url}, "$path.url");
+
+    my $headers = $entry->{headers} // {};
+    _err("$path.headers", 'must be a JSON object') unless ref $headers eq 'HASH';
+    $out{headers} = {map { $_ => $self->_expand($headers->{$_}, "$path.headers.$_") } keys %$headers};
+  }
 
   return \%out;
+}
+
+sub _http_type ($path, $type) {
+  return 'http' unless defined $type;
+  return 'sse'  if $type eq 'sse';
+  return 'http' if $type eq 'http' || $type eq 'streamable-http' || $type eq 'streamable_http';
+  _err("$path.type", "unknown transport type '$type' (use 'http' or 'sse')");
 }
 
 sub _parse_entry_hub ($self, $path, $hub) {

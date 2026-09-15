@@ -9,6 +9,7 @@ use MCP::Hub::Help;
 use MCP::Hub::Upstream;
 use MCP::Hub::Upstream::Perl;
 use MCP::Hub::Upstream::Stdio;
+use MCP::Hub::Upstream::Http;
 use Mojo::Promise;
 use Scalar::Util qw(blessed);
 
@@ -130,10 +131,10 @@ sub _build_upstreams ($self) {
 
   for my $entry (@{$config->servers}) {
     my %opts = (hub => $self, log => $self->log);
-    if ($entry->{type} eq 'stdio') {
+    if ($entry->{type} ne 'perl') {
       $opts{cache_dir}       = $config->cache_dir;
-      $opts{idle_timeout}    = $config->idle_timeout;
       $opts{request_timeout} = $config->request_timeout;
+      $opts{idle_timeout}    = $config->idle_timeout if $entry->{type} eq 'stdio';
     }
 
     my $up = eval { MCP::Hub::Upstream->build($entry, %opts) };
@@ -207,13 +208,15 @@ sub _setup_routes ($self) {
 
 sub start_background_fetches ($self) {
   for my $up (@{$self->upstreams}) {
-    next unless $up->type eq 'stdio';
+    next if $up->type eq 'perl';    # perl upstreams need no warming
     if ($up->always_on) {
       $up->start_p->catch(sub ($err) { $self->log->error("$err") });
     }
     elsif (!$up->manifest_fetched_at) {
       # No cached manifest yet: fetch it once in the background, do not wait.
-      $up->start_p->then(sub ($u) { $u->stop unless $u->always_on })
+      # A stdio child is stopped again afterwards (lazy); an http upstream holds
+      # no process, so it just stays ready.
+      $up->start_p->then(sub ($u) { $u->stop if $u->type eq 'stdio' && !$u->always_on })
         ->catch(sub ($err) { $self->log->error("$err") });
     }
   }
@@ -231,7 +234,7 @@ sub _route_server ($self, $c, $up, $action) {
     if $up->state eq 'failed';
 
   return $c->render(json => {error => "upstream '@{[$up->name]}' is not ready yet"}, status => 503)
-    if $up->type eq 'stdio' && !@{$up->server->tools} && !$up->manifest_fetched_at;
+    if $up->type ne 'perl' && !@{$up->server->tools} && !$up->manifest_fetched_at;
 
   return $action->($c);
 }
@@ -287,10 +290,11 @@ sub _default_config_path {
 =head1 DESCRIPTION
 
 L<MCP::Hub> is a single L<Mojolicious> HTTP server that embeds any number of
-stdio MCP servers and in-process Perl MCP servers, exposes each of them to many
-agents on the machine as its own endpoint, decides per client which of them it
-may use, and prints ready-to-paste client configuration. The goal in one line:
-a lot of MCP for very little RAM.
+stdio MCP servers, in-process Perl MCP servers and remote HTTP MCP servers
+(Streamable HTTP or HTTP+SSE), exposes each of them to many agents on the
+machine as its own endpoint, decides per client which of them it may use, and
+prints ready-to-paste client configuration. The goal in one line: a lot of MCP
+for very little RAM.
 
 Each embedded server keeps its own tool names, so C<mcp__context7__resolve>
 stays C<mcp__context7__resolve>, existing permission rules keep working, and the
@@ -413,6 +417,6 @@ The structure behind C<GET /_hub/status> and the C<hub_status> tool.
 =head1 SEE ALSO
 
 L<mcp-hub>, L<MCP::Hub::Config>, L<MCP::Hub::Auth>, L<MCP::Hub::Upstream::Stdio>,
-L<MCP::Hub::Help>, L<MCP>.
+L<MCP::Hub::Upstream::Http>, L<MCP::Hub::Help>, L<MCP>.
 
 =cut

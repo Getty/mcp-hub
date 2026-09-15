@@ -1,8 +1,10 @@
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use Test::Mojo;
-use Mojo::File    qw(tempdir);
+use Mojo::File    qw(path tempdir);
 use Mojo::Promise;
+use POSIX         qw(WNOHANG);
+use Time::HiRes   ();
 use MCP::Hub;
 use MCP::Client;
 
@@ -66,9 +68,76 @@ subtest 'the real server appears in the aggregate' => sub {
 $up->stop;
 Mojo::Promise->timer(0.5)->wait;
 
+subtest 'live HTTP+SSE upstream via npx server-everything sse' => sub {
+  my ($pid, $sse_port) = _spawn_sse_server();
+  plan skip_all => 'could not start server-everything in sse mode' unless $sse_port;
+
+  # Drive the upstream directly (as the hub does internally): the raw-socket SSE
+  # transport is what we are proving here.
+  my $ok = eval {
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'remote',
+      config    => {type => 'sse', url => "http://127.0.0.1:$sse_port/sse"},
+      cache_dir => tempdir->to_string,
+      request_timeout => 30,
+    );
+    is $up->transport, 'sse', 'sse transport';
+
+    my $start = _await($up->start_p);
+    die "start failed: $start->{err}\n" if ref $start eq 'HASH' && $start->{err};
+    ok +(grep { $_->name eq 'echo' } @{$up->server->tools}), 'tools discovered over the SSE transport';
+
+    my $res = _await($up->call_tool('echo', {message => 'over sse'}));
+    ok !${$res->{isError} // \0}, 'not an error';
+    like $res->{content}[0]{text}, qr/over sse/, 'sse tool call round-trips';
+
+    $up->stop;
+    1;
+  };
+  my $err = $@;
+  kill 'TERM', $pid;
+  waitpid $pid, 0;
+  die $err unless $ok;
+};
+
 done_testing;
 
 # --- helpers ---------------------------------------------------------------
+
+sub _spawn_sse_server {
+  my $port = _free_port() or return;
+  # Keep the tempdir object alive for the whole sub: Mojo's tempdir removes the
+  # directory when its object is dropped, and the child must be able to open the
+  # log in it before we return.
+  my $dir = tempdir;
+  my $log = $dir->child('sse.log')->to_string;
+  my $pid = fork // return;
+  if (!$pid) {
+    $ENV{PORT} = $port;    # server-everything sse honours PORT -- avoids a fixed-port clash
+    open STDOUT, '>',  $log or POSIX::_exit(127);
+    open STDERR, '>&', STDOUT;
+    { exec 'npx', '-y', $SERVER, 'sse' }
+    POSIX::_exit(127);
+  }
+  my $deadline = time + 30;
+  while (time < $deadline) {
+    Time::HiRes::sleep(0.2);
+    last if waitpid($pid, WNOHANG) > 0;    # child died
+    my $content = eval { path($log)->slurp } // '';
+    return ($pid, $port) if $content =~ /running on port \Q$port\E/;
+  }
+  kill 'TERM', $pid;
+  waitpid $pid, 0;
+  return;
+}
+
+sub _free_port {
+  require IO::Socket::INET;
+  my $s = IO::Socket::INET->new(Listen => 1, LocalAddr => '127.0.0.1', LocalPort => 0, Proto => 'tcp') or return;
+  my $port = $s->sockport;
+  $s->close;
+  return $port;
+}
 
 sub _which ($program) {
   for my $dir (split /:/, $ENV{PATH} // '') {
