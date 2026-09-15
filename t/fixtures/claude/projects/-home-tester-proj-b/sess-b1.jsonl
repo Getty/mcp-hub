@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"b1","uuid":"w1","parentUuid":null,"timestamp":"2026-08-11T14:00:00Z","cwd":"/home/tester/proj-b","gitBranch":"main","version":"2.1.0","message":{"role":"user","content":"A kubernetes deployment question"}}
+{"type":"assistant","sessionId":"b1","uuid":"w2","parentUuid":"w1","timestamp":"2026-08-11T14:00:10Z","cwd":"/home/tester/proj-b","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"Here is the deployment answer"}]}}

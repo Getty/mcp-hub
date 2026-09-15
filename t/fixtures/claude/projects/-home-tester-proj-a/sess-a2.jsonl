@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"a2","uuid":"v1","parentUuid":null,"timestamp":"2026-08-12T09:00:00Z","cwd":"/home/tester/proj-a","gitBranch":"feature/widget","version":"2.1.0","message":{"role":"user","content":[{"type":"text","text":"Debug the widget renderer"}]}}
+{"type":"assistant","sessionId":"a2","uuid":"v2","parentUuid":"v1","timestamp":"2026-08-12T09:01:00Z","cwd":"/home/tester/proj-a","gitBranch":"feature/widget","message":{"role":"assistant","content":[{"type":"text","text":"Let me look at the renderer"},{"type":"tool_result","content":"ok"}]}}

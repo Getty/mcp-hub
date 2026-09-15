@@ -1,0 +1,8 @@
+Revision history for MCP-Hub
+
+{{$NEXT}}
+  - Initial release. A single HTTP MCP server (`mcp-hub`) that embeds any
+    number of stdio MCP servers and in-process Perl MCP servers, exposes each
+    of them to many agents on the machine as its own endpoint, decides per
+    client which of them it may use, and prints ready-to-paste client
+    configuration. A lot of MCP for very little RAM.

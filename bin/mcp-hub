@@ -1,0 +1,70 @@
+#!/usr/bin/env perl
+# PODNAME: mcp-hub
+# ABSTRACT: Run and manage the MCP hub
+use Mojo::Base -strict, -signatures;
+
+use MCP::Hub;
+
+# A global --config / -c applies to every command; pull it out of @ARGV before
+# the command layer sees it, and let MCP::Hub pick it up from the environment.
+my @argv;
+while (defined(my $arg = shift @ARGV)) {
+  if    ($arg eq '--config' || $arg eq '-c') { $ENV{MCP_HUB_CONFIG} = shift @ARGV }
+  elsif ($arg =~ /^--config=(.*)$/s)         { $ENV{MCP_HUB_CONFIG} = $1 }
+  else                                       { push @argv, $arg }
+}
+
+MCP::Hub->new->start(@argv);
+
+=encoding utf8
+
+=head1 SYNOPSIS
+
+  mcp-hub daemon                       # run the hub in the foreground
+  mcp-hub config --client main         # print client mcpServers JSON
+  mcp-hub status                       # show the running hub's status
+  mcp-hub refresh [NAME]               # re-fetch upstream manifests
+  mcp-hub token                        # print a fresh bearer token
+
+  mcp-hub --config /path/config.json daemon
+
+=head1 DESCRIPTION
+
+C<mcp-hub> is the command line for L<MCP::Hub>, a single HTTP MCP server that
+embeds any number of stdio and in-process Perl MCP servers and hands each of
+them to the agents on the machine as its own endpoint.
+
+A global C<--config PATH> (or C<-c PATH>, or C<$MCP_HUB_CONFIG>) selects the
+configuration file for every command; the default is
+C<~/.config/mcp-hub/config.json>.
+
+=head1 COMMANDS
+
+=head2 daemon
+
+Run the hub in the foreground on the configured listen address. See
+L<MCP::Hub::Command::daemon>.
+
+=head2 config
+
+Print the C<mcpServers> JSON an agent needs. See L<MCP::Hub::Command::config>.
+
+=head2 status
+
+Print a table of the running hub's upstreams and clients. See
+L<MCP::Hub::Command::status>.
+
+=head2 refresh
+
+Ask the running hub to re-fetch upstream manifests. See
+L<MCP::Hub::Command::refresh>.
+
+=head2 token
+
+Print a fresh random bearer token. See L<MCP::Hub::Command::token>.
+
+=head1 SEE ALSO
+
+L<MCP::Hub>, L<MCP>.
+
+=cut

@@ -1,0 +1,564 @@
+package MCP::Hub::Upstream::Stdio;
+our $VERSION = '0.001';
+use Mojo::Base 'MCP::Hub::Upstream', -signatures;
+
+use MCP::Hub::Facade;
+use MCP::Hub::Facade::Server;
+use MCP::Hub::Manifest;
+use Mojo::IOLoop;
+use Mojo::IOLoop::Stream;
+use Mojo::JSON qw(decode_json encode_json);
+use Mojo::Promise;
+use POSIX ();
+use Socket qw(AF_UNIX SOCK_STREAM PF_UNSPEC);
+
+# ABSTRACT: A stdio MCP child process mounted as an upstream
+
+use constant MAX_LINE_BUFFER => 16 * 1024 * 1024;
+use constant KILL_GRACE      => 5;
+
+has cache_dir       => sub ($self) { $self->hub ? $self->hub->hub_config->cache_dir : '.' };
+has idle_timeout    => 300;
+has request_timeout => 60;
+has always_on       => 0;
+has protocol_version => '2025-06-18';
+
+sub new ($class, %args) {
+  my $self = $class->SUPER::new(%args);
+  my $c    = $self->config;
+
+  $self->{manifest}         = MCP::Hub::Manifest->new(cache_dir => $self->cache_dir);
+  $self->{idle_timeout}     = $c->{idle_timeout}    if defined $c->{idle_timeout};
+  $self->{request_timeout}  = $c->{request_timeout} if defined $c->{request_timeout};
+  $self->{always_on}        = 1 if $c->{always_on};
+  $self->{id}               = 0;
+  $self->{pending}          = {};
+  $self->{inbuf}            = '';
+  $self->{exits}            = [];
+
+  $self->_build_server;
+  return $self;
+}
+
+# --- public lifecycle ------------------------------------------------------
+
+sub start_p ($self) {
+  return Mojo::Promise->resolve($self) if $self->state eq 'ready' && $self->{pid};
+  return $self->{start_promise} if $self->{start_promise};
+
+  $self->state('starting');
+  my $done = Mojo::Promise->new;
+  $self->{start_promise} = $done;
+
+  unless (eval { $self->_spawn; 1 }) {
+    my $err = $@ =~ s/\n\z//r;
+    $self->state('stopped');
+    delete $self->{start_promise};
+    $done->reject("upstream @{[$self->name]}: cannot start ($err)");
+    return $done;
+  }
+
+  $self->_handshake_p->then(sub ($manifest) {
+    $self->_apply_manifest($manifest);
+    $self->state('ready');
+    delete $self->{start_promise};
+    $self->touch;
+    $done->resolve($self);
+  })->catch(sub ($err) {
+    $self->log->error("[@{[$self->name]}] handshake failed: $err");
+    $self->_record_exit;
+    $self->{stopping} = 1;
+    $self->_kill_now;
+    $self->state($self->{failed} ? 'failed' : 'stopped');
+    delete $self->{start_promise};
+    $done->reject("$err");
+  });
+
+  return $done;
+}
+
+sub stop ($self) {
+  return $self unless $self->{pid};
+  $self->{stopping} = 1;
+  $self->_clear_idle_timer;
+  shutdown($self->{socket}, 1) if $self->{socket};    # SHUT_WR -> EOF on child stdin
+  kill 'TERM', $self->{pid};
+  $self->{kill_timer} = Mojo::IOLoop->timer(KILL_GRACE, sub {
+    kill 'KILL', $self->{pid} if $self->{pid};
+  });
+  return $self;
+}
+
+sub refresh_p ($self) {
+  if ($self->state eq 'ready' && $self->{pid}) {
+    return $self->_list_all_p->then(sub ($lists) {
+      $self->_apply_manifest($self->_manifest_from($lists));
+      return $self;
+    });
+  }
+  return $self->start_p;
+}
+
+sub touch ($self) {
+  $self->last_used(time);
+  $self->_arm_idle_timer if $self->state eq 'ready';
+  return $self;
+}
+
+# --- forwarding ------------------------------------------------------------
+
+sub call_tool ($self, $name, $args) {
+  $self->stats->{calls}++;
+  return $self->start_p->then(sub {
+    $self->touch;
+    return $self->_request_p('tools/call', {name => $name, arguments => $args});
+  })->catch(sub ($err) {
+    $self->stats->{errors}++;
+    return {content => [{type => 'text', text => "$err"}], isError => \1};
+  });
+}
+
+sub get_prompt ($self, $name, $args) {
+  return $self->start_p->then(sub {
+    $self->touch;
+    return $self->_request_p('prompts/get', {name => $name, arguments => $args});
+  })->catch(sub ($err) {
+    return {description => "$err", messages => [{role => 'user', content => {type => 'text', text => "$err"}}]};
+  });
+}
+
+sub read_resource ($self, $uri) {
+  return $self->start_p->then(sub {
+    $self->touch;
+    return $self->_request_p('resources/read', {uri => $uri});
+  })->catch(sub ($err) {
+    return {contents => [{uri => $uri, mimeType => 'text/plain', text => "$err"}]};
+  });
+}
+
+# --- server / manifest -----------------------------------------------------
+
+sub _build_server ($self) {
+  my $server = MCP::Hub::Facade::Server->new(name => $self->name, version => '0.0.0');
+  $self->server($server);
+  if (my $manifest = $self->{manifest}->load($self->name, $self->_hash)) {
+    MCP::Hub::Facade->apply($server, $self, $manifest);
+    $self->{manifest_fetched_at} = $manifest->{fetched_at};
+    $self->{server_protocol}     = $manifest->{protocol_version};
+    $self->{server_info}         = $manifest->{server_info};
+    $self->{capabilities}        = $manifest->{capabilities};
+    $self->{instructions}        = $manifest->{instructions};
+  }
+  return $server;
+}
+
+sub _hash ($self) {
+  my $c = $self->config;
+  return $self->{manifest}->hash($c->{command}, $c->{args}, $c->{cwd});
+}
+
+sub _manifest_from ($self, $lists) {
+  return {
+    name             => $self->name,
+    hash             => $self->_hash,
+    fetched_at       => _now_iso(),
+    protocol_version => $self->{server_protocol},
+    server_info      => $self->{server_info},
+    capabilities     => $self->{capabilities},
+    instructions     => $self->{instructions},
+    tools            => $lists->{tools},
+    prompts          => $lists->{prompts},
+    resources        => $lists->{resources},
+  };
+}
+
+sub _apply_manifest ($self, $manifest) {
+  $self->{manifest}->store($manifest);
+  $self->{manifest_fetched_at} = $manifest->{fetched_at};
+  MCP::Hub::Facade->apply($self->server, $self, $manifest);
+  $self->server->notify_list_changed('tools');
+  $self->hub->rebuild_aggregate if $self->hub && $self->hub->can('rebuild_aggregate');
+  return $self;
+}
+
+# --- handshake -------------------------------------------------------------
+
+sub _handshake_p ($self) {
+  return $self->_request_p('initialize', {
+    protocolVersion => $self->protocol_version,
+    capabilities    => {},
+    clientInfo      => {name => 'mcp-hub', version => $VERSION},
+  })->then(sub ($result) {
+    $self->{server_protocol} = $result->{protocolVersion} // $self->protocol_version;
+    $self->{capabilities}    = $result->{capabilities}    // {};
+    $self->{server_info}     = $result->{serverInfo}      // {name => $self->name, version => '0.0.0'};
+    $self->{instructions}    = $result->{instructions};
+    $self->_notify('notifications/initialized');
+    return $self->_list_all_p;
+  })->then(sub ($lists) {
+    return $self->_manifest_from($lists);
+  });
+}
+
+sub _list_all_p ($self) {
+  my $caps = $self->{capabilities} // {};
+  my %out;
+  return $self->_paginate_p('tools/list', 'tools')->then(sub ($tools) {
+    $out{tools} = $tools;
+    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts')->catch(sub {[]}) : [];
+  })->then(sub ($prompts) {
+    $out{prompts} = $prompts;
+    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources')->catch(sub {[]}) : [];
+  })->then(sub ($resources) {
+    $out{resources} = $resources;
+    return \%out;
+  });
+}
+
+sub _paginate_p ($self, $method, $key, $cursor = undef, $acc = undef) {
+  $acc //= [];
+  my $params = defined $cursor ? {cursor => $cursor} : {};
+  return $self->_request_p($method, $params)->then(sub ($result) {
+    push @$acc, @{$result->{$key} // []};
+    my $next = $result->{nextCursor};
+    return (defined $next && length $next) ? $self->_paginate_p($method, $key, $next, $acc) : $acc;
+  });
+}
+
+# --- JSON-RPC over the socket ----------------------------------------------
+
+sub _request_p ($self, $method, $params = {}) {
+  my $id      = ++$self->{id};
+  my $promise = Mojo::Promise->new;
+
+  my $timer;
+  if ((my $timeout = $self->request_timeout) > 0) {
+    $timer = Mojo::IOLoop->timer($timeout => sub {
+      my $pending = delete $self->{pending}{$id} or return;
+      $self->_send({jsonrpc => '2.0', method => 'notifications/cancelled', params => {requestId => $id}});
+      $pending->{promise}->reject("upstream @{[$self->name]}: timed out after ${timeout}s");
+    });
+  }
+
+  $self->{pending}{$id} = {promise => $promise, timer => $timer};
+  $self->_send({jsonrpc => '2.0', id => $id, method => $method, params => $params});
+  return $promise;
+}
+
+sub _notify ($self, $method, $params = {}) {
+  return $self->_send({jsonrpc => '2.0', method => $method, params => $params});
+}
+
+sub _send ($self, $obj) {
+  my $stream = $self->{stream} or return undef;
+  $stream->write(encode_json($obj) . "\n");
+  return 1;
+}
+
+# --- reading ---------------------------------------------------------------
+
+sub _on_read ($self, $bytes) {
+  $self->{inbuf} .= $bytes;
+  if (length $self->{inbuf} > MAX_LINE_BUFFER) {
+    $self->log->error("[@{[$self->name]}] line buffer exceeded 16MB, killing child");
+    $self->{stopping} = 1;
+    return $self->_kill_now;
+  }
+  while ((my $nl = index($self->{inbuf}, "\n")) >= 0) {
+    my $line = substr($self->{inbuf}, 0, $nl + 1, '');
+    $line =~ s/\r?\n\z//;
+    next if $line eq '';
+    $self->_on_message($line);
+  }
+}
+
+sub _on_message ($self, $line) {
+  my $msg = eval { decode_json($line) };
+  return $self->log->debug("[@{[$self->name]}] skipping malformed line") unless ref $msg eq 'HASH';
+
+  if (exists $msg->{id} && !exists $msg->{method}) { return $self->_on_response($msg) }
+  if (exists $msg->{method} && defined $msg->{id}) { return $self->_on_server_request($msg) }
+  if (exists $msg->{method})                        { return $self->_on_notification($msg) }
+  return undef;
+}
+
+sub _on_response ($self, $msg) {
+  my $pending = delete $self->{pending}{$msg->{id}}
+    or return $self->log->debug("[@{[$self->name]}] response with unknown id @{[$msg->{id} // '?']}");
+  Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
+  if (my $err = $msg->{error}) {
+    $pending->{promise}->reject("upstream @{[$self->name]}: " . ($err->{message} // 'error'));
+  }
+  else {
+    $pending->{promise}->resolve($msg->{result} // {});
+  }
+}
+
+sub _on_server_request ($self, $msg) {
+  my ($method, $id) = ($msg->{method}, $msg->{id});
+  return $self->_send({jsonrpc => '2.0', id => $id, result => {}})            if $method eq 'ping';
+  return $self->_send({jsonrpc => '2.0', id => $id, result => {roots => []}}) if $method eq 'roots/list';
+  return $self->_send({
+    jsonrpc => '2.0',
+    id      => $id,
+    error   => {code => -32601, message => 'Method not supported by mcp-hub'},
+  });
+}
+
+sub _on_notification ($self, $msg) {
+  my $method = $msg->{method};
+
+  if ($method =~ m{^notifications/(?:tools|prompts|resources)/list_changed$}) {
+    $self->log->info("[@{[$self->name]}] $method received, refreshing manifest");
+    $self->refresh_p->catch(sub ($err) { $self->log->debug("[@{[$self->name]}] refresh failed: $err") });
+    return;
+  }
+
+  if ($method eq 'notifications/message') {
+    my $params = $msg->{params} // {};
+    my $level  = _log_level($params->{level} // 'info');
+    my $data   = ref $params->{data} ? encode_json($params->{data}) : ($params->{data} // '');
+    $self->log->$level("[@{[$self->name]}] $data");
+    return;
+  }
+
+  # notifications/progress and anything else are dropped in v1.
+  return undef;
+}
+
+sub _on_stderr ($self, $bytes) {
+  for my $line (split /\n/, $bytes) {
+    next unless length $line;
+    $self->log->debug("[@{[$self->name]}] $line");
+  }
+}
+
+sub _on_close ($self) {
+  my $pid = $self->{pid} or return;    # already handled
+
+  waitpid $pid, 0;
+  my $status = $?;
+  Mojo::IOLoop->remove($self->{kill_timer}) if $self->{kill_timer};
+  delete @{$self}{qw(kill_timer stream err_stream socket pid)};
+  $self->stats->{pid} = undef;
+
+  my $reason = _exit_reason($status);
+  for my $id (keys %{$self->{pending}}) {
+    my $pending = delete $self->{pending}{$id};
+    Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
+    $pending->{promise}->reject("upstream @{[$self->name]}: exited ($reason)");
+  }
+
+  $self->_record_exit unless $self->{stopping};
+  $self->_clear_idle_timer;
+  $self->state($self->{failed} ? 'failed' : 'stopped');
+  delete $self->{stopping};
+  return $self;
+}
+
+# --- process ---------------------------------------------------------------
+
+sub _spawn ($self) {
+  my $c = $self->config;
+
+  socketpair(my $parent, my $child, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!\n";
+  pipe(my $err_r, my $err_w) or die "pipe: $!\n";
+  $_->autoflush(1) for $parent, $child, $err_w;
+
+  my $pid = fork // die "fork: $!\n";
+  if (!$pid) {
+    close $parent;
+    close $err_r;
+    open(STDIN,  '<&', $child)  or POSIX::_exit(127);
+    open(STDOUT, '>&', $child)  or POSIX::_exit(127);
+    open(STDERR, '>&', $err_w)  or POSIX::_exit(127);
+    %ENV = (%ENV, %{$c->{env} // {}});
+    if (defined $c->{cwd}) { chdir $c->{cwd} or POSIX::_exit(127) }
+    { exec {$c->{command}} $c->{command}, @{$c->{args} // []} }
+    POSIX::_exit(127);
+  }
+
+  close $child;
+  close $err_w;
+  $self->{pid}               = $pid;
+  $self->{socket}            = $parent;
+  $self->stats->{pid}        = $pid;
+  $self->stats->{started_at} = time;
+  $self->log->info("[@{[$self->name]}] started $c->{command} (pid $pid)");
+
+  my $stream = Mojo::IOLoop::Stream->new($parent);
+  $stream->timeout(0);
+  $stream->on(read  => sub ($s, $bytes) { $self->_on_read($bytes) });
+  $stream->on(close => sub ($s)         { $self->_on_close });
+  $stream->on(error => sub ($s, $err)   { $self->log->debug("[@{[$self->name]}] socket error: $err"); $self->_on_close });
+  $stream->start;
+  $self->{stream} = $stream;
+
+  my $estream = Mojo::IOLoop::Stream->new($err_r);
+  $estream->timeout(0);
+  $estream->on(read  => sub ($s, $bytes) { $self->_on_stderr($bytes) });
+  $estream->on(error => sub { });
+  $estream->on(close => sub { });
+  $estream->start;
+  $self->{err_stream} = $estream;
+
+  return $pid;
+}
+
+sub _kill_now ($self) {
+  $self->_clear_idle_timer;
+  Mojo::IOLoop->remove($self->{kill_timer}) if $self->{kill_timer};
+  kill 'KILL', $self->{pid} if $self->{pid};
+  return $self;
+}
+
+sub _record_exit ($self) {
+  my $now = time;
+  push @{$self->{exits}}, $now;
+  @{$self->{exits}} = grep { $_ >= $now - KILL_GRACE } @{$self->{exits}};
+  $self->{failed} = 1 if @{$self->{exits}} >= 3;
+  return $self;
+}
+
+# --- idle timer ------------------------------------------------------------
+
+sub _arm_idle_timer ($self) {
+  return if $self->always_on;
+  my $timeout = $self->idle_timeout;
+  return unless $timeout > 0;
+  $self->_clear_idle_timer;
+  $self->{idle_timer} = Mojo::IOLoop->timer($timeout => sub {
+    $self->log->info("[@{[$self->name]}] idle for ${timeout}s, stopping");
+    $self->stop;
+  });
+  return $self;
+}
+
+sub _clear_idle_timer ($self) {
+  Mojo::IOLoop->remove($self->{idle_timer}) if $self->{idle_timer};
+  delete $self->{idle_timer};
+  return $self;
+}
+
+# --- helpers ---------------------------------------------------------------
+
+sub _exit_reason ($status) {
+  return 'unknown' unless defined $status;
+  my $signal = $status & 127;
+  return "signal $signal" if $signal;
+  return 'code ' . ($status >> 8);
+}
+
+sub _log_level ($level) {
+  state $map = {
+    debug => 'debug', info => 'info', notice => 'info', warning => 'warn',
+    error => 'error', critical => 'error', alert => 'error', emergency => 'fatal',
+  };
+  return $map->{$level} // 'info';
+}
+
+sub _now_iso {
+  my @t = gmtime;
+  return sprintf '%04d-%02d-%02dT%02d:%02d:%02dZ', $t[5] + 1900, $t[4] + 1, @t[3, 2, 1, 0];
+}
+
+1;
+
+=encoding utf8
+
+=head1 SYNOPSIS
+
+  use MCP::Hub::Upstream::Stdio;
+
+  my $up = MCP::Hub::Upstream::Stdio->new(
+    name      => 'context7',
+    config    => {type => 'stdio', command => 'npx', args => ['-y', '@upstash/context7-mcp']},
+    cache_dir => '~/.cache/mcp-hub',
+  );
+
+  $up->call_tool('resolve-library-id', {libraryName => 'react'})->then(sub ($result) { ... });
+
+=head1 DESCRIPTION
+
+L<MCP::Hub::Upstream::Stdio> runs a stdio MCP server as a child process and
+speaks the classic (legacy) JSON-RPC handshake to it, so it can talk to the
+npm and Python servers in the wild that do not speak the current stateless
+revision.
+
+The child's stdin and stdout are a single C<AF_UNIX> socket pair wrapped in a
+L<Mojo::IOLoop::Stream>, its stderr a pipe logged at C<debug>. All requests are
+non-blocking promises, correlated by an integer id, with a per-request timeout
+that rejects the promise and sends C<notifications/cancelled>.
+
+=head2 Lifecycle
+
+The child is B<lazily> started: at daemon start a fresh cached manifest is
+enough to answer C<tools/list>, and nothing is spawned until the first
+C<tools/call>, C<prompts/get> or C<resources/read>. It is stopped again after
+L</idle_timeout> seconds of no requests (unless L</always_on>), and restarted on
+the next call. Three exits within five seconds mark it C<failed>.
+
+=head2 Handshake and manifest
+
+On start the upstream sends C<initialize> (protocol C<2025-06-18>),
+C<notifications/initialized>, then C<tools/list> (following C<nextCursor>) and,
+when the capabilities declare them, C<prompts/list> and C<resources/list>. The
+result is written to the manifest cache and turned into the L<MCP::Server> via
+L<MCP::Hub::Facade>. A C<notifications/*/list_changed> from the child triggers a
+background refresh.
+
+=head1 ATTRIBUTES
+
+L<MCP::Hub::Upstream::Stdio> inherits all attributes from L<MCP::Hub::Upstream>
+and adds:
+
+=head2 always_on
+
+Start at daemon start and never idle-stop. Defaults to false.
+
+=head2 cache_dir
+
+Where the manifest cache lives.
+
+=head2 idle_timeout
+
+Seconds of no requests before the child is stopped. Defaults to C<300>.
+
+=head2 protocol_version
+
+Protocol version to open the handshake with. Defaults to C<2025-06-18>.
+
+=head2 request_timeout
+
+Seconds to wait for a response. Defaults to C<60>.
+
+=head1 METHODS
+
+L<MCP::Hub::Upstream::Stdio> inherits all methods from L<MCP::Hub::Upstream> and
+adds the forwarding methods the facade calls:
+
+=head2 call_tool
+
+  my $promise = $up->call_tool($name, $args);
+
+Forward a C<tools/call>, starting the child if needed. Always resolves to a
+result hash: the upstream's result, or an error result on a JSON-RPC error,
+timeout, crash or failed start.
+
+=head2 get_prompt
+
+  my $promise = $up->get_prompt($name, $args);
+
+Forward a C<prompts/get>.
+
+=head2 read_resource
+
+  my $promise = $up->read_resource($uri);
+
+Forward a C<resources/read>.
+
+=head1 SEE ALSO
+
+L<MCP::Hub::Upstream>, L<MCP::Hub::Facade>, L<MCP::Hub::Manifest>.
+
+=cut
