@@ -1,0 +1,16 @@
+---
+class: standard
+completed: 2026-09-16T16:53:40Z
+created: 2026-09-16T16:04:49Z
+id: 4
+priority: high
+started: 2026-09-16T16:53:40Z
+status: done
+tags:
+- release
+- docker
+title: 'Release blocker: Docker files untracked in git'
+updated: 2026-09-16T16:53:40Z
+---
+
+Dockerfile, docker-compose.yml, .dockerignore, docker/with-node are untracked (git status: untracked). dzil build uses Git::GatherDir, which only gathers tracked files -- confirmed: the built MCP-Hub-0.001/ tarball contains zero docker files. README.md (also uncommitted) now documents a full Docker workflow (docker run, docker compose up, docker build --build-arg, with-node, podman-rootless notes) that assumes these files ship with the repo/release. Action: git add + commit Dockerfile, docker-compose.yml, .dockerignore, docker/, and the README Docker section before release, so the tagged tree actually contains what README promises. Not fixed by the auditor per audit-only mandate.
