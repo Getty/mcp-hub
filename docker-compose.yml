@@ -1,0 +1,32 @@
+# MCP::Hub — mount your servers, expose the port, run.
+#
+#   docker compose up -d
+#
+# Then point your agent at http://localhost:3080 (see `mcp-hub config`, or open
+# http://localhost:3080/ for the setup page).
+
+services:
+  mcp-hub:
+    image: raudssus/mcp-hub
+    # Build locally instead of pulling:
+    # build: .
+    # tini is built into the image as PID 1, so no `init: true` is needed to
+    # reap the stdio upstream children.
+    ports:
+      - "3080:3080"
+    volumes:
+      # Your servers. A plain .mcp.json (just an "mcpServers" block) works.
+      - ./.mcp.json:/config/mcp.json:ro
+      # Everything regenerable, warm across restarts: the manifest cache,
+      # on-demand Node versions (with-node), and the npm / uv / deno / bun
+      # package caches. You'll see files appear under ./cache as they're fetched.
+      - ./cache:/cache
+      # Uncomment to allow "command: docker run ..." upstreams (the CLI is in
+      # the image; it only works with the daemon socket mounted):
+      # - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Upstream secrets are referenced as ${VAR} in your .mcp.json and read
+      # from the environment. Add them here (or use `env_file: [.env]`), e.g.:
+      # - CONTEXT7_API_KEY=${CONTEXT7_API_KEY}
+      - MCP_HUB_CONFIG=/config/mcp.json
+    restart: unless-stopped

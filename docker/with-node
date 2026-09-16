@@ -1,0 +1,80 @@
+#!/bin/sh
+# with-node <version> <command> [args...]
+#
+# Run <command> with a specific Node.js version on PATH. The requested version
+# is fetched into the cache ($MCP_HUB_NODE_CACHE, mounted as a volume) on first
+# use, so it survives restarts and is visible on the host. The baked default
+# Node is used directly when its major matches, so the common case never
+# downloads anything.
+#
+#   "legacy": { "command": "with-node", "args": ["18", "npx", "-y", "@old/mcp"] }
+set -eu
+
+usage() { echo "usage: with-node <version> <command> [args...]" >&2; exit 2; }
+[ $# -ge 2 ] || usage
+
+want=$1; shift
+want=${want#v}                 # accept "20" or "20.11.1" or "v20"
+want_major=${want%%.*}
+
+# If the baked default Node already satisfies the requested major, just run.
+if command -v node >/dev/null 2>&1; then
+  have=$(node -v 2>/dev/null | sed 's/^v//')
+  if [ "${have%%.*}" = "$want_major" ]; then
+    exec "$@"
+  fi
+fi
+
+cache=${MCP_HUB_NODE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/node}
+dir=$cache/$want_major
+
+fetch() {
+  case "$(uname -m)" in
+    x86_64|amd64)  arch=x64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    armv7l)        arch=armv7l ;;
+    *) echo "with-node: unsupported arch $(uname -m)" >&2; exit 1 ;;
+  esac
+
+  # A bare major resolves to its newest release; a full version is exact.
+  if [ "$want" = "$want_major" ]; then
+    base="https://nodejs.org/dist/latest-v${want_major}.x"
+  else
+    base="https://nodejs.org/dist/v${want}"
+  fi
+
+  file=$(curl -fsSL "$base/SHASUMS256.txt" \
+    | grep "linux-${arch}.tar.xz" | grep -v musl \
+    | awk '{print $2}' | head -1)
+  [ -n "$file" ] || { echo "with-node: no Node ${want} for ${arch}" >&2; exit 1; }
+
+  tmp=$(mktemp -d "$cache/.dl.XXXXXX")
+  if curl -fsSL "$base/$file" | tar -xJ -C "$tmp" --strip-components=1; then
+    # Atomic publish; a concurrent worker may have won the race first.
+    if [ ! -x "$dir/bin/node" ]; then
+      mv "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp"
+    else
+      rm -rf "$tmp"
+    fi
+  else
+    rm -rf "$tmp"
+    echo "with-node: failed to fetch Node ${want}" >&2
+    exit 1
+  fi
+}
+
+if [ ! -x "$dir/bin/node" ]; then
+  mkdir -p "$cache"
+  if command -v flock >/dev/null 2>&1; then
+    # Serialize concurrent installs of the same major.
+    exec 9>"$cache/.lock.$want_major"
+    flock 9
+    [ -x "$dir/bin/node" ] || fetch
+  else
+    fetch
+  fi
+fi
+
+PATH="$dir/bin:$PATH"
+export PATH
+exec "$@"

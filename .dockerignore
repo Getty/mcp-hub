@@ -1,0 +1,11 @@
+# The image only needs cpanfile, lib/, bin/ and docker/with-node; keep the
+# build context small and never ship local state.
+.git
+.gitignore
+.claude
+docs
+t
+cache
+.env
+*.tar.gz
+.build
