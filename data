@@ -1,0 +1,18 @@
+---
+class: standard
+completed: 2026-09-16T16:54:05Z
+created: 2026-09-16T16:04:57Z
+id: 5
+priority: medium
+started: 2026-09-16T16:47:49Z
+status: done
+tags:
+- release
+- version
+title: bin/mcp-hub is missing our $VERSION
+updated: 2026-09-16T16:54:05Z
+---
+
+grep -rn 'our $VERSION' lib bin: all 21 modules under lib/ carry our $VERSION = 0.001; bin/mcp-hub carries none. Per skill getty-perl-release-author-getty: every file under lib/ and bin/ needs its own our $VERSION, else it ships versionless. dzil build still succeeds, and PodWeaver injects '=head1 VERSION / version 0.001' into bin/mcp-hub's POD from the dist version, but the script itself has no $VERSION variable, unlike every lib/ module. Not a build breaker, but a house-convention violation worth a one-line fix: add our $VERSION = '0.001'; under the ABSTRACT line.
+
+2026-09-16 16:47 Fixed: added our $VERSION = '0.001'; to bin/mcp-hub under the # ABSTRACT line (before the first use), matching the lib/ modules. prove -lr t/ green (82 tests). NOT committed - main agent coordinates git.
