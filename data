@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-09-16T16:54:05Z
+created: 2026-09-16T16:05:17Z
+id: 6
+priority: low
+started: 2026-09-16T16:48:15Z
+status: done
+tags:
+- release
+- docker
+- decision-needed
+title: 'Decide: wire Docker image publishing into dist.ini, or keep it manual'
+updated: 2026-09-16T16:54:05Z
+---
+
+dist.ini uses the bare [@Author::GETTY] bundle with no docker_image/docker_tags/docker_local set, so the bundle's Docker::API auto-release plugin is not configured -- the release automation will not build or push any image on its own. Meanwhile docker-compose.yml (image: raudssus/mcp-hub) and README.md's new Docker section both reference raudssus/mcp-hub as an already-existing published registry image. Flagging per release-checker mandate to report registry/tag disagreement without picking a side -- maintainer should decide whether to add docker_image = raudssus/mcp-hub (+docker_tags) to dist.ini so image publishing travels with the normal release flow, or keep Docker build/publish manual and separate from Dist::Zilla.
+
+2026-09-16 16:48 Set docker_image = raudssus/mcp-hub on the [@Author::GETTY] bundle in dist.ini (default tags latest %V %v). Caveat: this auto-adds Docker::API, which builds the image in after_build on EVERY dzil build and needs a reachable engine; a full dzil build currently FAILS with Dockerfile-not-found because Dockerfile/ and docker/ are still untracked (Git::GatherDir omits them) - commit those (git coordinator). Dist build otherwise clean: DZIL_DOCKER_API_SKIP=1 dzil build => exit 0. Not committed.
