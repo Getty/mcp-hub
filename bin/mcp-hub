@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 # PODNAME: mcp-hub
 # ABSTRACT: Run and manage the MCP hub
+our $VERSION = '0.001';
 use Mojo::Base -strict, -signatures;
 
 use MCP::Hub;
