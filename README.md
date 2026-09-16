@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/github.png" alt="MCP-Hub — A lot of MCP for very little RAM." width="100%">
+</p>
+
 # MCP-Hub
 
 **A lot of MCP for very little RAM.**
@@ -272,6 +276,80 @@ every worker would spawn its own children and hold its own state, which defeats
 the purpose. Child processes, idle timers, manifests and in-process servers all
 live in one event loop, and tool calls are non-blocking, so one slow upstream
 never blocks the others.
+
+### Docker
+
+Run the hub as a container — mount a `.mcp.json`, expose the port:
+
+```bash
+docker run -d --name mcp-hub \
+  -p 3080:3080 \
+  -v "$PWD/.mcp.json:/config/mcp.json:ro" \
+  -v "$PWD/cache:/cache" \
+  -e CONTEXT7_API_KEY=… \
+  raudssus/mcp-hub
+```
+
+or with the bundled `docker-compose.yml`:
+
+```bash
+docker compose up -d
+```
+
+The image is **batteries-included**: the stdio upstreams the hub spawns run
+*inside* the container, so it ships the runtimes they need — Node (with `npx`),
+Python (`uv`/`uvx`), Deno and Bun. Upstream secrets referenced as `${VAR}` in
+your `.mcp.json` are read from the container's environment (`-e` / `env_file`).
+
+- **It binds `0.0.0.0`.** The container's `CMD` overrides the `127.0.0.1`
+  configuration default, so `-p` actually works. To change the port keep the
+  flag: `… raudssus/mcp-hub daemon -l http://0.0.0.0:9000`.
+- **The `/cache` volume holds everything regenerable** — the manifest cache,
+  on-demand Node versions, and the npm/uv/deno/bun package caches — so restarts
+  are warm. Delete it to reset; you'll see files appear there as they're fetched.
+- **`tini` is built in** as PID 1, so the stdio children the hub stops after
+  their idle timeout are reaped for you — no `--init` needed.
+- **Rootless Podman:** a bind-mounted `./cache` isn't writable by the container
+  user because of the uid mapping. Add `:U` to the mount
+  (`-v "$PWD/cache:/cache:U"`), run with `--userns=keep-id`, or use a named
+  volume (`-v mcp-hub-cache:/cache`). Under Docker the bind mount just works.
+
+#### A Node version per upstream
+
+The default Node is baked in (major 22). To pin a different version for one
+server, prefix its command with `with-node <version>`; that version is fetched
+into `/cache/node/<version>` on first use and reused afterwards:
+
+```json
+{
+  "mcpServers": {
+    "modern": { "command": "npx",       "args": ["-y", "@some/mcp"] },
+    "legacy": { "command": "with-node", "args": ["18", "npx", "-y", "@old/mcp"] }
+  }
+}
+```
+
+Python versions come for free the same way via `uvx --python 3.11 …`.
+
+#### Docker-based upstreams
+
+Some servers are launched with `command: "docker"`. The Docker **CLI** is in the
+image; mount the daemon socket to let them run:
+
+```bash
+docker run … -v /var/run/docker.sock:/var/run/docker.sock raudssus/mcp-hub
+```
+
+#### Building the image
+
+```bash
+docker build -t raudssus/mcp-hub \
+  --build-arg NODE_VERSION=20 \
+  --build-arg DOCKER_CLI_VERSION=27.3.1 .
+```
+
+Need a runtime the image doesn't ship? It's an ordinary Debian base — start a new
+image `FROM raudssus/mcp-hub` and add it.
 
 ## How it works
 
