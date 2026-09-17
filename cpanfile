@@ -1,7 +1,7 @@
 requires 'perl' => '5.020';
 
 requires 'MCP'          => '0.15';
-requires 'Mojolicious'  => '9.0';
+requires 'Mojolicious'  => '9.49';
 requires 'CryptX';           # Crypt::Misc::slow_eq, Crypt::PRNG::random_bytes
 
 # Everything else the hub uses (Digest::SHA, IPC/socketpair, Socket, POSIX,
