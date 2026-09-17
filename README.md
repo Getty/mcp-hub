@@ -376,8 +376,6 @@ list cached as a manifest, and it is terminated again after an idle timeout.
 
 ### `mcpServers` entries
 
-Exactly one of `command` or `class` is required.
-
 Exactly one of `command`, `class` or `url` is required.
 
 | Key | Meaning |

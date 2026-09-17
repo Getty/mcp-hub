@@ -32,8 +32,9 @@ MCP::Hub->new->start(@argv);
 =head1 DESCRIPTION
 
 C<mcp-hub> is the command line for L<MCP::Hub>, a single HTTP MCP server that
-embeds any number of stdio and in-process Perl MCP servers and hands each of
-them to the agents on the machine as its own endpoint.
+embeds any number of stdio MCP servers, in-process Perl MCP servers and remote
+HTTP MCP servers (Streamable HTTP or HTTP+SSE) and hands each of them to the
+agents on the machine as its own endpoint.
 
 A global C<--config PATH> (or C<-c PATH>, or C<$MCP_HUB_CONFIG>) selects the
 configuration file for every command; the default is

@@ -2,7 +2,15 @@ Revision history for MCP-Hub
 
 {{$NEXT}}
   - Initial release. A single HTTP MCP server (`mcp-hub`) that embeds any
-    number of stdio MCP servers and in-process Perl MCP servers, exposes each
-    of them to many agents on the machine as its own endpoint, decides per
-    client which of them it may use, and prints ready-to-paste client
-    configuration. A lot of MCP for very little RAM.
+    number of stdio MCP servers, in-process Perl MCP servers, and remote
+    HTTP MCP servers (Streamable HTTP and HTTP+SSE), exposes each of them to
+    many agents on the machine as its own endpoint, starts them lazily on
+    first use and stops them when idle, decides per client which of them it
+    may use, and prints ready-to-paste client configuration. A lot of MCP
+    for very little RAM.
+  - Web setup page at `GET /`: ready-to-paste `.mcp.json`, plus each
+    server's tools and instructions; token-gated in clients mode.
+  - Native in-process Perl servers, no subprocess per session:
+    ClaudeHistory, ClaudeSessions and Status.
+  - Docker image (`raudssus/mcp-hub`), batteries-included (Node, Python,
+    Deno, Bun), with a bundled `docker-compose.yml`.
