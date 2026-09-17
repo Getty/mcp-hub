@@ -1,0 +1,16 @@
+---
+class: standard
+completed: 2026-09-17T03:44:38Z
+created: 2026-09-17T02:15:29Z
+id: 10
+priority: medium
+started: 2026-09-17T03:44:38Z
+status: done
+tags:
+- docs
+- release
+title: Changes {{$NEXT}} entry undersells the v1 feature set
+updated: 2026-09-17T03:44:38Z
+---
+
+Changes currently has one {{$NEXT}} bullet for the "Initial release" that only mentions embedding stdio MCP servers and in-process Perl MCP servers. Since 4cb594e / 24744fd / 0126241 / c8b00c2 / 766aa47 (and the earlier v1 build commits), the release also ships: remote HTTP MCP servers (Streamable HTTP and HTTP+SSE upstreams), the web setup page at GET /, the Docker image distribution (Dockerfile + docker-compose.yml, batteries-included runtimes), and the agent/skill tooling. `[@Author::GETTY]`'s GitHub::CreateRelease publishes this section verbatim as the GitHub release notes, so as written the notes undersell the release. Expand the {{$NEXT}} bullet(s) to cover the actual v1 feature surface before release.
