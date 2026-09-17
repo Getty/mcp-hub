@@ -1,0 +1,16 @@
+---
+class: standard
+completed: 2026-09-17T03:44:34Z
+created: 2026-09-17T02:15:25Z
+id: 9
+priority: low
+started: 2026-09-17T03:44:34Z
+status: done
+tags:
+- docs
+- pod
+title: bin/mcp-hub POD DESCRIPTION omits remote HTTP upstreams
+updated: 2026-09-17T03:44:34Z
+---
+
+bin/mcp-hub:34-36 DESCRIPTION says mcp-hub embeds "any number of stdio and in-process Perl MCP servers" — it does not mention remote HTTP MCP servers (Streamable HTTP / HTTP+SSE, commit 4cb594e). lib/MCP/Hub.pm's own DESCRIPTION already correctly lists all three kinds (stdio, in-process Perl, remote HTTP), as does README.md's intro. Bring bin/mcp-hub's synopsis text in line so the three doc surfaces agree.
