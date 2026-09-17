@@ -24,18 +24,15 @@ The agent's view is unchanged: each embedded server keeps its own tool names, so
 your existing permission rules keep working, and the `/mcp` menu still lists
 servers separately.
 
-## Install
-
-```bash
-cpanm MCP::Hub
-```
-
-This gives you the `mcp-hub` command.
-
 ## Quick start
 
-Write a config at `~/.config/mcp-hub/config.json`. It is a **superset of
-`.mcp.json`** — an existing `mcpServers` block is already a valid hub config:
+The fastest way to run the hub is the Docker image. It is
+**batteries-included**: the stdio servers you embed run *inside* the container,
+so it already ships the runtimes they need — Node (with `npx`), Python
+(`uv`/`uvx`), Deno and Bun — and there is nothing to install on the host.
+
+**1. Write a `.mcp.json`.** It is a **superset of the `.mcp.json` you already
+use** — an existing `mcpServers` block is already a valid hub config:
 
 ```json
 {
@@ -51,7 +48,43 @@ Write a config at `~/.config/mcp-hub/config.json`. It is a **superset of
 }
 ```
 
-Start it in the foreground:
+**2. Run the container.** Mount that config, expose the port, and give it a
+volume for its cache:
+
+```bash
+docker run -d --name mcp-hub \
+  -p 3080:3080 \
+  -v "$PWD/.mcp.json:/config/mcp.json:ro" \
+  -v mcp-hub-cache:/cache \
+  -e SERPER_API_KEY=… \
+  raudssus/mcp-hub
+```
+
+or, with the bundled `docker-compose.yml`:
+
+```bash
+docker compose up -d
+```
+
+**3. Point your agent at it.** Open **<http://127.0.0.1:3080/>** in a browser —
+the hub serves a [setup page](#web-setup-page) with the ready-to-paste client
+configuration and a one-click **Copy** button.
+
+That's it. Nothing is spawned until an agent actually calls a tool; `tools/list`
+is answered from a cached manifest. See [Docker image](#docker-image) for
+volumes, secrets, per-upstream runtimes and rootless Podman.
+
+## Install with Perl (CPAN)
+
+Prefer to run it directly, without a container? Install it from CPAN — the
+natural route for Perl people, and for mounting your own in-process servers:
+
+```bash
+cpanm MCP::Hub
+```
+
+This gives you the `mcp-hub` command. Write the same config as above at
+`~/.config/mcp-hub/config.json` and start it in the foreground:
 
 ```bash
 mcp-hub daemon
@@ -76,11 +109,30 @@ mcp-hub config
 }
 ```
 
-Or just open **<http://127.0.0.1:3080/>** in a browser — the hub serves its own
-setup page (see below).
+Or just open **<http://127.0.0.1:3080/>** — the same setup page as above.
 
-That's it. Nothing is spawned until an agent actually calls a tool; `tools/list`
-is answered from a cached manifest.
+### Running as a service
+
+A systemd **user** unit at `~/.config/systemd/user/mcp-hub.service`:
+
+```ini
+[Unit]
+Description=MCP Hub
+After=network.target
+
+[Service]
+ExecStart=%h/perl5/bin/mcp-hub daemon
+Restart=on-failure
+Environment=MCP_HUB_CONFIG=%h/.config/mcp-hub/config.json
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now mcp-hub
+```
 
 ## Web setup page
 
@@ -232,74 +284,14 @@ sub new ($class, %args) {
 If your class has a `hub` attribute, the running `MCP::Hub` instance is injected
 into its constructor — that is how `MCP::Hub::Native::Status` reaches the hub.
 
-## Testing
+## Docker image
 
-```bash
-dzil test          # or: prove -l -r t/
-```
-
-The suite spawns only one upstream, a tiny Perl stdio server
-(`t/upstream/echo.pl`) — no node, no network. A separate **live** integration
-test exercises the hub against a real classic npx MCP server
-(`@modelcontextprotocol/server-everything`); it is off by default and only runs
-when you ask for it and `npx` with a recent enough node is on `PATH`:
-
-```bash
-MCP_HUB_TEST_NPX=1 prove -l t/npx.t
-```
-
-## Running as a service
-
-A systemd **user** unit at `~/.config/systemd/user/mcp-hub.service`:
-
-```ini
-[Unit]
-Description=MCP Hub
-After=network.target
-
-[Service]
-ExecStart=%h/perl5/bin/mcp-hub daemon
-Restart=on-failure
-Environment=MCP_HUB_CONFIG=%h/.config/mcp-hub/config.json
-
-[Install]
-WantedBy=default.target
-```
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now mcp-hub
-```
-
-The hub runs as **one process** (never hypnotoad or a pre-forking server):
-every worker would spawn its own children and hold its own state, which defeats
-the purpose. Child processes, idle timers, manifests and in-process servers all
-live in one event loop, and tool calls are non-blocking, so one slow upstream
-never blocks the others.
-
-### Docker
-
-Run the hub as a container — mount a `.mcp.json`, expose the port:
-
-```bash
-docker run -d --name mcp-hub \
-  -p 3080:3080 \
-  -v "$PWD/.mcp.json:/config/mcp.json:ro" \
-  -v "$PWD/cache:/cache" \
-  -e CONTEXT7_API_KEY=… \
-  raudssus/mcp-hub
-```
-
-or with the bundled `docker-compose.yml`:
-
-```bash
-docker compose up -d
-```
-
-The image is **batteries-included**: the stdio upstreams the hub spawns run
-*inside* the container, so it ships the runtimes they need — Node (with `npx`),
-Python (`uv`/`uvx`), Deno and Bun. Upstream secrets referenced as `${VAR}` in
-your `.mcp.json` are read from the container's environment (`-e` / `env_file`).
+The `raudssus/mcp-hub` image is **batteries-included**: the stdio upstreams the
+hub spawns run *inside* the container, so it ships the runtimes they need — Node
+(with `npx`), Python (`uv`/`uvx`), Deno and Bun. Upstream secrets referenced as
+`${VAR}` in your `.mcp.json` are read from the container's environment (`-e` /
+`env_file`). See [Quick start](#quick-start) for the basic `docker run` and
+`docker compose` invocations.
 
 - **It binds `0.0.0.0`.** The container's `CMD` overrides the `127.0.0.1`
   configuration default, so `-p` actually works. To change the port keep the
@@ -312,9 +304,10 @@ your `.mcp.json` are read from the container's environment (`-e` / `env_file`).
 - **Rootless Podman:** a bind-mounted `./cache` isn't writable by the container
   user because of the uid mapping. Add `:U` to the mount
   (`-v "$PWD/cache:/cache:U"`), run with `--userns=keep-id`, or use a named
-  volume (`-v mcp-hub-cache:/cache`). Under Docker the bind mount just works.
+  volume (`-v mcp-hub-cache:/cache`, as in the quick start). Under Docker the
+  bind mount just works.
 
-#### A Node version per upstream
+### A Node version per upstream
 
 The default Node is baked in (major 22). To pin a different version for one
 server, prefix its command with `with-node <version>`; that version is fetched
@@ -331,7 +324,7 @@ into `/cache/node/<version>` on first use and reused afterwards:
 
 Python versions come for free the same way via `uvx --python 3.11 …`.
 
-#### Docker-based upstreams
+### Docker-based upstreams
 
 Some servers are launched with `command: "docker"`. The Docker **CLI** is in the
 image; mount the daemon socket to let them run:
@@ -340,7 +333,7 @@ image; mount the daemon socket to let them run:
 docker run … -v /var/run/docker.sock:/var/run/docker.sock raudssus/mcp-hub
 ```
 
-#### Building the image
+### Building the image
 
 ```bash
 docker build -t raudssus/mcp-hub \
@@ -350,6 +343,22 @@ docker build -t raudssus/mcp-hub \
 
 Need a runtime the image doesn't ship? It's an ordinary Debian base — start a new
 image `FROM raudssus/mcp-hub` and add it.
+
+## Testing
+
+```bash
+dzil test          # or: prove -l -r t/
+```
+
+The suite spawns only one upstream, a tiny Perl stdio server
+(`t/upstream/echo.pl`) — no node, no network. A separate **live** integration
+test exercises the hub against a real classic npx MCP server
+(`@modelcontextprotocol/server-everything`); it is off by default and only runs
+when you ask for it and `npx` with a recent enough node is on `PATH`:
+
+```bash
+MCP_HUB_TEST_NPX=1 prove -l t/npx.t
+```
 
 ## How it works
 
@@ -371,6 +380,12 @@ checks, SSE, auth. The hub adds a legacy stdio client for the upstreams (so it
 can talk to the npm and Python servers in the wild) and the glue in between.
 A stdio upstream is spawned on the first `tools/call`, its handshake and tool
 list cached as a manifest, and it is terminated again after an idle timeout.
+
+The hub runs as **one process** (never hypnotoad or a pre-forking server):
+every worker would spawn its own children and hold its own state, which defeats
+the purpose. Child processes, idle timers, manifests and in-process servers all
+live in one event loop, and tool calls are non-blocking, so one slow upstream
+never blocks the others.
 
 ## Configuration reference
 
@@ -426,7 +441,9 @@ start.
 
 ## Requirements
 
-Perl 5.20+, [`Mojolicious`](https://metacpan.org/pod/Mojolicious) 9.x,
+To run the Docker image you need only Docker (or Podman) — everything else is in
+the image. For the CPAN install: Perl 5.20+,
+[`Mojolicious`](https://metacpan.org/pod/Mojolicious) 9.49+,
 [`MCP`](https://metacpan.org/pod/MCP) ≥ 0.15, `CryptX`. No process-management or
 YAML dependencies; everything else is core.
 
