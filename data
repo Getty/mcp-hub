@@ -1,0 +1,16 @@
+---
+class: standard
+completed: 2026-09-17T03:44:26Z
+created: 2026-09-17T02:15:12Z
+id: 7
+priority: high
+started: 2026-09-17T03:44:26Z
+status: done
+tags:
+- cpanfile
+- release-blocker
+title: 'cpanfile: Mojolicious floor 9.0 too low for Mojo::SSE (needs 9.41+)'
+updated: 2026-09-17T03:44:26Z
+---
+
+lib/MCP/Hub/Upstream/Http.pm:9 has an unconditional `use Mojo::SSE qw(parse_event);` at compile time. Mojo::SSE was only added in Mojolicious 9.41 (2025-07-03, still EXPERIMENTAL as of 9.49) — confirmed via the upstream Changes file. cpanfile:4 currently declares `requires 'Mojolicious' => '9.0';`, which is not high enough: installing exactly Mojolicious 9.0-9.40 satisfies cpanfile but makes `use MCP::Hub::Upstream::Http` (and therefore `use MCP::Hub`, since MCP/Hub.pm:12 loads it unconditionally) die at compile time with "Cant locate Mojo/SSE.pm" — this breaks the whole hub, not just HTTP+SSE upstreams. Fix: bump cpanfile's Mojolicious requirement to 9.41 (or the current 9.49 to be safe, since Mojo::SSE is still marked EXPERIMENTAL upstream and the API could still move before it stabilizes). Confirmed by web search + local Mojolicious-9.49 Changes file (docker build cache).
