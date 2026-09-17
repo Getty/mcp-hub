@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-09-17T03:44:30Z
+created: 2026-09-17T02:15:21Z
+id: 8
+priority: low
+started: 2026-09-17T03:44:30Z
+status: done
+tags:
+- docs
+title: 'README.md: stale duplicate ''exactly one of command or class'' line'
+updated: 2026-09-17T03:44:30Z
+---
+
+README.md:379-381, under "### `mcpServers` entries":
+
+  Exactly one of `command` or `class` is required.
+
+  Exactly one of `command`, `class` or `url` is required.
+
+The first line is a leftover from before HTTP (`url`) upstreams were added (commit 4cb594e) and now directly contradicts the correct line right after it. Delete the stale first line.
