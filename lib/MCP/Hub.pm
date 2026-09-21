@@ -288,9 +288,20 @@ sub _base_url ($listen) {
   return $base;
 }
 
+# Tried in the config directory when no path was given, first one that exists
+# wins. JSON leads, so a hub that has always had a config.json keeps using it
+# even if a config.yml turns up beside it.
+my @CONFIG_NAMES = qw(config.json config.yml config.yaml);
+
 sub _default_config_path {
   my $home = $ENV{XDG_CONFIG_HOME} || ($ENV{HOME} ? "$ENV{HOME}/.config" : '.config');
-  return "$home/mcp-hub/config.json";
+  my $dir  = "$home/mcp-hub";
+  for my $name (@CONFIG_NAMES) {
+    return "$dir/$name" if -f "$dir/$name";
+  }
+  # None of them is there: name the canonical one, so the warning points at the
+  # file a user should create.
+  return "$dir/$CONFIG_NAMES[0]";
 }
 
 1;
@@ -384,8 +395,15 @@ already owns C<config>.)
 =head2 hub_config_input
 
 What to load the configuration from: a file path, a decoded hash reference, or a
-ready L<MCP::Hub::Config>. When unset, C<$MCP_HUB_CONFIG> or the default path is
-used.
+ready L<MCP::Hub::Config>. A path is read by L<MCP::Hub::Config/from_file>, so
+its extension picks the syntax -- C<.yml> and C<.yaml> are YAML, anything else
+is JSON -- and an explicitly given path is used exactly as given.
+
+When unset, C<$MCP_HUB_CONFIG> is used, and failing that the config directory
+(C<$XDG_CONFIG_HOME/mcp-hub>, or C<~/.config/mcp-hub>) is searched for
+F<config.json>, then F<config.yml>, then F<config.yaml>; the first that exists
+wins. If none does, the hub starts with no servers and logs a warning naming
+F<config.json>.
 
 =head2 upstreams
 

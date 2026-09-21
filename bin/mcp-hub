@@ -28,6 +28,7 @@ MCP::Hub->new->start(@argv);
   mcp-hub token                        # print a fresh bearer token
 
   mcp-hub --config /path/config.json daemon
+  mcp-hub --config /path/config.yml daemon   # JSON or YAML, the extension decides
 
 =head1 DESCRIPTION
 
@@ -37,8 +38,14 @@ HTTP MCP servers (Streamable HTTP or HTTP+SSE) and hands each of them to the
 agents on the machine as its own endpoint.
 
 A global C<--config PATH> (or C<-c PATH>, or C<$MCP_HUB_CONFIG>) selects the
-configuration file for every command; the default is
-C<~/.config/mcp-hub/config.json>.
+configuration file for every command. The file may be JSON or YAML and its
+extension decides which: C<.yml> and C<.yaml> are read as YAML, anything else
+as JSON. Both spell the same configuration -- YAML only adds comments, so an
+entry can be annotated or commented out instead of deleted.
+
+With no C<--config> and no C<$MCP_HUB_CONFIG>, C<~/.config/mcp-hub> (or
+C<$XDG_CONFIG_HOME/mcp-hub>) is searched for F<config.json>, F<config.yml> and
+F<config.yaml>, in that order; the first that exists is used.
 
 =head1 COMMANDS
 

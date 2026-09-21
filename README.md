@@ -92,7 +92,8 @@ cpanm MCP::Hub
 ```
 
 This gives you the `mcp-hub` command. Write the same config as above at
-`~/.config/mcp-hub/config.json` and start it in the foreground:
+`~/.config/mcp-hub/config.json` (or, [as YAML](#json-or-yaml), `config.yml`) and
+start it in the foreground:
 
 ```bash
 mcp-hub daemon
@@ -460,6 +461,50 @@ never blocks the others.
 
 ## Configuration reference
 
+### JSON or YAML
+
+The config file is JSON or YAML, and **the extension decides**: `.yml` / `.yaml`
+is read as YAML, every other name — `.mcp.json`, no extension at all — as JSON.
+YAML is a second spelling of the same structure, not a second feature set: same
+keys, same validation, same error messages, `${VAR}` expansion and all. What it
+buys you is comments, so a server can be annotated, or switched off for an
+afternoon instead of deleted:
+
+```yaml
+mcpServers:
+  context7:
+    command: npx
+    args: ["-y", "@upstash/context7-mcp@latest"]
+  # playwright:            # off while I debug the browser cache
+  #   command: npx
+  #   args: ["@playwright/mcp@latest", "--headless"]
+  serper:
+    command: npx
+    args: ["-y", "serper-search-scrape-mcp-server@latest"]
+    env:
+      SERPER_API_KEY: ${SERPER_API_KEY}
+    hub:
+      idle_timeout: 120
+hub:
+  profiles:
+    full: { servers: ["*"], admin: true }
+  clients:
+    main: { token: "${HUB_TOKEN_MAIN}", profile: full }
+```
+
+Without `--config` / `$MCP_HUB_CONFIG` the hub looks for `config.json`, then
+`config.yml`, then `config.yaml` in `~/.config/mcp-hub/` and takes the first that
+exists. A file must hold a single YAML document; duplicate keys are an error,
+and no YAML tag can construct an object. `mcp-hub config` always prints JSON —
+that output is for MCP clients.
+
+The Docker image sets `MCP_HUB_CONFIG=/config/mcp.json`, so to use YAML there,
+mount the file under a YAML name and point the variable at it:
+
+```bash
+docker run … -v "$PWD/mcp.yml:/config/mcp.yml:ro" -e MCP_HUB_CONFIG=/config/mcp.yml raudssus/mcp-hub
+```
+
 ### `mcpServers` entries
 
 Exactly one of `command`, `class` or `url` is required.
@@ -516,8 +561,9 @@ start.
 To run the Docker image you need only Docker (or Podman) — everything else is in
 the image. For the CPAN install: Perl 5.20+,
 [`Mojolicious`](https://metacpan.org/pod/Mojolicious) 9.49+,
-[`MCP`](https://metacpan.org/pod/MCP) ≥ 0.15, `CryptX`. No process-management or
-YAML dependencies; everything else is core.
+[`MCP`](https://metacpan.org/pod/MCP) ≥ 0.15, `CryptX`, and the pure-Perl
+[`YAML::PP`](https://metacpan.org/pod/YAML::PP) (loaded only when a YAML config
+is read). No process-management dependencies; everything else is core.
 
 ## License
 

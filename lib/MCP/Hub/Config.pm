@@ -5,6 +5,7 @@ use Mojo::Base -base, -signatures;
 use Carp       qw(croak);
 use Mojo::File qw(path);
 use Mojo::JSON qw(decode_json);
+use Mojo::Util qw(decode);
 
 # ABSTRACT: Load, validate and normalize an MCP::Hub configuration
 
@@ -28,11 +29,9 @@ my %CLIENT_KEYS     = map { $_ => 1 } qw(token profile);
 
 sub from_file ($class, $file) {
   croak "config file not found: $file\n" unless -f $file;
-  my $json = eval { path($file)->slurp };
+  my $text = eval { path($file)->slurp };
   croak "cannot read config file $file: $@\n" if $@;
-  my $data = eval { decode_json($json) };
-  croak "invalid JSON in $file: $@\n" if $@;
-  return $class->from_data($data, $file);
+  return $class->from_data($class->_decode($file, $text), $file);
 }
 
 sub from_data ($class, $data, $source = 'config') {
@@ -45,6 +44,78 @@ sub server_names ($self) { return [map { $_->{name} } @{$self->servers}] }
 
 sub server ($self, $name) {
   return (grep { $_->{name} eq $name } @{$self->servers})[0];
+}
+
+# The file extension picks the syntax and nothing else does: .yml/.yaml are
+# YAML, every other name (including none at all) is JSON. Both decode into the
+# same data model and go through the same _parse, so YAML is a second spelling
+# of the configuration, never a second configuration surface.
+sub _decode ($class, $file, $text) {
+  return $class->_decode_yaml($file, $text) if $file =~ /\.ya?ml$/i;
+  my $data = eval { decode_json($text) };
+  croak "invalid JSON in $file: $@\n" if $@;
+  return $data;
+}
+
+# YAML::PP is a hard requirement of this distribution, but it is loaded only
+# when a YAML file is actually read, so a JSON-configured hub never pays for
+# it. This is a deliberate exception to "use at the top" -- do not hoist it.
+sub _decode_yaml ($class, $file, $text) {
+  unless (eval { require YAML::PP; 1 }) {
+    croak "cannot read $file: YAML configuration needs YAML::PP, which is not installed\n";
+  }
+
+  # decode_json takes UTF-8 bytes, YAML::PP takes characters. Decode here so
+  # both syntaxes hand the same characters to the validation.
+  my $chars = decode('UTF-8', $text);
+  croak "invalid UTF-8 in $file\n" unless defined $chars;
+
+  # Core schema only: no Perl schema is loaded, so a tag can never construct an
+  # object or run code. Booleans come out as plain 1/'' so that true/false
+  # behave exactly like their JSON counterparts, duplicate keys are refused,
+  # and a cyclic alias dies here instead of being walked forever below.
+  my $pp = YAML::PP->new(
+    boolean        => 'perl',
+    schema         => ['Core'],
+    cyclic_refs    => 'fatal',
+    duplicate_keys => 0,
+  );
+
+  my @docs = eval { $pp->load_string($chars) };
+  croak _yaml_error($file, $@) if $@;
+  croak "invalid YAML in $file: expected a single document, found ".scalar(@docs)."\n" if @docs > 1;
+
+  _assert_json_expressible($docs[0], '');
+  return $docs[0];
+}
+
+# YAML::PP reports a syntax error as a multi-line block. Fold it onto one line
+# in the spirit of the JSON error, keeping its line and column and dropping the
+# parser's own source location, which reads like a config line but is not.
+sub _yaml_error ($file, $error) {
+  my $detail = $error;
+  $detail =~ s/^Where\s*:.*$//mg;
+  $detail =~ s/\s+/ /g;
+  $detail =~ s/^\s+|\s+$//g;
+  $detail =~ s/(?: at \S+ line \d+\.?)+$//;
+  return "invalid YAML in $file: $detail\n";
+}
+
+# YAML can express things JSON cannot, a tagged object above all. The
+# configuration surface stays JSON-expressible, so anything that is not a plain
+# hash, array or scalar is refused with its path instead of reaching _parse.
+sub _assert_json_expressible ($data, $path) {
+  my $ref = ref $data or return;
+  _err($path, "unsupported YAML value ($ref): the configuration must be JSON-expressible")
+    unless $ref eq 'HASH' || $ref eq 'ARRAY';
+
+  if ($ref eq 'HASH') {
+    _assert_json_expressible($data->{$_}, length $path ? "$path.$_" : $_) for sort keys %$data;
+  }
+  else {
+    _assert_json_expressible($data->[$_], "$path\[$_]") for 0 .. $#$data;
+  }
+  return;
 }
 
 sub _parse ($self, $data) {
@@ -254,6 +325,7 @@ sub _err ($path, $message) {
   use MCP::Hub::Config;
 
   my $config = MCP::Hub::Config->from_file('~/.config/mcp-hub/config.json');
+  my $config = MCP::Hub::Config->from_file('~/.config/mcp-hub/config.yml');
   my $config = MCP::Hub::Config->from_data({mcpServers => {...}, hub => {...}});
 
   say $config->mode;                 # 'open' or 'clients'
@@ -261,7 +333,7 @@ sub _err ($path, $message) {
 
 =head1 DESCRIPTION
 
-L<MCP::Hub::Config> reads the one JSON file that configures an L<MCP::Hub>,
+L<MCP::Hub::Config> reads the one file that configures an L<MCP::Hub>,
 validates it, expands C<${VAR}> and C<${VAR:-default}> references, applies the
 defaults, and derives the authentication mode. It is pure data: the only I/O it
 performs is reading the file in L</from_file>.
@@ -269,6 +341,42 @@ performs is reading the file in L</from_file>.
 The configuration is a superset of C<.mcp.json>. An C<mcpServers> block on its
 own is a valid open-mode hub configuration, so an existing C<.mcp.json> can be
 handed to the hub unchanged.
+
+=head2 JSON or YAML
+
+The file may be written as JSON or as YAML; the extension decides, and nothing
+else does. C<.yml> and C<.yaml> are parsed as YAML, every other name -- and a
+file with no extension at all -- as JSON. YAML is a second spelling of the same
+structure, not a second configuration surface: both syntaxes decode to the same
+data model, go through the same validation and produce the same messages, so
+anything a YAML file can say a JSON file can say too. The reason to reach for
+it is that YAML has comments, so an entry can be annotated, or commented out
+for an afternoon instead of deleted.
+
+  # ~/.config/mcp-hub/config.yml
+  mcpServers:
+    context7:
+      command: npx
+      args: ["-y", "@upstash/context7-mcp"]
+    playwright:
+      command: npx
+      args: ["-y", "@playwright/mcp@latest"]
+      hub:
+        idle_timeout: 120
+  hub:
+    listen: http://127.0.0.1:3080
+
+YAML features that would break the "JSON-expressible" rule are refused rather
+than interpreted: a file must hold exactly one document, and a value that is
+not a plain mapping, sequence or scalar -- a tagged object, say -- is a
+configuration error naming its path. No Perl schema is loaded, so no tag can
+construct an object or run code, duplicate keys are an error, and a cyclic
+alias is fatal. C<true>/C<false> and integers behave exactly as they do in
+JSON, so C<always_on: true> and C<idle_timeout: 120> mean what they look like.
+
+A YAML syntax error is reported like its JSON counterpart, with the file and
+the parser's line and column: C<invalid YAML in /etc/mcp-hub.yml: Line : 7
+Column : 3 Message : ...>.
 
 C<${VAR}> and C<${VAR:-default}> are expanded in a server entry's C<command>,
 C<args>, C<env>, C<cwd>, C<url> and C<headers>, and in the hub block's
@@ -361,8 +469,13 @@ C<config> for data passed directly.
 
   my $config = MCP::Hub::Config->from_file($path);
 
-Read, decode and validate the JSON file at C<$path>. Dies with a clear message
-if the file is missing, is not valid JSON, or fails validation.
+Read, decode and validate the file at C<$path>. The extension picks the parser
+-- C<.yml> and C<.yaml> are YAML (L<YAML::PP>, loaded on demand), anything else
+is JSON -- and both go through the same validation as L</from_data>. Dies with
+a clear message if the file is missing, does not parse, or fails validation.
+
+This is the single entry point from a path to a validated configuration: give
+it a path and it does the right thing with it, whatever the syntax.
 
 =head2 from_data
 
@@ -385,6 +498,6 @@ Array reference of the configured server names, in order.
 
 =head1 SEE ALSO
 
-L<MCP::Hub>, L<MCP>.
+L<MCP::Hub>, L<MCP>, L<YAML::PP>.
 
 =cut

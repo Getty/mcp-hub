@@ -8,9 +8,10 @@ Revision history for MCP-Hub
     first use and stops them when idle, decides per client which of them it
     may use, and prints ready-to-paste client configuration. A lot of MCP
     for very little RAM.
-  - `${VAR}` and `${VAR:-default}` expand in server entries and in
-    `hub.listen`, `hub.cache_dir` and client tokens, so no secret has to
-    sit in the config file.
+  - Configuration in JSON or YAML, chosen by file extension; one data
+    model, the same validation and error messages for both. `${VAR}` and
+    `${VAR:-default}` expand in server entries and in `hub.listen`,
+    `hub.cache_dir` and client tokens, so no secret has to sit in the file.
   - Web setup page at `GET /`: ready-to-paste `.mcp.json`, plus each
     server's tools and instructions; token-gated in clients mode, the token
     accepted from the `Authorization` header only.
