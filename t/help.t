@@ -42,19 +42,29 @@ subtest 'clients mode: nothing leaks without a token' => sub {
     ->content_unlike(qr/\bhistory\b/, 'does not leak the history server')
     ->content_unlike(qr/\bsecret\b/,  'does not leak the secret server');
 
+  # A token in the query string signs nobody in: it would sit in access logs
+  # and browser history.
+  $t->get_ok('/?token=tok-main')->status_is(200)
+    ->element_exists('input[name=token]', 'still just the sign-in form')
+    ->content_unlike(qr/\bhistory\b/, 'a query-string token reveals no server')
+    ->content_unlike(qr/\bsecret\b/,  'a query-string token reveals no server');
+
+  # ...and neither does a form post; the old POST / route is gone.
+  $t->post_ok('/' => form => {token => 'tok-main'})->status_is(404);
+
   # A wrong token is rejected, still no leak.
-  $t->post_ok('/' => form => {token => 'nope'})->status_is(200)
+  $t->get_ok('/' => {Authorization => 'Bearer nope'})->status_is(200)
     ->content_like(qr/not recognised/, 'wrong token is reported')
     ->content_unlike(qr/\bhistory\b/, 'still no leak');
 
   # The worker sees history, its token and header, but not the secret server.
-  $t->post_ok('/' => form => {token => 'tok-worker'})->status_is(200)
+  $t->get_ok('/' => {Authorization => 'Bearer tok-worker'})->status_is(200)
     ->content_like(qr/history/,        'worker sees history')
     ->content_like(qr/tok-worker/,     'config carries the token')
     ->content_like(qr/Authorization/,  'config carries the auth header')
     ->content_unlike(qr/\bsecret\b/,   'worker does not see the secret server');
 
-  # A bearer header works just like the form.
+  # The admin sees everything.
   $t->get_ok('/' => {Authorization => 'Bearer tok-main'})->status_is(200)
     ->content_like(qr/history/, 'admin sees history')
     ->content_like(qr/secret/,  'admin (full) also sees secret');

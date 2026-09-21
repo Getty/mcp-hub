@@ -66,6 +66,44 @@ subtest '${VAR} expansion' => sub {
   is $e->{cwd}, '/home/tester/work',                'cwd tilde + expansion';
 };
 
+subtest '${VAR} expansion in the hub block' => sub {
+  local %ENV = %ENV;
+  delete $ENV{HUB_CACHE};
+  $ENV{HUB_TOKEN} = 'sk-hub';
+  $ENV{HUB_PORT}  = '3999';
+  $ENV{HOME}      = '/home/tester';
+
+  my $c = MCP::Hub::Config->from_data({
+    mcpServers => {x => {command => 'a'}},
+    hub        => {
+      listen    => 'http://0.0.0.0:${HUB_PORT}',
+      cache_dir => '${HUB_CACHE:-~/.cache/hub}',
+      profiles  => {full => {servers => ['*'], admin => \1}},
+      clients   => {main => {token => '${HUB_TOKEN}', profile => 'full'}},
+    },
+  });
+  is $c->listen,                 'http://0.0.0.0:3999',     'hub.listen expanded';
+  is $c->cache_dir,              '/home/tester/.cache/hub', 'hub.cache_dir default expanded, then tilde';
+  is $c->clients->{main}{token}, 'sk-hub',                  'client token expanded';
+  is $c->mode,                   'clients',                 'mode still derived from the clients block';
+};
+
+subtest 'an unset variable in a hub value is an error' => sub {
+  local %ENV = %ENV;
+  delete $ENV{DEFINITELY_UNSET_VAR};
+  eval {
+    MCP::Hub::Config->from_data({
+      mcpServers => {x => {command => 'a'}},
+      hub        => {
+        profiles => {full => {servers => ['*']}},
+        clients  => {main => {token => '${DEFINITELY_UNSET_VAR}', profile => 'full'}},
+      },
+    });
+  };
+  like $@, qr/DEFINITELY_UNSET_VAR is not set/, 'unset var in a token dies';
+  like $@, qr/hub\.clients\.main\.token/,       'error names the JSON path';
+};
+
 subtest 'unset variable without default is an error' => sub {
   local %ENV = %ENV;
   delete $ENV{DEFINITELY_UNSET_VAR};

@@ -53,12 +53,20 @@ volume for its cache:
 
 ```bash
 docker run -d --name mcp-hub \
-  -p 3080:3080 \
+  -p 127.0.0.1:3080:3080 \
   -v "$PWD/.mcp.json:/config/mcp.json:ro" \
   -v mcp-hub-cache:/cache \
-  -e SERPER_API_KEY=… \
+  --env-file .env \
   raudssus/mcp-hub
 ```
+
+Secrets stay out of the config: reference them as `${SERPER_API_KEY}` and put
+the values in `.env` (or pass single ones with `-e SERPER_API_KEY=…`).
+
+Publishing on `127.0.0.1` keeps the hub reachable from this machine only. A
+bare `-p 3080:3080` publishes it on **every** interface — in [open
+mode](#two-modes) that hands every tool and the admin API to the whole network.
+Only do that with a `clients` block in place.
 
 or, with the bundled `docker-compose.yml`:
 
@@ -124,6 +132,8 @@ After=network.target
 ExecStart=%h/perl5/bin/mcp-hub daemon
 Restart=on-failure
 Environment=MCP_HUB_CONFIG=%h/.config/mcp-hub/config.json
+# Secrets the config references as ${VAR} (API keys, client tokens); optional.
+EnvironmentFile=-%h/.config/mcp-hub/env
 
 [Install]
 WantedBy=default.target
@@ -144,9 +154,18 @@ Because everything is served over HTTP, the hub also serves a **setup page** at
 - for each server, what it does (its own MCP `instructions`) and its tools.
 
 In **clients mode** the page shows only a sign-in field until you paste your
-token (or send an `Authorization: Bearer …` header). Once signed in, it shows
-exactly the servers *your* profile allows and a config that already carries your
-token — so it never reveals which servers exist to someone without a key.
+token. Once signed in, it shows exactly the servers *your* profile allows and a
+config that already carries your token — so it never reveals which servers exist
+to someone without a key.
+
+The token travels in the `Authorization: Bearer …` header and nowhere else: the
+sign-in field re-requests the page with that header, so the token never lands in
+a URL, an access log or the browser history. A `?token=…` query parameter is
+ignored. From a script, `curl -H "Authorization: Bearer …" http://127.0.0.1:3080/`
+gives you the same page.
+
+A server the hub could not start is shown as **Unavailable** with the reason,
+rather than being hidden.
 
 ```
 ┌───────────────────────────────────────────────┐
@@ -191,8 +210,8 @@ The mode is **derived**, never declared:
                     "tools":   { "serper": { "deny": ["scrape"] } } }
     },
     "clients": {
-      "main":     { "token": "…", "profile": "full" },
-      "worker-1": { "token": "…", "profile": "research" }
+      "main":     { "token": "${HUB_TOKEN_MAIN}",     "profile": "full" },
+      "worker-1": { "token": "${HUB_TOKEN_WORKER_1}", "profile": "research" }
     }
   }
 }
@@ -204,6 +223,12 @@ Generate a token:
 mcp-hub token
 ```
 
+A token can be written into the config literally, but it is better kept out of
+it: reference it as `${VAR}` as above and provide the value through the
+environment — an `.env` file passed with `--env-file` / `env_file:` under
+Docker, `EnvironmentFile=` in the systemd unit. An unset variable is a config
+error at start, so a hub never comes up with an empty token.
+
 Export a specific client's config (adds the `Authorization: Bearer …` header):
 
 ```bash
@@ -212,7 +237,8 @@ mcp-hub config --client worker-1
 
 A profile that does not include a server gets **404** for that server's path, so
 a client cannot even tell the server exists. `allow`/`deny` filter individual
-tools, applied to both `tools/list` and `tools/call`.
+tools, applied to both `tools/list` and `tools/call`. Prompts and resources are
+not filtered individually — they follow `servers` alone.
 
 ## Endpoints
 
@@ -221,8 +247,18 @@ tools, applied to both `tools/list` and `tools/call`.
 | `GET /` | The web setup page (public; token-gated in clients mode). |
 | `POST /<name>` | One endpoint per upstream, tool names unchanged. |
 | `POST /all` | Every tool and prompt the client may see, as `<name>__<tool>`. |
-| `GET /_hub/status` | Per-upstream state, pid, RSS, call counts; known clients. |
-| `POST /_hub/refresh` | Re-fetch manifests. Body `{"name": "context7"}` or empty for all. |
+| `GET /_hub/status` | Per-upstream state, pid, RSS, call counts, failure reason; known clients and when each was last seen. Needs an `admin` profile. |
+| `POST /_hub/refresh` | Re-fetch manifests. Body `{"name": "context7"}` or empty for all. Needs an `admin` profile. |
+
+The status codes carry meaning, and none of them is ever softened into an empty
+tool list:
+
+| Status | Meaning |
+|---|---|
+| `401` | Clients mode, and the bearer token is missing or wrong (and there is no `public_profile`). |
+| `403` | The admin API, called with a profile that is not `admin`. |
+| `404` | The server is not in your profile — indistinguishable from a server that does not exist. |
+| `503` | The server is yours, but it is still fetching its first manifest, or it has `failed`. The body names the reason. |
 
 ## CLI
 
@@ -230,12 +266,42 @@ tools, applied to both `tools/list` and `tools/call`.
 |---|---|
 | `mcp-hub daemon` | Run the hub in the foreground (single process). |
 | `mcp-hub config [--client NAME] [--all] [--url BASE]` | Print `mcpServers` JSON. |
-| `mcp-hub status [--client NAME]` | Table of the running hub's upstreams and clients. |
-| `mcp-hub refresh [NAME]` | Re-fetch manifests. |
+| `mcp-hub status [--client NAME] [--url BASE]` | Table of the running hub's upstreams and clients. |
+| `mcp-hub refresh [NAME] [--client NAME] [--url BASE]` | Re-fetch manifests; also the way to retry a `failed` server. |
 | `mcp-hub token` | Print a fresh random bearer token. |
 
 A global `--config PATH` (or `-c PATH`, or `$MCP_HUB_CONFIG`) selects the config
 file for every command.
+
+`status` and `refresh` talk to the running daemon at the config's `listen`
+address (a wildcard such as `0.0.0.0` or `[::]` is reached over loopback). If the
+daemon listens somewhere else — `daemon -l …`, a remapped Docker port, another
+machine — point them at it with `--url http://host:port`. In clients mode they
+authenticate as the first `admin` client, or the one named with `--client`.
+
+## Troubleshooting
+
+Start with `mcp-hub status` (or the `hub_status` tool): it lists every
+configured server with its state, and for a `failed` one a `MESSAGE` column with
+the reason.
+
+- **A server answers `503`.** It is either still fetching its first manifest
+  (just retry) or it has `failed`. A server fails when its entry cannot be built
+  — a `class` that does not load, for instance — or when its process exits three
+  times within five seconds. A broken entry never takes the hub down and never
+  silently disappears: it stays in `status`, on the setup page and in
+  `mcp-hub config`, and says why.
+- **Bringing a `failed` server back.** Fix the cause, then `mcp-hub refresh NAME`
+  (or the `hub_refresh` tool). An ordinary tool call deliberately does *not*
+  restart a crash-looping server; it returns an error that names the refresh
+  command.
+- **Seeing what a child process prints.** A stdio server's stderr is logged at
+  `debug`, prefixed with `[name]`; unexpected exits are logged at `warn` and name
+  the command when it died during start-up (the usual "command not found"). The
+  log level is Mojolicious': everything by default, `info` and up with
+  `mcp-hub daemon -m production`, or pick one with `MOJO_LOG_LEVEL=debug`.
+- **`status`/`refresh` say the hub is not running.** They look at the config's
+  `listen` address; use `--url` if the daemon listens elsewhere.
 
 ## Native Perl servers
 
@@ -293,9 +359,14 @@ hub spawns run *inside* the container, so it ships the runtimes they need — No
 `env_file`). See [Quick start](#quick-start) for the basic `docker run` and
 `docker compose` invocations.
 
-- **It binds `0.0.0.0`.** The container's `CMD` overrides the `127.0.0.1`
-  configuration default, so `-p` actually works. To change the port keep the
-  flag: `… raudssus/mcp-hub daemon -l http://0.0.0.0:9000`.
+- **It binds `0.0.0.0` inside the container.** The container's `CMD` overrides
+  the `127.0.0.1` configuration default, so `-p` actually works. To change the
+  port keep the flag: `… raudssus/mcp-hub daemon -l http://0.0.0.0:9000`. Who can
+  reach it is decided by what you publish: `-p 127.0.0.1:3080:3080` is this
+  machine only, `-p 3080:3080` is everyone who can reach the host — use
+  [clients mode](#two-modes) for that.
+- **`docker exec mcp-hub mcp-hub status`** (and `refresh`, `config`) work inside
+  the running container.
 - **The `/cache` volume holds everything regenerable** — the manifest cache,
   on-demand Node versions, and the npm/uv/deno/bun package caches — so restarts
   are warm. Delete it to reset; you'll see files appear there as they're fetched.
@@ -415,7 +486,8 @@ Exactly one of `command`, `class` or `url` is required.
 ```
 
 `${VAR}` and `${VAR:-default}` are expanded in `command`, `args`, `env`, `cwd`,
-`url` and `headers`. An unset variable without a default is a config error at
+`url` and `headers`, and in the `hub` block in `listen`, `cache_dir` and each
+client's `token`. An unset variable without a default is a config error at
 start.
 
 ### `hub` block

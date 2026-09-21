@@ -90,6 +90,23 @@ subtest 'clients mode: missing or wrong token is 401' => sub {
   is $c2->rendered->{status}, 401, 'wrong token 401';
 };
 
+subtest 'a resolved token records last_seen' => sub {
+  my $auth = MCP::Hub::Auth->new(config => $clients_config);
+  is_deeply $auth->last_seen, {}, 'nothing seen yet';
+
+  my $before = time;
+  my $c      = FakeController->new;
+  $c->req->headers->authorization('Bearer tok-worker');
+  $auth->authenticate($c);
+  ok $auth->last_seen->{worker} >= $before, 'the matching client is stamped with epoch seconds';
+  is_deeply [keys %{$auth->last_seen}], ['worker'], 'only the matching client';
+
+  my $bad = FakeController->new;
+  $bad->req->headers->authorization('Bearer nope');
+  $auth->authenticate($bad);
+  is_deeply [keys %{$auth->last_seen}], ['worker'], 'a wrong token stamps nothing';
+};
+
 subtest 'public_profile catches tokenless requests' => sub {
   my $config = MCP::Hub::Config->from_data({
     mcpServers => {context7 => {command => 'x'}, secret => {command => 'z'}},

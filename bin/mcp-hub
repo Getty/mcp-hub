@@ -53,13 +53,14 @@ Print the C<mcpServers> JSON an agent needs. See L<MCP::Hub::Command::config>.
 
 =head2 status
 
-Print a table of the running hub's upstreams and clients. See
+Print a table of the running hub's upstreams and clients. C<--url BASE> reaches
+a hub that is not at the configured listen address. See
 L<MCP::Hub::Command::status>.
 
 =head2 refresh
 
-Ask the running hub to re-fetch upstream manifests. See
-L<MCP::Hub::Command::refresh>.
+Ask the running hub to re-fetch upstream manifests, and to try a failed upstream
+once more. Takes C<--url BASE> as well. See L<MCP::Hub::Command::refresh>.
 
 =head2 token
 

@@ -8,8 +8,17 @@ Revision history for MCP-Hub
     first use and stops them when idle, decides per client which of them it
     may use, and prints ready-to-paste client configuration. A lot of MCP
     for very little RAM.
+  - `${VAR}` and `${VAR:-default}` expand in server entries and in
+    `hub.listen`, `hub.cache_dir` and client tokens, so no secret has to
+    sit in the config file.
   - Web setup page at `GET /`: ready-to-paste `.mcp.json`, plus each
-    server's tools and instructions; token-gated in clients mode.
+    server's tools and instructions; token-gated in clients mode, the token
+    accepted from the `Authorization` header only.
+  - A server that cannot be built or that crash-loops stays visible as
+    `failed` with its reason (`mcp-hub status`, `hub_status`, setup page,
+    503 body) instead of disappearing; `mcp-hub refresh NAME` retries it.
+  - `mcp-hub status` and `mcp-hub refresh` take `--url` to reach a hub that
+    does not listen where the config says.
   - Native in-process Perl servers, no subprocess per session:
     ClaudeHistory, ClaudeSessions and Status.
   - Docker image (`raudssus/mcp-hub`), batteries-included (Node, Python,

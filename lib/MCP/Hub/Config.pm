@@ -144,8 +144,9 @@ sub _parse_hub ($self, $hub) {
     _err("hub.$key", "unknown key '$key'") unless $HUB_KEYS{$key};
   }
 
-  $self->listen($hub->{listen})                             if defined $hub->{listen};
-  $self->cache_dir(_tilde($hub->{cache_dir}))               if defined $hub->{cache_dir};
+  $self->listen($self->_expand($hub->{listen}, 'hub.listen')) if defined $hub->{listen};
+  $self->cache_dir(_tilde($self->_expand($hub->{cache_dir}, 'hub.cache_dir')))
+    if defined $hub->{cache_dir};
   $self->idle_timeout(_int('hub.idle_timeout', $hub->{idle_timeout}))       if exists $hub->{idle_timeout};
   $self->request_timeout(_int('hub.request_timeout', $hub->{request_timeout})) if exists $hub->{request_timeout};
 
@@ -203,10 +204,11 @@ sub _parse_client ($self, $name, $client) {
   for my $key (sort keys %$client) {
     _err("$path.$key", "unknown key '$key'") unless $CLIENT_KEYS{$key};
   }
-  _err($path, "'token' is required")   unless defined $client->{token} && length $client->{token};
+  my $token = $self->_expand($client->{token}, "$path.token");
+  _err($path, "'token' is required")   unless defined $token && length $token;
   _err($path, "'profile' is required") unless defined $client->{profile};
   _err("$path.profile", "unknown profile '$client->{profile}'") unless $self->profiles->{$client->{profile}};
-  return {name => $name, token => $client->{token}, profile => $client->{profile}};
+  return {name => $name, token => $token, profile => $client->{profile}};
 }
 
 sub _expand ($self, $value, $path) {
@@ -268,6 +270,13 @@ The configuration is a superset of C<.mcp.json>. An C<mcpServers> block on its
 own is a valid open-mode hub configuration, so an existing C<.mcp.json> can be
 handed to the hub unchanged.
 
+C<${VAR}> and C<${VAR:-default}> are expanded in a server entry's C<command>,
+C<args>, C<env>, C<cwd>, C<url> and C<headers>, and in the hub block's
+C<listen>, C<cache_dir> and each client's C<token> -- so a deployment can keep
+its tokens and secrets in the environment rather than in the file. A variable
+that is not set and has no default is a configuration error, named with its
+path.
+
 Every problem is reported with the JSON path where it was found, for example
 C<Invalid configuration at mcpServers.playwright.hub.idle_timeout: must be an
 integer>, so a typo surfaces at start-up instead of hours later.
@@ -279,13 +288,14 @@ integer>, so a typo surfaces at start-up instead of hours later.
   my $dir = $config->cache_dir;
 
 Directory the manifest cache lives under. Defaults to C<$XDG_CACHE_HOME/mcp-hub>
-or C<~/.cache/mcp-hub>. A leading C<~/> is expanded.
+or C<~/.cache/mcp-hub>. C<${VAR}> is expanded, then a leading C<~/>.
 
 =head2 clients
 
   my $clients = $config->clients;
 
-Hash reference of C<< name => { name, token, profile } >>. Empty in open mode.
+Hash reference of C<< name => { name, token, profile } >>, the token with
+C<${VAR}> expanded. Empty in open mode.
 
 =head2 idle_timeout
 
@@ -293,7 +303,8 @@ Seconds of no requests before a stdio upstream is stopped. Defaults to C<300>.
 
 =head2 listen
 
-Listen address for the daemon. Defaults to C<http://127.0.0.1:3080>.
+Listen address for the daemon, with C<${VAR}> expanded. Defaults to
+C<http://127.0.0.1:3080>.
 
 =head2 mode
 
@@ -315,9 +326,29 @@ Seconds to wait for an upstream response. Defaults to C<60>.
 =head2 servers
 
 Array reference of normalized server entries, in name order. Each entry is a
-hash reference with C<name>, C<type> (C<stdio> or C<perl>) and the type-specific
-keys (C<command>/C<args>/C<env>/C<cwd> for stdio, C<class>/C<class_args> for
-perl), plus any per-entry C<idle_timeout>, C<request_timeout> and C<always_on>.
+hash reference with C<name>, a C<type> derived from which of C<command>, C<url>
+or C<class> it carries, and the type-specific keys:
+
+=over 2
+
+=item C<stdio> (from C<command>)
+
+C<command>, C<args>, C<env> and C<cwd>.
+
+=item C<http> or C<sse> (from C<url>)
+
+C<url> and C<headers>. A C<url> entry is Streamable HTTP unless its C<type> says
+C<sse>, the older HTTP+SSE transport; C<streamable-http> and C<streamable_http>
+are accepted spellings of C<http>.
+
+=item C<perl> (from C<class>)
+
+C<class> and C<class_args> (the entry's C<args>, a JSON object here).
+
+=back
+
+Plus any per-entry C<idle_timeout>, C<request_timeout> and C<always_on> from its
+C<hub> block.
 
 =head2 source
 

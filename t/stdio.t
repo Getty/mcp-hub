@@ -1,6 +1,7 @@
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use Mojo::File    qw(curfile tempdir);
+use Mojo::Log;
 use Mojo::Promise;
 use MCP::Hub::Upstream::Stdio;
 
@@ -119,6 +120,67 @@ subtest 'failed after three quick exits' => sub {
   is $up->state, 'failed', 'three exits within the window mark it failed';
   $up->stop;
   settle;
+};
+
+subtest 'a command that cannot be executed is logged loudly' => sub {
+  my $dir = tempdir;
+  my $up  = MCP::Hub::Upstream::Stdio->new(
+    name      => 'missing',
+    config    => {type => 'stdio', command => "$dir/definitely-not-a-binary"},
+    cache_dir => "$dir",
+  );
+
+  my @lines;
+  my $log = Mojo::Log->new;
+  $log->unsubscribe('message');
+  $log->on(message => sub ($l, $level, @msg) { push @lines, "$level @msg" });
+  $up->log($log);
+
+  my $out = _await($up->start_p);
+  ok $out->{err}, 'start rejects';
+  ok +(grep { /^(?:warn|error) / && /definitely-not-a-binary/ } @lines),
+    'the missing command is named at warn or error level'
+    or diag explain \@lines;
+
+  # Where SIGCHLD is ignored the kernel reaps the child itself, waitpid fails
+  # with ECHILD and $? is -1 -- which must not be reported as "signal 127".
+  {
+    local $SIG{CHLD} = 'IGNORE';
+    @lines = ();
+    my $ignored = MCP::Hub::Upstream::Stdio->new(
+      name      => 'missing',
+      config    => {type => 'stdio', command => "$dir/definitely-not-a-binary"},
+      cache_dir => "$dir",
+    );
+    $ignored->log($log);
+    _await($ignored->start_p);
+    ok +(grep { /^(?:warn|error) / && /definitely-not-a-binary/ } @lines),
+      'the command is named even when the child is reaped for us';
+    ok !(grep { /signal 127/ } @lines), 'and no signal number is invented'
+      or diag explain \@lines;
+  }
+};
+
+subtest 'failed is left only by an explicit refresh' => sub {
+  my $up = upstream;
+  _await($up->call_tool('exit', {})) for 1 .. 3;
+  is $up->state, 'failed', 'failed after three quick exits';
+
+  # An ordinary call must not silently respawn a failed upstream.
+  my $blocked = _await($up->call_tool('echo', {msg => 'hi'}));
+  ok ${$blocked->{isError}}, 'a call against a failed upstream is an error result';
+  like $blocked->{content}[0]{text}, qr/refresh/, 'the error says how to retry';
+  is $up->stats->{pid}, undef, 'and nothing was spawned';
+  is $up->state, 'failed', 'still failed';
+
+  # An explicit refresh is the admin's "try again".
+  _await($up->refresh_p);
+  is $up->state, 'ready', 'refresh revives it';
+  is _await($up->call_tool('echo', {msg => 'back'}))->{content}[0]{text}, 'back', 'calls work again';
+
+  $up->stop;
+  settle;
+  is $up->state, 'stopped', 'a later stop leaves it stopped, not failed';
 };
 
 subtest 'list_changed triggers a refresh' => sub {

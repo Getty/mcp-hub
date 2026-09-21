@@ -50,13 +50,17 @@ sub _load ($self) {
 
 L<MCP::Hub::Upstream::Perl> mounts any L<MCP::Server> subclass as an upstream
 without a subprocess. The class named in the configuration is loaded with
-L<Mojo::Loader> and instantiated once; its instance becomes L</server> and
-answers C<tools/list> itself, so there is no manifest and no cache.
+L<Mojo::Loader> and instantiated once; its instance becomes
+L<MCP::Hub::Upstream/server> and answers C<tools/list> itself, so there is no
+manifest and no cache. A class that cannot be loaded, or is not an
+L<MCP::Server>, makes the constructor die -- the hub turns that entry into a
+C<failed> upstream carrying the reason.
 
 If the class has a C<hub> attribute -- as L<MCP::Hub::Native::Status> does -- the
 L<MCP::Hub> instance is injected into its constructor.
 
-The state is always C<ready>; L</stop> and L</refresh_p> are no-ops.
+The state is always C<ready>; L<MCP::Hub::Upstream/stop> and
+L<MCP::Hub::Upstream/refresh_p> are no-ops.
 
 =head1 METHODS
 

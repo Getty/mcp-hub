@@ -5,6 +5,7 @@ use Mojo::Base 'Mojolicious', -signatures;
 use MCP::Hub::Aggregate;
 use MCP::Hub::Auth;
 use MCP::Hub::Config;
+use MCP::Hub::Facade::Server;
 use MCP::Hub::Help;
 use MCP::Hub::Upstream;
 use MCP::Hub::Upstream::Perl;
@@ -46,11 +47,12 @@ sub startup ($self) {
 # --- introspection / actions (used by routes and the Status native) --------
 
 sub status_report ($self) {
+  my $seen = $self->auth ? $self->auth->last_seen : {};
   return {
     mode      => $self->hub_config->mode,
     upstreams => [map { $_->status_row } @{$self->upstreams}],
     clients   => [
-      map { {name => $_->{name}, profile => $_->{profile}, last_seen => $_->{last_seen}} }
+      map { {name => $_->{name}, profile => $_->{profile}, last_seen => $seen->{$_->{name}}} }
         sort { $a->{name} cmp $b->{name} } values %{$self->hub_config->clients}
     ],
   };
@@ -141,7 +143,7 @@ sub _build_upstreams ($self) {
     if (my $err = $@) {
       chomp $err;
       $self->log->error("failed to build upstream $entry->{name}: $err");
-      next;
+      $up = $self->_broken_upstream($entry, $err);
     }
 
     push @ups, $up;
@@ -152,6 +154,22 @@ sub _build_upstreams ($self) {
   $self->upstreams(\@ups);
   $self->upstreams_by_name(\%by);
   return $self;
+}
+
+sub _broken_upstream ($self, $entry, $error) {
+  # A misconfigured entry keeps its place as a failed upstream: it shows up in
+  # the status report and answers 503 with the reason, instead of vanishing into
+  # an indistinguishable 404. The daemon still starts.
+  my $up = MCP::Hub::Upstream->new(
+    name   => $entry->{name},
+    config => $entry,
+    hub    => $self,
+    log    => $self->log,
+    error  => $error,
+    state  => 'failed',
+  );
+  $up->server(MCP::Hub::Facade::Server->new(name => $entry->{name}, version => '0.0.0'));
+  return $up;
 }
 
 sub _attach_tool_filter ($self, $up) {
@@ -180,10 +198,9 @@ sub _setup_routes ($self) {
   my $r = $self->routes;
 
   # Public help / landing page, outside the auth bridge. In clients mode it
-  # shows only a login form until a valid token is supplied, so it never leaks
-  # which servers exist.
-  $r->get('/'  => sub ($c) { $self->_route_help($c) });
-  $r->post('/' => sub ($c) { $self->_route_help($c) });
+  # shows only a login form until a valid Authorization header is supplied, so
+  # it never leaks which servers exist.
+  $r->get('/' => sub ($c) { $self->_route_help($c) });
 
   my $under = $r->under('/' => sub ($c) { $self->auth->authenticate($c) });
 
@@ -230,7 +247,8 @@ sub _route_server ($self, $c, $up, $action) {
   return $c->render(json => {error => 'Not found'}, status => 404)
     unless $self->auth->allows_server($profile, $up->name);
 
-  return $c->render(json => {error => "upstream '@{[$up->name]}' failed"}, status => 503)
+  return $c->render(json => {error => "upstream '@{[$up->name]}' failed" . ($up->error ? ': ' . $up->error : '')},
+    status => 503)
     if $up->state eq 'failed';
 
   return $c->render(json => {error => "upstream '@{[$up->name]}' is not ready yet"}, status => 503)
@@ -262,7 +280,10 @@ sub _route_refresh ($self, $c) {
 # --- helpers ---------------------------------------------------------------
 
 sub _base_url ($listen) {
-  (my $base = $listen) =~ s{//\*}{//127.0.0.1};
+  # A wildcard or any-address listen address is not an address a client can
+  # call: rewrite it to the matching loopback address.
+  (my $base = $listen) =~ s{//(?:\*|0\.0\.0\.0)(?=[:/?]|$)}{//127.0.0.1};
+  $base =~ s{//\[::\](?=[:/?]|$)}{//[::1]};
   $base =~ s{/+$}{};
   return $base;
 }
@@ -305,7 +326,8 @@ someone is using it.
 Because everything is served over HTTP, the hub also serves a setup page at
 C<GET /> (see L<MCP::Hub::Help>) that shows a user exactly what to paste into
 their client -- token-gated in clients mode, so it never reveals which servers
-exist to someone without a key.
+exist to someone without a key. The token is only ever read from an
+C<Authorization: Bearer> header, never from the URL.
 
 See L<mcp-hub> for the command line and F<README.md> for the full story.
 
@@ -367,7 +389,11 @@ used.
 
 =head2 upstreams
 
-Array reference of L<MCP::Hub::Upstream> objects, in configuration order.
+Array reference of L<MCP::Hub::Upstream> objects, in server-name order (the
+order L<MCP::Hub::Config/servers> normalizes to). An entry that could not be
+built at all keeps its place as a C<failed> upstream carrying the reason in
+L<MCP::Hub::Upstream/error>, so one broken entry is visible in the status report
+and on its own endpoint instead of taking the daemon down or disappearing.
 
 =head2 upstreams_by_name
 
@@ -401,9 +427,10 @@ Rebuild the C</all> server from the current upstreams.
   $hub->start_background_fetches;
 
 Start any C<always_on> upstreams and kick off a one-off background manifest
-fetch for every stdio upstream without a cached manifest. Called by the
-C<daemon> command, so that C<config>, C<status>, C<token> and C<refresh> never
-spawn a child just by loading the application.
+fetch for every stdio and HTTP upstream without a cached manifest (a stdio child
+is stopped again right afterwards). Called by the C<daemon> command, so that
+C<config>, C<status>, C<token> and C<refresh> never spawn a child just by loading
+the application.
 
 =head2 startup
 
@@ -412,7 +439,9 @@ the aggregate, and mount the routes. It starts no upstream itself.
 
 =head2 status_report
 
-The structure behind C<GET /_hub/status> and the C<hub_status> tool.
+The structure behind C<GET /_hub/status> and the C<hub_status> tool: the mode, a
+row per upstream (L<MCP::Hub::Upstream/status_row>) and a row per client with
+its C<profile> and the C<last_seen> epoch of its last authenticated request.
 
 =head1 SEE ALSO
 

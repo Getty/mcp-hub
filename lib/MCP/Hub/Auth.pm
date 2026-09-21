@@ -7,6 +7,9 @@ use Crypt::Misc qw(slow_eq);
 # ABSTRACT: Resolve a request to a profile and filter what it may see
 
 has 'config';
+# Client name -> epoch of the last request that authenticated as it. Kept here,
+# not on the config's client hash, so it survives a configuration swap.
+has last_seen => sub { {} };
 
 my $OPEN_PROFILE = {name => 'open', servers => ['*'], tools => {}, admin => 1};
 
@@ -22,6 +25,7 @@ sub authenticate ($self, $c) {
 
   my $token = _bearer($c);
   if (defined $token and my $client = $self->resolve_client($token)) {
+    $self->last_seen->{$client->{name}} = time;
     $c->stash('mcp.profile' => $config->profiles->{$client->{profile}}, 'mcp.client' => $client->{name});
     return 1;
   }
@@ -127,6 +131,15 @@ client cannot even tell it exists.
 
 The L<MCP::Hub::Config> the decisions are made against.
 
+=head2 last_seen
+
+  my $epoch = $auth->last_seen->{worker};
+
+Hash reference of client name to the epoch seconds of the last request that
+authenticated as that client, stamped by L</authenticate>. It lives here rather
+than on the configuration's client hash, so that replacing the configuration
+does not lose it; C<GET /_hub/status> and C<mcp-hub status> report it.
+
 =head1 METHODS
 
 =head2 allows_server
@@ -140,8 +153,9 @@ True if the profile's C<servers> list includes the server (or C<"*">).
   my $ok = $auth->authenticate($c);
 
 Resolve the request to a profile and store it in the stash as C<mcp.profile>
-(and the client name as C<mcp.client>). Returns true on success. In clients mode
-with no valid token and no public profile it renders a C<401> and returns false.
+(and the client name as C<mcp.client>). Returns true on success. A token that
+resolves to a client also stamps L</last_seen>. In clients mode with no valid
+token and no public profile it renders a C<401> and returns false.
 
 =head2 filter_aggregate
 

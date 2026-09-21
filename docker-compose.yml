@@ -13,7 +13,10 @@ services:
     # tini is built into the image as PID 1, so no `init: true` is needed to
     # reap the stdio upstream children.
     ports:
-      - "3080:3080"
+      # Reachable from this machine only. A bare "3080:3080" publishes the hub
+      # on every interface -- in open mode (no `clients` block) that hands every
+      # tool and the admin API to the whole network. Set up clients first.
+      - "127.0.0.1:3080:3080"
     volumes:
       # Your servers. A plain .mcp.json (just an "mcpServers" block) works.
       - ./.mcp.json:/config/mcp.json:ro
@@ -24,9 +27,13 @@ services:
       # Uncomment to allow "command: docker run ..." upstreams (the CLI is in
       # the image; it only works with the daemon socket mounted):
       # - /var/run/docker.sock:/var/run/docker.sock
+    # Secrets are referenced as ${VAR} in your .mcp.json and read from the
+    # container's environment, so they never sit in the config file. Keep them
+    # in a .env next to this file and uncomment:
+    # env_file:
+    #   - .env
     environment:
-      # Upstream secrets are referenced as ${VAR} in your .mcp.json and read
-      # from the environment. Add them here (or use `env_file: [.env]`), e.g.:
+      # ...or list single ones here, e.g.:
       # - CONTEXT7_API_KEY=${CONTEXT7_API_KEY}
       - MCP_HUB_CONFIG=/config/mcp.json
     restart: unless-stopped

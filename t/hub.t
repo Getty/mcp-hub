@@ -129,6 +129,48 @@ subtest 'clients mode: tokens, profiles, 401/404/403' => sub {
   $t->get_ok('/_hub/status' => {Authorization => 'Bearer tok-main'})->status_is(200)
     ->json_is('/mode', 'clients');
   $t->get_ok('/_hub/status' => {Authorization => 'Bearer tok-worker'})->status_is(403);
+
+  # Every client that authenticated above is stamped with a last_seen.
+  my %seen = map { $_->{name} => $_ } @{$app->status_report->{clients}};
+  ok $seen{main}{last_seen},   'status reports last_seen for main';
+  ok $seen{worker}{last_seen}, 'status reports last_seen for worker';
+};
+
+subtest 'an upstream that cannot be built stays visible' => sub {
+  my %servers = (
+    broken  => {class => 'No::Such::Native::Class'},
+    history => {class => 'MCP::Hub::Native::ClaudeHistory', args => {root => $FIXTURES}},
+  );
+  my $rpc = {jsonrpc => '2.0', id => 1, method => 'tools/list', params => {}};
+
+  my $app = MCP::Hub->new(hub_config_input => {mcpServers => \%servers});
+  my $t   = Test::Mojo->new($app);
+
+  my ($row) = grep { $_->{name} eq 'broken' } @{$app->status_report->{upstreams}};
+  ok $row, 'the broken entry is still reported in the status';
+  is $row->{state}, 'failed', 'reported as failed';
+  like $row->{error}, qr/No::Such::Native::Class/, 'with the reason';
+
+  # Its endpoint says why instead of pretending the server does not exist.
+  $t->post_ok('/broken' => json => $rpc)->status_is(503)
+    ->json_like('/error', qr/No::Such::Native::Class/);
+
+  # The healthy servers are unaffected.
+  $t->post_ok('/history' => json => $rpc)->status_is(200);
+
+  # The setup page shows it as unavailable rather than hiding it.
+  $t->get_ok('/')->status_is(200)->content_like(qr/Unavailable/, 'setup page marks it unavailable');
+
+  # A profile that may not see it still gets a 404, not a 503.
+  my $gated = MCP::Hub->new(hub_config_input => {
+    mcpServers => \%servers,
+    hub        => {
+      profiles => {limited => {servers => ['history']}},
+      clients  => {worker => {token => 'tok-worker', profile => 'limited'}},
+    },
+  });
+  Test::Mojo->new($gated)
+    ->post_ok('/broken' => {Authorization => 'Bearer tok-worker'} => json => $rpc)->status_is(404);
 };
 
 subtest 'refresh via the admin API' => sub {

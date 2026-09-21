@@ -71,6 +71,7 @@ sub start_p ($self) {
     $self->state('stopped');
     delete $self->{start_promise};
     $done->reject("$err");
+    return;    # never hand the rejected promise back into the chain
   });
 
   return $done;

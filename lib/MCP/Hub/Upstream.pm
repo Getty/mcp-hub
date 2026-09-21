@@ -11,6 +11,7 @@ use Mojo::Promise;
 
 has 'name';
 has 'config';
+has 'error';
 has 'hub';
 has log       => sub { Mojo::Log->new };
 has 'server';
@@ -35,7 +36,12 @@ sub manifest_fetched_at ($self) { return $self->{manifest_fetched_at} }
 sub always_on ($self) { return $self->config->{always_on} ? 1 : 0 }
 
 # Default lifecycle -- subclasses override what they need.
-sub start_p   ($self) { return Mojo::Promise->resolve($self) }
+sub start_p ($self) {
+  return Mojo::Promise->reject("upstream @{[$self->name]}: " . ($self->error // 'failed'))
+    if $self->state eq 'failed';
+  return Mojo::Promise->resolve($self);
+}
+
 sub stop      ($self) { return $self }
 sub refresh_p ($self) { return Mojo::Promise->resolve($self) }
 sub touch     ($self) { $self->last_used(time); return $self }
@@ -172,6 +178,7 @@ sub status_row ($self) {
     name                => $self->name,
     type                => $self->type,
     state               => $self->state,
+    (defined $self->error ? (error => $self->error) : ()),
     pid                 => $self->stats->{pid},
     rss_kb              => $self->rss_kb,
     manifest_fetched_at => $self->{manifest_fetched_at},
@@ -200,17 +207,37 @@ sub _rss ($pid) {
 
 =head1 DESCRIPTION
 
-L<MCP::Hub::Upstream> is the common interface for the two kinds of upstream the
-hub mounts: a stdio child process (L<MCP::Hub::Upstream::Stdio>) and an
-in-process Perl server (L<MCP::Hub::Upstream::Perl>). Each presents its tools,
-prompts and resources through an L<MCP::Server> stored in L</server>, which the
-hub mounts at C</< name >>.
+L<MCP::Hub::Upstream> is the common interface for the three kinds of upstream the
+hub mounts: a stdio child process (L<MCP::Hub::Upstream::Stdio>), a remote HTTP
+server (L<MCP::Hub::Upstream::Http>) and an in-process Perl server
+(L<MCP::Hub::Upstream::Perl>). Each presents its tools, prompts and resources
+through an L<MCP::Server> stored in L</server>, which the hub mounts at
+C</< name >>.
+
+The base class also holds the transport-agnostic MCP client -- the handshake,
+the paginated primitive lists, the manifest and the C<tools/call>,
+C<prompts/get> and C<resources/read> forwarding -- so a subclass only provides
+the transport.
 
 =head1 ATTRIBUTES
+
+=head2 action
+
+The L<Mojolicious> action serving this upstream's L</server>, built on first use
+and then kept. The hub mounts one dynamic route for all upstreams and resolves
+the name per request, so the action belongs to the upstream rather than to a
+route; keeping it also keeps the L<MCP::Server> transport, and with it any open
+streaming subscription.
 
 =head2 config
 
 The normalized configuration entry from L<MCP::Hub::Config>.
+
+=head2 error
+
+Why the upstream is C<failed>, as a string, or C<undef>. Set when an entry
+cannot be built at all (an unloadable C<class>, say) and when a stdio child
+crash-loops; reported in L</status_row> and in the C<503> body of its endpoint.
 
 =head2 hub
 
@@ -228,6 +255,15 @@ A L<Mojo::Log>.
 
 The server name, and the path it is mounted at.
 
+=head2 protocol_version
+
+The protocol version the handshake opens with. Defaults to C<2025-06-18>; the
+version the upstream answers with is what the hub then uses.
+
+=head2 request_timeout
+
+Seconds to wait for an upstream response. Defaults to C<60>.
+
 =head2 server
 
 The L<MCP::Server> agents talk to.
@@ -242,16 +278,47 @@ Hash reference with C<calls>, C<errors>, C<started_at> and C<pid>.
 
 =head1 METHODS
 
+=head2 always_on
+
+Whether the upstream is started at daemon start and never idle-stopped, from the
+entry's C<hub.always_on>.
+
 =head2 build
 
   my $upstream = MCP::Hub::Upstream->build($entry, hub => $hub);
 
 Construct the right subclass for a configuration entry.
 
+=head2 call_tool
+
+  my $promise = $up->call_tool($name, $args);
+
+Forward a C<tools/call>, starting the upstream if needed. Always resolves to a
+result hash: the upstream's own result unchanged, or an error result on a
+JSON-RPC error, timeout, crash or failed start.
+
+=head2 get_prompt
+
+  my $promise = $up->get_prompt($name, $args);
+
+Forward a C<prompts/get>, starting the upstream if needed.
+
+=head2 manifest_fetched_at
+
+When the manifest currently in L</server> was fetched, as an ISO timestamp, or
+C<undef> when none has been fetched yet.
+
+=head2 read_resource
+
+  my $promise = $up->read_resource($uri);
+
+Forward a C<resources/read>, starting the upstream if needed.
+
 =head2 refresh_p
 
-Re-fetch the manifest and rebuild L</server>. A promise. A no-op for Perl
-upstreams.
+Re-fetch the manifest and rebuild L</server>. A promise. For a C<failed>
+upstream this is the explicit "try again": it clears the failure first. A no-op
+for Perl upstreams.
 
 =head2 rss_kb
 
@@ -259,11 +326,16 @@ Resident set size of the child in kilobytes from C</proc>, or C<undef>.
 
 =head2 start_p
 
-Start the upstream if needed and resolve when it is C<ready>. Idempotent.
+Start the upstream if needed and resolve when it is C<ready>. Idempotent. A
+C<failed> upstream is not started: the promise is rejected with L</error>, so a
+tool call reports the failure instead of restarting a crash loop. Only
+L</refresh_p> leaves the C<failed> state.
 
 =head2 status_row
 
-The per-upstream row of C<GET /_hub/status>.
+The per-upstream row of C<GET /_hub/status>: C<name>, C<type>, C<state>, C<pid>,
+C<rss_kb>, C<manifest_fetched_at>, C<last_used>, C<calls>, C<errors>, and
+C<error> when one is set.
 
 =head2 stop
 
@@ -275,10 +347,11 @@ Reset L</last_used> and the idle timer.
 
 =head2 type
 
-C<stdio> or C<perl>.
+C<stdio>, C<http>, C<sse> or C<perl>.
 
 =head1 SEE ALSO
 
-L<MCP::Hub::Upstream::Stdio>, L<MCP::Hub::Upstream::Perl>, L<MCP::Hub>.
+L<MCP::Hub::Upstream::Stdio>, L<MCP::Hub::Upstream::Http>,
+L<MCP::Hub::Upstream::Perl>, L<MCP::Hub>.
 
 =cut

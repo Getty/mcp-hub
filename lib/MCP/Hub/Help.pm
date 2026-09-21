@@ -13,8 +13,10 @@ sub page ($class, $hub, $c) {
   my $base = $c->url_for('/')->to_abs->to_string;
   $base =~ s{/+$}{};
 
-  my $token = $c->param('token');
-  if (!defined $token && ($c->req->headers->authorization // '') =~ /^Bearer\s+(\S+)/i) { $token = $1 }
+  # The token is read from the Authorization header only: a token in a query
+  # string or a form post would end up in access logs and browser history.
+  my $token;
+  if (($c->req->headers->authorization // '') =~ /^Bearer\s+(\S+)/i) { $token = $1 }
 
   # Resolve the viewer to a profile.
   my ($profile, $client_name);
@@ -37,6 +39,7 @@ sub page ($class, $hub, $c) {
         name         => $up->name,
         type         => $up->type,
         state        => $up->state,
+        error        => $up->error,
         instructions => $up->server->instructions,
         tools        => [map { $_->name } @{$up->server->tools}],
         url          => "$base/@{[$up->name]}",
@@ -111,16 +114,32 @@ HTML
 
 sub _login_form ($invalid) {
   my $error = $invalid ? qq{<p class="error">That token was not recognised.</p>} : '';
+
+  # The token is sent as an Authorization header and the answer replaces this
+  # document, so it never reaches the URL. No external dependency: the page
+  # keeps working offline.
   return <<"HTML";
 <section class="card login">
   <h2>Sign in</h2>
   <p>Paste the bearer token you were given to see the servers you may use and your ready-to-paste configuration.</p>
   $error
-  <form method="post" action="/">
+  <form id="signin">
     <input type="password" name="token" placeholder="Bearer token" autocomplete="off" autofocus>
     <button type="submit">Show my setup</button>
   </form>
+  <p class="hint" id="signin-error" hidden>Could not reach the hub.</p>
 </section>
+<script>
+document.getElementById('signin').addEventListener('submit', function (e) {
+  e.preventDefault();
+  var token = e.target.elements.token.value.trim();
+  if (!token) return;
+  fetch(location.pathname || '/', {headers: {Authorization: 'Bearer ' + token}, cache: 'no-store'})
+    .then(function (r) { return r.text() })
+    .then(function (html) { document.open(); document.write(html); document.close() })
+    .catch(function () { document.getElementById('signin-error').hidden = false });
+});
+</script>
 HTML
 }
 
@@ -151,6 +170,12 @@ sub _server_card ($s, $v, $auth) {
     ? '<p class="tools"><span>Tools:</span> ' . join(', ', map { '<code>' . xml_escape($_) . '</code>' } @{$s->{tools}}) . '</p>'
     : '<p class="tools muted">No tools cached yet &mdash; they appear after the first call.</p>';
 
+  my $down = $s->{state} eq 'failed'
+    ? '<p class="error">Unavailable'
+      . (defined $s->{error} && length $s->{error} ? ': ' . xml_escape($s->{error}) : '')
+      . '</p>'
+    : '';
+
   my $header = qq{--header "Authorization: Bearer @{[ $v->{token} // 'YOUR_TOKEN' ]}" };
   my $add    = $auth
     ? qq{claude mcp add --transport http $s->{name} $s->{url} $header}
@@ -160,6 +185,7 @@ sub _server_card ($s, $v, $auth) {
 <section class="card server">
   <h3>$name <span class="badge">@{[ xml_escape($s->{type}) ]}</span></h3>
   $desc
+  $down
   $tools
   <div class="codewrap">
     <button class="copy" data-copy="add-$name">Copy</button>
@@ -290,10 +316,18 @@ self-contained setup guide that shows how to add the hub's servers to an MCP
 client, with a ready-to-paste C<mcpServers> block and a C<claude mcp add>
 command per server.
 
-In open mode it lists every server. In clients mode it shows only a sign-in
-form until a valid bearer token is supplied (via the form or an
-C<Authorization> header), then the servers and configuration bound to that
-client -- so it never leaks which servers exist to an unauthenticated viewer.
+In open mode it lists every server. In clients mode it shows only a sign-in form
+until a valid bearer token arrives, then the servers and configuration bound to
+that client -- so it never leaks which servers exist to an unauthenticated
+viewer. A server the hub could not build is shown as unavailable with its
+reason, rather than hidden.
+
+The token is read from the C<Authorization: Bearer> header and from nowhere
+else. The sign-in form is a few lines of inline JavaScript that re-request the
+page with that header and replace the document with the answer, so the token
+never lands in a URL, an access log or the browser's history. There is no other
+way in: a C<?token=> query parameter is ignored, and there is no C<POST />
+route.
 
 The page has no external dependencies, so it works offline behind the daemon.
 

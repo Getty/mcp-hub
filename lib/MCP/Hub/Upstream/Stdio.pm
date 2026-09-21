@@ -42,6 +42,13 @@ sub start_p ($self) {
   return Mojo::Promise->resolve($self) if $self->state eq 'ready' && $self->{pid};
   return $self->{start_promise} if $self->{start_promise};
 
+  # A crash loop is left only by an explicit refresh: an ordinary call against a
+  # failed upstream reports why instead of spawning the loop all over again.
+  return Mojo::Promise->reject("upstream @{[$self->name]}: "
+      . ($self->error // 'failed')
+      . ", run 'mcp-hub refresh @{[$self->name]}' to try again")
+    if $self->state eq 'failed';
+
   $self->state('starting');
   my $done = Mojo::Promise->new;
   $self->{start_promise} = $done;
@@ -56,6 +63,8 @@ sub start_p ($self) {
 
   $self->_handshake_p->then(sub ($manifest) {
     $self->_apply_manifest($manifest);
+    delete $self->{failed};    # a running child is never failed
+    $self->error(undef);
     $self->state('ready');
     delete $self->{start_promise};
     $self->touch;
@@ -68,6 +77,7 @@ sub start_p ($self) {
     $self->state($self->{failed} ? 'failed' : 'stopped');
     delete $self->{start_promise};
     $done->reject("$err");
+    return;    # never hand the rejected promise back into the chain
   });
 
   return $done;
@@ -92,7 +102,16 @@ sub refresh_p ($self) {
       return $self;
     });
   }
+  $self->_clear_failure if $self->state eq 'failed';
   return $self->start_p;
+}
+
+sub _clear_failure ($self) {
+  delete $self->{failed};
+  @{$self->{exits}} = ();
+  $self->error(undef);
+  $self->state('stopped');
+  return $self;
 }
 
 sub touch ($self) {
@@ -219,8 +238,10 @@ sub _on_stderr ($self, $bytes) {
 sub _on_close ($self) {
   my $pid = $self->{pid} or return;    # already handled
 
-  waitpid $pid, 0;
-  my $status = $?;
+  # Where SIGCHLD is ignored the kernel reaps the child itself and waitpid
+  # fails with ECHILD, leaving $? at -1 -- which reads as "signal 127". The
+  # exit status is simply unknown then.
+  my $status = waitpid($pid, 0) > 0 ? $? : undef;
   Mojo::IOLoop->remove($self->{kill_timer}) if $self->{kill_timer};
   delete @{$self}{qw(kill_timer stream err_stream socket pid)};
   $self->stats->{pid} = undef;
@@ -232,7 +253,10 @@ sub _on_close ($self) {
     $pending->{promise}->reject("upstream @{[$self->name]}: exited ($reason)");
   }
 
-  $self->_record_exit unless $self->{stopping};
+  unless ($self->{stopping}) {
+    $self->log->warn("[@{[$self->name]}] child exited ($reason)" . $self->_exit_hint($status));
+    $self->_record_exit;
+  }
   $self->_clear_idle_timer;
   $self->state($self->{failed} ? 'failed' : 'stopped');
   delete $self->{stopping};
@@ -299,7 +323,9 @@ sub _record_exit ($self) {
   my $now = time;
   push @{$self->{exits}}, $now;
   @{$self->{exits}} = grep { $_ >= $now - KILL_GRACE } @{$self->{exits}};
-  $self->{failed} = 1 if @{$self->{exits}} >= 3;
+  return $self unless @{$self->{exits}} >= 3;
+  $self->{failed} = 1;
+  $self->error(scalar(@{$self->{exits}}) . ' exits within ' . KILL_GRACE . 's');
   return $self;
 }
 
@@ -324,6 +350,17 @@ sub _clear_idle_timer ($self) {
 }
 
 # --- helpers ---------------------------------------------------------------
+
+# A child that dies before the handshake is done is a configuration problem, so
+# name the command: "exited (code 127)" on its own sends everyone hunting in the
+# wrong place. Exit 127 is what the child _exit()s with when exec fails.
+sub _exit_hint ($self, $status) {
+  return '' unless $self->state eq 'starting';
+  my $command = $self->config->{command} // '?';
+  return " while starting '$command' -- is it installed and executable?"
+    if defined $status && !($status & 127) && ($status >> 8) == 127;
+  return " while starting '$command'";
+}
 
 sub _exit_reason ($status) {
   return 'unknown' unless defined $status;
@@ -373,8 +410,16 @@ that rejects the promise and sends C<notifications/cancelled>.
 The child is B<lazily> started: at daemon start a fresh cached manifest is
 enough to answer C<tools/list>, and nothing is spawned until the first
 C<tools/call>, C<prompts/get> or C<resources/read>. It is stopped again after
-L</idle_timeout> seconds of no requests (unless L</always_on>), and restarted on
-the next call. Three exits within five seconds mark it C<failed>.
+L</idle_timeout> seconds of no requests (unless
+L<MCP::Hub::Upstream/always_on>), and restarted on the next call.
+
+Three exits within five seconds mark it C<failed>, with the reason in
+L<MCP::Hub::Upstream/error>. A failed upstream stays failed until it is
+refreshed: further calls are answered with that reason rather than spawning the
+crash loop again, and its endpoint answers C<503>. L<MCP::Hub::Upstream/refresh_p>
+-- C<mcp-hub refresh NAME>, or the C<hub_refresh> tool -- clears the failure and
+the exit history and tries once more; a successful start makes it C<ready>
+again, and a later idle stop leaves it C<stopped>.
 
 =head2 Handshake and manifest
 
@@ -390,10 +435,6 @@ background refresh.
 L<MCP::Hub::Upstream::Stdio> inherits all attributes from L<MCP::Hub::Upstream>
 and adds:
 
-=head2 always_on
-
-Start at daemon start and never idle-stop. Defaults to false.
-
 =head2 cache_dir
 
 Where the manifest cache lives.
@@ -402,38 +443,14 @@ Where the manifest cache lives.
 
 Seconds of no requests before the child is stopped. Defaults to C<300>.
 
-=head2 protocol_version
-
-Protocol version to open the handshake with. Defaults to C<2025-06-18>.
-
-=head2 request_timeout
-
-Seconds to wait for a response. Defaults to C<60>.
-
 =head1 METHODS
 
 L<MCP::Hub::Upstream::Stdio> inherits all methods from L<MCP::Hub::Upstream> and
-adds the forwarding methods the facade calls:
-
-=head2 call_tool
-
-  my $promise = $up->call_tool($name, $args);
-
-Forward a C<tools/call>, starting the child if needed. Always resolves to a
-result hash: the upstream's result, or an error result on a JSON-RPC error,
-timeout, crash or failed start.
-
-=head2 get_prompt
-
-  my $promise = $up->get_prompt($name, $args);
-
-Forward a C<prompts/get>.
-
-=head2 read_resource
-
-  my $promise = $up->read_resource($uri);
-
-Forward a C<resources/read>.
+implements the lifecycle -- L<MCP::Hub::Upstream/start_p>,
+L<MCP::Hub::Upstream/stop>, L<MCP::Hub::Upstream/refresh_p> and
+L<MCP::Hub::Upstream/touch> -- for a child process. The forwarding methods the
+facade calls (C<call_tool>, C<get_prompt>, C<read_resource>) are the inherited
+ones.
 
 =head1 SEE ALSO
 

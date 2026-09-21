@@ -77,13 +77,15 @@ attribute) and offers two tools.
 
 The same structure as C<GET /_hub/status>: a row per upstream with C<name>,
 C<type>, C<state>, C<pid>, C<rss_kb>, C<manifest_fetched_at>, C<last_used>,
-C<calls> and C<errors>, plus the known clients.
+C<calls>, C<errors> and, for a C<failed> one, C<error> with the reason -- plus
+the known clients with their profile and C<last_seen>.
 
 =head2 hub_refresh
 
 Re-fetch upstream manifests and return the new tool counts. Takes an optional
-C<name> to refresh a single server. In clients mode it requires an admin
-profile, otherwise it returns an error result.
+C<name> to refresh a single server, and is also how a C<failed> upstream is
+given another try. In clients mode it requires an admin profile, otherwise it
+returns an error result.
 
 =head1 ATTRIBUTES
 
