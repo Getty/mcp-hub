@@ -91,6 +91,14 @@ sub refresh_p ($self) {
     ->catch(sub ($err) { $self->log->debug("[@{[$self->name]}] refresh failed: $err"); return $self });
 }
 
+sub apply_timeouts ($self, $timeouts) {
+  $self->SUPER::apply_timeouts($timeouts);
+  # req_ua baked the old request timeout into itself; drop it so the next
+  # request builds one with the new value.
+  delete $self->{req_ua};
+  return $self;
+}
+
 sub _hash ($self) {
   my $c = $self->config;
   return $self->{manifest}->hash($c->{url}, [$c->{type} // 'http'], undef);
@@ -406,6 +414,11 @@ The L<Mojo::UserAgent> used for the long-lived SSE stream.
 
 L<MCP::Hub::Upstream::Http> inherits all methods from L<MCP::Hub::Upstream> and
 adds:
+
+=head2 apply_timeouts
+
+As L<MCP::Hub::Upstream/apply_timeouts>, and additionally discards L</req_ua>,
+which carries the request timeout it was built with.
 
 =head2 transport
 

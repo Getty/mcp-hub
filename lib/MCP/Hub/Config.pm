@@ -9,6 +9,7 @@ use Mojo::Util qw(decode);
 
 # ABSTRACT: Load, validate and normalize an MCP::Hub configuration
 
+has auto_reload    => 0;
 has cache_dir      => sub { _default_cache_dir() };
 has clients        => sub { {} };
 has idle_timeout   => 300;
@@ -22,7 +23,7 @@ has source         => 'config';
 
 my %ENTRY_KEYS      = map { $_ => 1 } qw(command args env cwd class url type headers hub);
 my %ENTRY_HUB_KEYS  = map { $_ => 1 } qw(idle_timeout always_on request_timeout);
-my %HUB_KEYS        = map { $_ => 1 } qw(listen cache_dir idle_timeout request_timeout profiles clients public_profile);
+my %HUB_KEYS        = map { $_ => 1 } qw(listen cache_dir idle_timeout request_timeout profiles clients public_profile auto_reload);
 my %PROFILE_KEYS    = map { $_ => 1 } qw(servers tools admin);
 my %TOOL_RULE_KEYS  = map { $_ => 1 } qw(allow deny);
 my %CLIENT_KEYS     = map { $_ => 1 } qw(token profile);
@@ -220,6 +221,7 @@ sub _parse_hub ($self, $hub) {
     if defined $hub->{cache_dir};
   $self->idle_timeout(_int('hub.idle_timeout', $hub->{idle_timeout}))       if exists $hub->{idle_timeout};
   $self->request_timeout(_int('hub.request_timeout', $hub->{request_timeout})) if exists $hub->{request_timeout};
+  $self->auto_reload($hub->{auto_reload} ? 1 : 0)                          if exists $hub->{auto_reload};
 
   my $profiles = $hub->{profiles} // {};
   _err('hub.profiles', 'must be a JSON object') unless ref $profiles eq 'HASH';
@@ -390,6 +392,15 @@ C<Invalid configuration at mcpServers.playwright.hub.idle_timeout: must be an
 integer>, so a typo surfaces at start-up instead of hours later.
 
 =head1 ATTRIBUTES
+
+=head2 auto_reload
+
+  my $bool = $config->auto_reload;
+
+Whether the daemon should watch the configuration file and reload it by itself
+when it changes, from C<hub.auto_reload>. Defaults to false, in which case a
+reload happens only on C<SIGHUP>, C<POST /_hub/reload> or C<mcp-hub reload>. See
+L<MCP::Hub/reload>.
 
 =head2 cache_dir
 

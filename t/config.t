@@ -1,5 +1,6 @@
 use Mojo::Base -strict;
 use Test::More;
+use Mojo::JSON qw(false);
 use MCP::Hub::Config;
 
 # --- defaults and mode derivation ------------------------------------------
@@ -181,6 +182,22 @@ subtest 'per-entry hub overrides' => sub {
   my $e = $c->server('playwright');
   is $e->{idle_timeout}, 120, 'per-entry idle_timeout';
   is $e->{always_on},    1,   'always_on normalized';
+};
+
+subtest 'auto_reload' => sub {
+  my $off = MCP::Hub::Config->from_data({mcpServers => {}});
+  my $on  = MCP::Hub::Config->from_data({mcpServers => {}, hub => {auto_reload => \1}});
+  # false as JSON decodes it, and as the YAML reader's 'perl' booleans spell it
+  my $no   = MCP::Hub::Config->from_data({mcpServers => {}, hub => {auto_reload => false}});
+  my $nope = MCP::Hub::Config->from_data({mcpServers => {}, hub => {auto_reload => ''}});
+  is $off->auto_reload,  0, 'off by default';
+  is $on->auto_reload,   1, 'switched on from the hub block';
+  is $no->auto_reload,   0, 'and off again explicitly';
+  is $nope->auto_reload, 0, 'a YAML false is false too';
+
+  eval { MCP::Hub::Config->from_data({mcpServers => {}, hub => {auto_relod => \1}}) };
+  like $@, qr/unknown key 'auto_relod'/, 'a typo is a configuration error, not a silent no-op';
+  like $@, qr/hub\.auto_relod/,          'with its path';
 };
 
 subtest 'public_profile must exist' => sub {

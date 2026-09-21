@@ -25,6 +25,7 @@ MCP::Hub->new->start(@argv);
   mcp-hub config --client main         # print client mcpServers JSON
   mcp-hub status                       # show the running hub's status
   mcp-hub refresh [NAME]               # re-fetch upstream manifests
+  mcp-hub reload                       # re-read the configuration file
   mcp-hub token                        # print a fresh bearer token
 
   mcp-hub --config /path/config.json daemon
@@ -68,6 +69,12 @@ L<MCP::Hub::Command::status>.
 
 Ask the running hub to re-fetch upstream manifests, and to try a failed upstream
 once more. Takes C<--url BASE> as well. See L<MCP::Hub::Command::refresh>.
+
+=head2 reload
+
+Ask the running hub to re-read its configuration file and apply only what
+changed in it, and print what that was. C<SIGHUP> on the daemon does the same
+without the report. See L<MCP::Hub::Command::reload>.
 
 =head2 token
 

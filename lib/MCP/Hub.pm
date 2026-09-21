@@ -11,13 +11,19 @@ use MCP::Hub::Upstream;
 use MCP::Hub::Upstream::Perl;
 use MCP::Hub::Upstream::Stdio;
 use MCP::Hub::Upstream::Http;
+use JSON::PP     ();
+use Mojo::IOLoop;
 use Mojo::Promise;
 use Scalar::Util qw(blessed);
+use Time::HiRes  qw(stat);
 
 # ABSTRACT: One HTTP MCP server that embeds many, for a lot of MCP on little RAM
 
 has 'hub_config_input';
 has 'hub_config';
+has 'hub_config_path';
+has 'active_cache_dir';
+has auto_reload_interval => 2;
 has 'auth';
 has 'aggregate';
 has upstreams         => sub { [] };
@@ -31,6 +37,11 @@ sub startup ($self) {
   my $config = $self->_resolve_config;
   $self->hub_config($config);
   $self->log->warn("no configuration file at $config->{_missing}") if $config->{_missing};
+
+  # Pinned for the life of the process: a reload may report that hub.cache_dir
+  # changed, but it never moves a running hub's manifest cache out from under
+  # the upstreams that are already using it.
+  $self->active_cache_dir($config->cache_dir);
 
   $self->_build_upstreams;
   $self->auth(MCP::Hub::Auth->new(config => $config));
@@ -111,6 +122,201 @@ sub export_config ($self, %opts) {
   return {mcpServers => \%servers};
 }
 
+# --- live configuration reload ---------------------------------------------
+
+sub reload ($self) {
+  my $path = $self->hub_config_path;
+  return $self->_refuse_reload('the configuration was not loaded from a file, so there is nothing to reload')
+    unless defined $path;
+
+  # Take the file's signature before reading it, never after: a file that
+  # changes while we read it then still looks new to the watcher, instead of
+  # being recorded as applied when it was not.
+  my $signature = $self->_config_signature;
+
+  my $new = eval { MCP::Hub::Config->from_file($path) };
+  return $self->_refuse_reload($@ || 'unknown error') unless $new;
+
+  $self->{config_signature} = $signature;
+  return $self->_apply_config($new);
+}
+
+sub _refuse_reload ($self, $error) {
+  # Carp appends its caller's location whatever the message ends in, and the
+  # JSON decoder puts one of its own inside: neither tells anyone anything
+  # about the file they are looking at. Fold what is left onto one line, the
+  # way MCP::Hub::Config already does for a YAML syntax error.
+  ($error = "$error") =~ s/\s+/ /g;
+  $error =~ s/(?: at \S+ line \d+\.?)+\s*$//;
+  $error =~ s/^\s+|\s+$//g;
+
+  $self->log->error("configuration reload refused, keeping the running one: $error");
+  return {ok => 0, error => $error};
+}
+
+sub _apply_config ($self, $new) {
+  my $old = $self->hub_config;
+
+  my @warnings;
+  push @warnings, 'hub.listen changed from ' . $old->listen . ' to ' . $new->listen
+    . ', restart the daemon to apply' if $old->listen ne $new->listen;
+  push @warnings, 'hub.cache_dir changed from ' . $old->cache_dir . ' to ' . $new->cache_dir
+    . ', restart the daemon to apply' if $old->cache_dir ne $new->cache_dir;
+
+  my $auth_changed = !_same(
+    [$old->profiles, $old->clients, $old->public_profile],
+    [$new->profiles, $new->clients, $new->public_profile],
+  );
+
+  # Swap the configuration in one step, before anything is built or stopped.
+  # Every live reader -- the tool filters, the setup page, export_config,
+  # hub_status -- goes through these two, so from a request's point of view the
+  # new profiles, clients and mode take effect all at once.
+  $self->hub_config($new);
+  $self->auth->config($new);
+
+  my $previous = $self->upstreams_by_name;
+  my %summary  = (added => [], removed => [], changed => [], unchanged => []);
+  my (@ups, %by);
+
+  for my $entry (@{$new->servers}) {
+    my $name = $entry->{name};
+    my $up   = $previous->{$name};
+
+    if (!$up) {
+      push @{$summary{added}}, $name;
+      $up = $self->_build_upstream($entry, $new);
+      $self->_warm_upstream($up);
+    }
+    else {
+      my ($same, $timeouts_only) = _compare_entry($old, $old->server($name), $new, $entry);
+
+      # A placeholder holds no process and no connection: it is always given
+      # another try, even when its entry did not change.
+      if ($same && !$up->placeholder) {
+        push @{$summary{unchanged}}, $name;
+      }
+      elsif ($timeouts_only && !$up->placeholder) {
+        push @{$summary{changed}}, $name;
+        $up->config($entry);
+        $up->apply_timeouts(_effective_timeouts($new, $entry));
+      }
+      else {
+        push @{$summary{changed}}, $name;
+        $up->stop;
+        $up = $self->_build_upstream($entry, $new);
+        $self->_warm_upstream($up);
+      }
+    }
+
+    push @ups, $up;
+    $by{$name} = $up;
+  }
+
+  for my $name (sort keys %$previous) {
+    next if $by{$name};
+    push @{$summary{removed}}, $name;
+    $previous->{$name}->stop;
+  }
+
+  $self->upstreams(\@ups);
+  $self->upstreams_by_name(\%by);
+  $self->rebuild_aggregate;
+
+  # Tell connected agents to list again. A server whose own tools are unchanged
+  # is only notified when the access rules moved, because that is the only way
+  # what it shows can have changed without it being rebuilt.
+  if ($auth_changed) { $_->server->notify_list_changed('tools') for @ups }
+  $self->aggregate->notify_list_changed('tools')
+    if $auth_changed || grep { @{$summary{$_}} } qw(added removed changed);
+
+  $self->_sync_config_watch;
+
+  my $summary = {ok => 1, %summary, auth => ($auth_changed ? 1 : 0), warnings => \@warnings};
+  $self->log->info('configuration reloaded -- ' . _summary_line($summary));
+  $self->log->warn($_) for @warnings;
+  return $summary;
+}
+
+sub schedule_reload ($self, $reason = 'a request') {
+  # Triggers coalesce rather than race: a second signal, file event or request
+  # arriving before the loop gets round to it joins the reload already queued.
+  return $self if $self->{reload_scheduled};
+  $self->{reload_scheduled} = 1;
+  Mojo::IOLoop->next_tick(sub {
+    delete $self->{reload_scheduled};
+    $self->log->info("reloading the configuration ($reason)");
+    $self->reload;
+  });
+  return $self;
+}
+
+sub watch_sighup ($self) {
+  # Under EV a plain %SIG handler is only dispatched when the loop happens to
+  # wake up for something else, so use EV's own signal watcher when EV is the
+  # reactor -- it is part of the loop and fires straight away. Everywhere else
+  # (Mojo::Reactor::Poll) %SIG is dispatched at the next tick of the poll. EV
+  # is never loaded by us: this only uses it when Mojolicious already has.
+  if ($INC{'EV.pm'} && Mojo::IOLoop->singleton->reactor->isa('Mojo::Reactor::EV')) {
+    $self->{sighup} = EV::signal('HUP', sub { $self->schedule_reload('SIGHUP') });
+  }
+  else {
+    $SIG{HUP} = sub { $self->schedule_reload('SIGHUP') };
+  }
+  return $self;
+}
+
+sub start_config_watch ($self) {
+  $self->{watch_enabled}    = 1;
+  $self->{config_signature} = $self->_config_signature;
+  return $self->_sync_config_watch;
+}
+
+sub stop_config_watch ($self) {
+  Mojo::IOLoop->remove(delete $self->{config_watch}) if $self->{config_watch};
+  return $self;
+}
+
+sub watching_config ($self) { return $self->{config_watch} ? 1 : 0 }
+
+# Called at the end of every reload, so that switching hub.auto_reload on or off
+# in the file starts or stops the watcher.
+sub _sync_config_watch ($self) {
+  return $self unless $self->{watch_enabled};
+  return $self->stop_config_watch unless $self->hub_config->auto_reload && defined $self->hub_config_path;
+  return $self if $self->{config_watch};
+
+  my $interval = $self->auto_reload_interval;
+  $self->log->info('auto_reload: watching ' . $self->hub_config_path . " every ${interval}s");
+  $self->{config_watch} = Mojo::IOLoop->recurring($interval => sub { $self->_poll_config_file });
+  return $self;
+}
+
+sub _poll_config_file ($self) {
+  my $signature = $self->_config_signature;
+  return $self if $signature eq ($self->{config_signature} // '');
+
+  # Recorded before the reload is even attempted, so a file that does not
+  # validate is complained about once per change and not once per tick; the
+  # next write is a new signature and is tried again.
+  $self->{config_signature} = $signature;
+
+  # No file right now: an editor is part way through replacing it. Say nothing
+  # and pick up whatever turns up next.
+  return $self unless length $signature;
+
+  return $self->schedule_reload('auto_reload');
+}
+
+# Polled by path, never by handle: an editor that replaces the file by rename
+# is seen, and in a container it means bind-mounting the directory works (a
+# single bind-mounted file pins the inode and would never appear to change).
+sub _config_signature ($self) {
+  my $path = $self->hub_config_path // return '';
+  my @stat = stat $path              or return '';
+  return join ':', @stat[0, 1, 7, 9];
+}
+
 # --- build phases ----------------------------------------------------------
 
 sub _resolve_config ($self) {
@@ -119,6 +325,13 @@ sub _resolve_config ($self) {
   return MCP::Hub::Config->from_data($input) if ref $input eq 'HASH';
 
   my $path = $input // $ENV{MCP_HUB_CONFIG} // _default_config_path();
+
+  # Remembered for the life of the process, including when the file is not
+  # there yet: a reload re-reads exactly this path and never runs the
+  # config.json -> .yml -> .yaml lookup again, so a second file dropped next to
+  # the active one can never take it over silently.
+  $self->hub_config_path($path);
+
   unless (-f $path) {
     my $empty = MCP::Hub::Config->from_data({mcpServers => {}});
     $empty->{_missing} = $path;
@@ -132,28 +345,41 @@ sub _build_upstreams ($self) {
   my (@ups, %by);
 
   for my $entry (@{$config->servers}) {
-    my %opts = (hub => $self, log => $self->log);
-    if ($entry->{type} ne 'perl') {
-      $opts{cache_dir}       = $config->cache_dir;
-      $opts{request_timeout} = $config->request_timeout;
-      $opts{idle_timeout}    = $config->idle_timeout if $entry->{type} eq 'stdio';
-    }
-
-    my $up = eval { MCP::Hub::Upstream->build($entry, %opts) };
-    if (my $err = $@) {
-      chomp $err;
-      $self->log->error("failed to build upstream $entry->{name}: $err");
-      $up = $self->_broken_upstream($entry, $err);
-    }
-
+    my $up = $self->_build_upstream($entry, $config);
     push @ups, $up;
     $by{$up->name} = $up;
-    $self->_attach_tool_filter($up);
   }
 
   $self->upstreams(\@ups);
   $self->upstreams_by_name(\%by);
   return $self;
+}
+
+sub _build_upstream ($self, $entry, $config) {
+  my %opts = (hub => $self, log => $self->log);
+  if ($entry->{type} ne 'perl') {
+    %opts = (%opts, cache_dir => $self->active_cache_dir, %{_effective_timeouts($config, $entry)});
+  }
+
+  my $up = eval { MCP::Hub::Upstream->build($entry, %opts) };
+  if (my $err = $@) {
+    chomp $err;
+    $self->log->error("failed to build upstream $entry->{name}: $err");
+    $up = $self->_broken_upstream($entry, $err);
+  }
+
+  $self->_attach_tool_filter($up);
+  return $up;
+}
+
+# What an entry ends up running with: its own hub block wins over the global
+# defaults, exactly as MCP::Hub::Upstream's constructors resolve it. A perl
+# upstream has neither.
+sub _effective_timeouts ($config, $entry) {
+  return {} if $entry->{type} eq 'perl';
+  my %timeouts = (request_timeout => $entry->{request_timeout} // $config->request_timeout);
+  $timeouts{idle_timeout} = $entry->{idle_timeout} // $config->idle_timeout if $entry->{type} eq 'stdio';
+  return \%timeouts;
 }
 
 sub _broken_upstream ($self, $entry, $error) {
@@ -163,10 +389,11 @@ sub _broken_upstream ($self, $entry, $error) {
   my $up = MCP::Hub::Upstream->new(
     name   => $entry->{name},
     config => $entry,
-    hub    => $self,
-    log    => $self->log,
-    error  => $error,
-    state  => 'failed',
+    hub         => $self,
+    log         => $self->log,
+    error       => $error,
+    state       => 'failed',
+    placeholder => 1,
   );
   $up->server(MCP::Hub::Facade::Server->new(name => $entry->{name}, version => '0.0.0'));
   return $up;
@@ -206,6 +433,7 @@ sub _setup_routes ($self) {
 
   $under->get('/_hub/status'   => sub ($c) { $self->_route_status($c) });
   $under->post('/_hub/refresh' => sub ($c) { $self->_route_refresh($c) });
+  $under->post('/_hub/reload'  => sub ($c) { $self->_route_reload($c) });
 
   my $aggregate_action = $self->aggregate->to_action({streaming => 1});
   $under->post('/all' => sub ($c) {
@@ -215,46 +443,56 @@ sub _setup_routes ($self) {
     return $aggregate_action->($c);
   });
 
-  for my $up (@{$self->upstreams}) {
-    my $action = $up->server->to_action({streaming => 1});
-    $under->post('/' . $up->name => sub ($c) { $self->_route_server($c, $up, $action) });
-  }
+  # One route for every upstream, resolved by name per request. Routes fixed at
+  # start-up could not follow a reload; this one needs no touching when a server
+  # is added, dropped or replaced. It is registered last, so /all and /_hub/*
+  # keep their precedence, and a relaxed placeholder is used so that every
+  # single-segment path lands here and is answered alike.
+  $under->post('/#name' => sub ($c) { $self->_route_server($c, $c->stash('name')) });
 
   return $self;
 }
 
 sub start_background_fetches ($self) {
-  for my $up (@{$self->upstreams}) {
-    next if $up->type eq 'perl';    # perl upstreams need no warming
-    if ($up->always_on) {
-      $up->start_p->catch(sub ($err) { $self->log->error("$err") });
-    }
-    elsif (!$up->manifest_fetched_at) {
-      # No cached manifest yet: fetch it once in the background, do not wait.
-      # A stdio child is stopped again afterwards (lazy); an http upstream holds
-      # no process, so it just stays ready.
-      $up->start_p->then(sub ($u) { $u->stop if $u->type eq 'stdio' && !$u->always_on })
-        ->catch(sub ($err) { $self->log->error("$err") });
-    }
+  $self->_warm_upstream($_) for @{$self->upstreams};
+  return $self;
+}
+
+sub _warm_upstream ($self, $up) {
+  return $self if $up->type eq 'perl';    # perl upstreams need no warming
+  if ($up->always_on) {
+    $up->start_p->catch(sub ($err) { $self->log->error("$err") });
+  }
+  elsif (!$up->manifest_fetched_at) {
+    # No cached manifest yet: fetch it once in the background, do not wait.
+    # A stdio child is stopped again afterwards (lazy); an http upstream holds
+    # no process, so it just stays ready.
+    $up->start_p->then(sub ($u) { $u->stop if $u->type eq 'stdio' && !$u->always_on })
+      ->catch(sub ($err) { $self->log->error("$err") });
   }
   return $self;
 }
 
 # --- route handlers --------------------------------------------------------
 
-sub _route_server ($self, $c, $up, $action) {
+sub _route_server ($self, $c, $name) {
   my $profile = $c->stash('mcp.profile');
-  return $c->render(json => {error => 'Not found'}, status => 404)
-    unless $self->auth->allows_server($profile, $up->name);
+  my $up      = $self->upstreams_by_name->{$name};
 
-  return $c->render(json => {error => "upstream '@{[$up->name]}' failed" . ($up->error ? ': ' . $up->error : '')},
+  # A name that does not exist and a name this profile may not see answer with
+  # the same 404: a client must not be able to tell the two apart, and after a
+  # reload dropped a server its path is simply unknown again.
+  return $c->render(json => {error => 'Not found'}, status => 404)
+    unless $up && $self->auth->allows_server($profile, $name);
+
+  return $c->render(json => {error => "upstream '$name' failed" . ($up->error ? ': ' . $up->error : '')},
     status => 503)
     if $up->state eq 'failed';
 
-  return $c->render(json => {error => "upstream '@{[$up->name]}' is not ready yet"}, status => 503)
+  return $c->render(json => {error => "upstream '$name' is not ready yet"}, status => 503)
     if $up->type ne 'perl' && !@{$up->server->tools} && !$up->manifest_fetched_at;
 
-  return $action->($c);
+  return $up->action->($c);
 }
 
 sub _route_help ($self, $c) {
@@ -277,7 +515,58 @@ sub _route_refresh ($self, $c) {
     ->catch(sub ($err) { $c->render(json => {error => "$err"}, status => 500) });
 }
 
+sub _route_reload ($self, $c) {
+  return $c->render(json => {error => 'Forbidden'}, status => 403)
+    unless ($c->stash('mcp.profile') // {})->{admin};
+
+  # A configuration that does not validate is the server's problem, not the
+  # caller's, so it is a 500 -- and the body says exactly what is wrong with it.
+  my $summary = $self->reload;
+  return $c->render(json => $summary, status => ($summary->{ok} ? 200 : 500));
+}
+
 # --- helpers ---------------------------------------------------------------
+
+# Deep comparison of the normalized entries -- after ${VAR} expansion, so a
+# changed environment variable counts as a change. Canonical JSON rather than a
+# hand-written walk, because it also gets the booleans a class entry's args may
+# carry right; anything that will not encode is reported as different, which
+# rebuilds one upstream instead of quietly keeping a stale one.
+my $CANONICAL = JSON::PP->new->canonical->allow_nonref->convert_blessed;
+
+sub _same ($left, $right) {
+  my $a = eval { $CANONICAL->encode($left) };
+  my $b = eval { $CANONICAL->encode($right) };
+  return defined $a && defined $b && $a eq $b;
+}
+
+# Returns (unchanged, only-the-timeouts-changed). The second is what lets a
+# global hub.idle_timeout edit reach every stdio upstream without restarting a
+# single child.
+sub _compare_entry ($old_config, $old_entry, $new_config, $new_entry) {
+  return (0, 0) unless $old_entry;
+  my $same_entry = _same(_without_timeouts($old_entry), _without_timeouts($new_entry));
+  return (0, 0) unless $same_entry;
+  return (1, 0)
+    if _same(_effective_timeouts($old_config, $old_entry), _effective_timeouts($new_config, $new_entry));
+  return (0, 1);
+}
+
+sub _without_timeouts ($entry) {
+  my %rest = %$entry;
+  delete @rest{qw(idle_timeout request_timeout)};
+  return \%rest;
+}
+
+sub _summary_line ($summary) {
+  my @parts;
+  for my $key (qw(added removed changed)) {
+    push @parts, "$key " . join(', ', @{$summary->{$key}}) if @{$summary->{$key}};
+  }
+  push @parts, scalar(@{$summary->{unchanged}}) . ' unchanged';
+  push @parts, 'access rules updated' if $summary->{auth};
+  return join '; ', @parts;
+}
 
 sub _base_url ($listen) {
   # A wildcard or any-address listen address is not an address a client can
@@ -367,6 +656,17 @@ Embed the hub in your own L<Mojolicious>-based tests or tooling:
 A bare C<mcpServers> block is a valid open-mode config, so an existing
 F<.mcp.json> can be handed to the hub unchanged.
 
+=head2 Reloading
+
+A running hub re-reads its configuration file on C<SIGHUP>, on
+C<POST /_hub/reload> (behind C<mcp-hub reload>), and by itself when
+C<hub.auto_reload> is set. All three go through L</reload>, which touches only
+what actually changed in the file: a server whose entry is untouched keeps its
+object, its process, its statistics and its idle timer, while a server that was
+removed is stopped and unmounted and a new one is mounted lazily. A
+configuration that does not validate changes nothing at all -- the running one
+stays fully in effect and the error, with its JSON path, is logged and returned.
+
 =head2 Process model
 
 The daemon must run as a single L<Mojo::Server::Daemon> process, never under
@@ -379,6 +679,12 @@ promises, so one slow upstream does not block the others.
 
 L<MCP::Hub> inherits all attributes from L<Mojolicious> and adds:
 
+=head2 active_cache_dir
+
+The manifest cache directory the hub actually uses, fixed when it started. A
+reload reports that C<hub.cache_dir> changed and keeps this one, so the
+upstreams never disagree about where their manifests live.
+
 =head2 aggregate
 
 The L<MCP::Hub::Aggregate> mounted at C</all>.
@@ -386,6 +692,12 @@ The L<MCP::Hub::Aggregate> mounted at C</all>.
 =head2 auth
 
 The L<MCP::Hub::Auth>.
+
+=head2 auto_reload_interval
+
+How often the C<hub.auto_reload> watcher stats the configuration file, in
+seconds. Defaults to C<2>. It is an attribute rather than a configuration key
+because there is nothing to tune in a deployment; tests set it lower.
 
 =head2 hub_config
 
@@ -404,6 +716,15 @@ When unset, C<$MCP_HUB_CONFIG> is used, and failing that the config directory
 F<config.json>, then F<config.yml>, then F<config.yaml>; the first that exists
 wins. If none does, the hub starts with no servers and logs a warning naming
 F<config.json>.
+
+=head2 hub_config_path
+
+The file L</hub_config> was read from, resolved once at start-up and then fixed,
+or C<undef> when the configuration was handed over as data. L</reload> re-reads
+exactly this path: the default lookup is never run a second time, so a
+F<config.yml> dropped next to an active F<config.json> cannot take over
+silently. It is set even when the file was not there at start-up, so creating it
+and reloading works.
 
 =head2 upstreams
 
@@ -440,6 +761,72 @@ C<< { name => tool_count } >> hash reference.
 
 Rebuild the C</all> server from the current upstreams.
 
+=head2 reload
+
+  my $summary = $hub->reload;
+
+Re-read L</hub_config_path> and apply only what changed in it. Returns a summary
+hash reference and never dies:
+
+  {
+    ok => 1, added => ['serper'], removed => ['playwright'], changed => [],
+    unchanged => ['context7', 'history'], auth => 0, warnings => [],
+  }
+
+A configuration that does not parse or does not validate is B<refused whole>:
+nothing is swapped, the running configuration stays in effect, and the reason --
+with its JSON path -- is logged at error level and returned as
+C<< {ok => 0, error => ...} >>. The same goes for a hub that was handed its
+configuration as data rather than a file: there is nothing to re-read.
+
+What a reload does per server, comparing the normalized entries (so C<${VAR}>
+expansion counts, and a changed environment variable is a changed entry):
+
+=over 2
+
+=item B<unchanged> -- nothing at all. Same object, same process, same statistics,
+same idle timer. This is the property the whole thing exists for.
+
+=item B<only the timeouts changed> -- applied to the live object
+(L<MCP::Hub::Upstream/apply_timeouts>), so editing the global
+C<hub.idle_timeout> does not restart a single child.
+
+=item B<changed> -- that one upstream is stopped and built again. Nothing else
+is touched.
+
+=item B<removed> -- stopped and unmounted. Its path answers C<404> again and it
+leaves C</all> and the status report.
+
+=item B<added> -- built and mounted, and warmed exactly as at daemon start: an
+C<always_on> server starts, one without a cached manifest fetches it once in the
+background, and B<anything else spawns nothing> -- lazy start is a promise a
+reload keeps too.
+
+=item B<a broken placeholder> -- always built again, even when its entry did not
+change, because it holds no process (L<MCP::Hub::Upstream/placeholder>). A
+genuinely failed upstream, a crash-looping child say, is left alone; L</refresh_p>
+is the way back from that.
+
+=back
+
+C<profiles>, C<clients> and C<public_profile> are swapped in one step before any
+of that, so from a request's point of view the new access rules -- including a
+flip between open and clients mode -- take effect all at once, without a single
+upstream being restarted. L<MCP::Hub::Auth/last_seen> survives, and every
+affected server is sent a C<tools/list_changed> notification.
+
+C<hub.listen> and C<hub.cache_dir> cannot be applied to a running daemon.
+Everything else is applied and the summary's C<warnings> say what needs a
+restart.
+
+=head2 schedule_reload
+
+  $hub->schedule_reload('SIGHUP');
+
+Queue a L</reload> on the event loop instead of running it here and now.
+Triggers coalesce: anything arriving before the loop gets round to it joins the
+reload already queued, so signals and file events can never race.
+
 =head2 start_background_fetches
 
   $hub->start_background_fetches;
@@ -449,6 +836,20 @@ fetch for every stdio and HTTP upstream without a cached manifest (a stdio child
 is stopped again right afterwards). Called by the C<daemon> command, so that
 C<config>, C<status>, C<token> and C<refresh> never spawn a child just by loading
 the application.
+
+=head2 start_config_watch
+
+  $hub->start_config_watch;
+
+Start watching L</hub_config_path> when C<hub.auto_reload> is set, and allow
+later reloads to start or stop that watcher as the file turns the setting on and
+off. Called by the C<daemon> command; the short-lived commands never watch
+anything. The file is polled by path every L</auto_reload_interval> seconds --
+device, inode, size and modification time -- so a rename-in-place by an editor
+is seen, and in a container the configuration B<directory> should be mounted
+rather than the single file, whose inode a bind mount would pin. A write that
+does not validate is complained about once and keeps the running configuration;
+the next write is picked up as usual.
 
 =head2 startup
 
@@ -460,6 +861,24 @@ the aggregate, and mount the routes. It starts no upstream itself.
 The structure behind C<GET /_hub/status> and the C<hub_status> tool: the mode, a
 row per upstream (L<MCP::Hub::Upstream/status_row>) and a row per client with
 its C<profile> and the C<last_seen> epoch of its last authenticated request.
+
+=head2 stop_config_watch
+
+Stop the C<hub.auto_reload> watcher.
+
+=head2 watch_sighup
+
+  $hub->watch_sighup;
+
+Make C<SIGHUP> trigger a L</schedule_reload>. Called by the C<daemon> command
+and by no other, so a C<SIGHUP> to C<mcp-hub status> still just kills it. Under
+the L<EV> reactor an L<EV> signal watcher is installed rather than a C<%SIG>
+handler, because a C<%SIG> handler is only dispatched when the loop happens to
+wake up for something else; L<EV> is only used when it is already loaded.
+
+=head2 watching_config
+
+Whether the C<hub.auto_reload> watcher is currently running.
 
 =head1 SEE ALSO
 

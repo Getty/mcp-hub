@@ -10,10 +10,16 @@ use Mojo::Promise;
 # ABSTRACT: Base class for an upstream MCP server mounted in the hub
 
 has 'name';
+# The Mojolicious action this upstream is served by, built once and kept: the
+# router holds one dynamic route and looks the upstream up per request, so the
+# action must live with the object it serves, not with the route. Building it
+# twice would replace the MCP::Server transport and drop its subscriptions.
+has action    => sub ($self) { $self->server->to_action({streaming => 1}) };
 has 'config';
 has 'error';
 has 'hub';
 has log       => sub { Mojo::Log->new };
+has placeholder => 0;
 has 'server';
 has state     => 'stopped';
 has 'last_used';
@@ -45,6 +51,13 @@ sub start_p ($self) {
 sub stop      ($self) { return $self }
 sub refresh_p ($self) { return Mojo::Promise->resolve($self) }
 sub touch     ($self) { $self->last_used(time); return $self }
+
+# A configuration reload that only moved the timeouts must not restart anything:
+# the new values are applied to the live object instead of rebuilding it.
+sub apply_timeouts ($self, $timeouts) {
+  $self->request_timeout($timeouts->{request_timeout}) if defined $timeouts->{request_timeout};
+  return $self;
+}
 
 # --- transport-agnostic MCP client (shared by stdio and http) --------------
 # Subclasses provide the transport: _request_p, _notify and _hash.
@@ -255,6 +268,15 @@ A L<Mojo::Log>.
 
 The server name, and the path it is mounted at.
 
+=head2 placeholder
+
+True when this upstream is the stand-in the hub puts in place of an entry that
+could not be built at all (see L<MCP::Hub/upstreams>). It holds no process and
+no connection, so a configuration reload always tries to build it again, even
+when its entry did not change -- "I installed the missing module, now reload"
+works. A genuine upstream that failed later, a crash-looping child say, is left
+alone by a reload; L</refresh_p> is the way back from that.
+
 =head2 protocol_version
 
 The protocol version the handshake opens with. Defaults to C<2025-06-18>; the
@@ -282,6 +304,15 @@ Hash reference with C<calls>, C<errors>, C<started_at> and C<pid>.
 
 Whether the upstream is started at daemon start and never idle-stopped, from the
 entry's C<hub.always_on>.
+
+=head2 apply_timeouts
+
+  $up->apply_timeouts({idle_timeout => 120, request_timeout => 30});
+
+Apply new timeouts to the running upstream. Used by L<MCP::Hub/reload> when a
+reload changed nothing about an entry except its timeouts, so that a global
+C<hub.idle_timeout> edit does not restart every child. The stdio subclass also
+re-arms a running idle timer with the new value.
 
 =head2 build
 

@@ -12,6 +12,11 @@ Revision history for MCP-Hub
     model, the same validation and error messages for both. `${VAR}` and
     `${VAR:-default}` expand in server entries and in `hub.listen`,
     `hub.cache_dir` and client tokens, so no secret has to sit in the file.
+  - Live config reload that touches only what changed: `mcp-hub reload`,
+    `SIGHUP`, `POST /_hub/reload`, or `hub.auto_reload` to watch the file.
+    Unchanged servers keep their process; profile and tool-filter edits
+    apply in place; an invalid file is refused as a whole and the running
+    config stays in effect.
   - Web setup page at `GET /`: ready-to-paste `.mcp.json`, plus each
     server's tools and instructions; token-gated in clients mode, the token
     accepted from the `Authorization` header only.

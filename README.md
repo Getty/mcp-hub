@@ -131,6 +131,7 @@ After=network.target
 
 [Service]
 ExecStart=%h/perl5/bin/mcp-hub daemon
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 Environment=MCP_HUB_CONFIG=%h/.config/mcp-hub/config.json
 # Secrets the config references as ${VAR} (API keys, client tokens); optional.
@@ -250,6 +251,7 @@ not filtered individually — they follow `servers` alone.
 | `POST /all` | Every tool and prompt the client may see, as `<name>__<tool>`. |
 | `GET /_hub/status` | Per-upstream state, pid, RSS, call counts, failure reason; known clients and when each was last seen. Needs an `admin` profile. |
 | `POST /_hub/refresh` | Re-fetch manifests. Body `{"name": "context7"}` or empty for all. Needs an `admin` profile. |
+| `POST /_hub/reload` | [Reload the config](#changing-the-config-while-it-runs). `200` with `{ok, added, removed, changed, unchanged, auth, warnings}`, or `500` with `{"error": …}` when the new file was refused. Needs an `admin` profile. |
 
 The status codes carry meaning, and none of them is ever softened into an empty
 tool list:
@@ -269,16 +271,68 @@ tool list:
 | `mcp-hub config [--client NAME] [--all] [--url BASE]` | Print `mcpServers` JSON. |
 | `mcp-hub status [--client NAME] [--url BASE]` | Table of the running hub's upstreams and clients. |
 | `mcp-hub refresh [NAME] [--client NAME] [--url BASE]` | Re-fetch manifests; also the way to retry a `failed` server. |
+| `mcp-hub reload [--client NAME] [--url BASE]` | Re-read the config and apply only what changed. |
 | `mcp-hub token` | Print a fresh random bearer token. |
 
 A global `--config PATH` (or `-c PATH`, or `$MCP_HUB_CONFIG`) selects the config
 file for every command.
 
-`status` and `refresh` talk to the running daemon at the config's `listen`
+`status`, `refresh` and `reload` talk to the running daemon at the config's `listen`
 address (a wildcard such as `0.0.0.0` or `[::]` is reached over loopback). If the
 daemon listens somewhere else — `daemon -l …`, a remapped Docker port, another
 machine — point them at it with `--url http://host:port`. In clients mode they
 authenticate as the first `admin` client, or the one named with `--client`.
+
+## Changing the config while it runs
+
+You do not restart the hub to change its config. A **reload** re-reads the file
+and changes exactly what the edit asks for — everything else keeps running:
+
+| You edit… | What happens |
+|---|---|
+| nothing about a server | Nothing. Same process, same stats, same idle timer. |
+| a profile, a client, `tools.allow`/`deny`, `public_profile` | Swapped in place; in effect on the next request. A tool you deny disappears from `tools/list` and `tools/call`, and no server is restarted. |
+| only timeouts (`idle_timeout`, `request_timeout`, per server or global) | Applied in place, no restart. |
+| a server's `command`, `args`, `env`, `url`, … | That one server is stopped and rebuilt. |
+| remove a server | It is stopped and its path is `404` again. |
+| add a server | It is mounted; with a cached manifest nothing is spawned until its first call. |
+| `hub.listen` or `hub.cache_dir` | Cannot be applied live: the rest is applied and you get a warning to restart. |
+
+A config that does not validate is **refused as a whole**: the error (with its
+path) is reported, and the hub carries on with the config it had. A reload never
+takes the daemon down and never half-applies. A server that could not be built
+last time is retried on every reload — install the missing module, reload, done.
+
+Three ways to trigger it:
+
+```bash
+mcp-hub reload                 # prints what changed, or the validation error (exit ≠ 0)
+kill -HUP <pid>                # same thing, result goes to the log
+                               #   docker kill -s HUP mcp-hub  /  systemctl --user reload mcp-hub
+```
+
+```
+added      serper
+removed    playwright
+unchanged  3
+warning: hub.listen changed from http://127.0.0.1:3080 to http://0.0.0.0:3080, restart the daemon to apply
+```
+
+…or let the hub watch the file itself:
+
+```json
+{ "hub": { "auto_reload": true } }
+```
+
+With `auto_reload` the daemon checks the config file every couple of seconds and
+reloads when it changed. A half-saved file simply fails validation and is
+ignored until the next write. Under Docker, **mount the config's directory, not
+the single file** (`-v "$PWD/config:/config:ro"`, with your config at
+`config/mcp.json`): a single-file bind mount pins the old inode, so an editor
+that saves by rename is never seen.
+
+The config path is fixed at start: a second config file dropped next to the
+active one does not take over.
 
 ## Troubleshooting
 
@@ -546,6 +600,10 @@ start.
 | `profiles` | `{}` | Named permission sets. |
 | `clients` | `{}` | `name → { token, profile }`. |
 | `public_profile` | `null` | Profile for tokenless requests in clients mode. |
+| `auto_reload` | `false` | Watch the config file and [reload](#changing-the-config-while-it-runs) when it changes. |
+
+`listen` and `cache_dir` take effect at start only; everything else can be
+changed by a reload.
 
 ## Non-goals (v1)
 

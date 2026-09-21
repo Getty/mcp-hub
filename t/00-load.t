@@ -22,6 +22,7 @@ my @modules = qw(
   MCP::Hub::Command::config
   MCP::Hub::Command::status
   MCP::Hub::Command::refresh
+  MCP::Hub::Command::reload
   MCP::Hub::Command::token
 );
 
