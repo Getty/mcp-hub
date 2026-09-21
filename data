@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-09-21T20:46:17Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-09-21T21:47:03Z
+created: 2026-09-21T20:15:23Z
+id: 11
+priority: high
+started: 2026-09-21T21:47:03Z
+status: done
+tags:
+- review-2026-09-21
+title: 'Ops fixes: sticky failed, last_seen, --url for status/refresh, header-only
+  setup-page login, ${VAR} in hub block, loud upstream build errors, POD drift'
+updated: 2026-09-21T21:47:03Z
+---
+
+From the 2026-09-21 project review. (1) Stdio {failed} is set in _record_exit and never cleared: after a refresh revives the upstream, the next idle stop flips state back to failed -> permanent 503. Reproduce first, fix, regression test. (2) clients last_seen is read by status_report/status command but never written. (3) status/refresh commands need --url like config; _base_url should also rewrite 0.0.0.0 and [::]. (4) Setup page: drop token via query/form param, sign in with Authorization header via fetch. (5) Expand ${VAR} in hub.clients.*.token, hub.listen, hub.cache_dir. (6) Upstream build failures must be visible in status + 503 with the error instead of a silent 404. (7) POD drift: Config servers type, Upstream 'two kinds', Hub upstreams order / start_background_fetches.
+
+2026-09-21 20:46 Implemented all 7 items; prove -lr t/ green (Files=14, Tests=91, PASS).
+1) Sticky failed: reproduced (call against failed respawned and succeeded; stop after refresh flipped ready->failed). start_p now rejects in state failed; refresh_p clears flag+exit history; successful start clears the flag. Exit history is NOT cleared on every successful start - that would disable the 3-exits-in-5s crash-loop detection.
+2) last_seen now lives on MCP::Hub::Auth (name->epoch), stamped in authenticate; status_report reads it; status table prints it as an age. Survives a config swap (#13).
+3) --url added to status and refresh (shared _base helper in Command::status, refresh.pm now 'use's it - it called _admin_token without loading it); _base_url rewrites *, 0.0.0.0 and [::].
+4) Setup page: token only from Authorization header, inline-JS fetch login, POST / route removed; ?token= no longer reveals anything (tested).
+5) ${VAR} expansion in hub.listen, hub.cache_dir, hub.clients.*.token with JSON-path errors.
+6) Broken entries stay as failed placeholder upstreams: visible in status/hub_status with the reason, 503 with reason on their endpoint (404 for profiles that may not see them), 'Unavailable' on the setup page. Stdio child exits now warn-log and name the command.
+7) POD drift fixed in Config/Upstream/Stdio/Perl/Hub/Help/Auth/Native::Status/commands/bin.
+Extra bugs found and fixed on the way: waitpid ECHILD (SIGCHLD ignored) made every child exit read as 'signal 127'; rejected promise returned from a catch handler produced 'Unhandled rejected promise' noise.
+Not committed. README/Changes still need the user-visible changes.
+
+2026-09-21 20:46 Ops fixes done, needs review: 7 items + 2 incidental bug fixes. prove -lr t/ = Files=14, Tests=91, PASS. Nothing committed; README/Changes updates are the orchestrator's.
