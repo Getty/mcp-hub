@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-09-21T21:47:40Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-09-21T21:47:40Z
+created: 2026-09-21T20:15:32Z
+id: 13
+priority: high
+started: 2026-09-21T21:47:40Z
+status: done
+tags:
+- review-2026-09-21
+title: 'Live config reload: SIGHUP + hub.auto_reload, diff-based (only touch what
+  changed)'
+updated: 2026-09-21T21:47:40Z
+---
+
+Reload re-reads and validates the config; invalid -> keep running config, log error. Per-upstream diff on the normalized entry: removed -> stop+unmount, added -> build+mount, changed -> rebuild only that one, unchanged -> untouched (pid and stats survive). profiles/clients/public_profile swap in place (tool allow/deny effective immediately, list_changed notified). listen/cache_dir changes -> warn 'needs restart'. Requires dynamic per-name routing instead of routes fixed at startup. Must keep the lazy-start promise.
+
+2026-09-21 21:42 Implemented: MCP::Hub::reload (diff-based, refuse-whole on invalid), dynamic POST /#name routing, SIGHUP via EV::signal, hub.auto_reload watcher (poll by path), POST /_hub/reload + mcp-hub reload. New t/reload.t (16 subtests); t/config.t auto_reload; t/00-load.t. prove -lr t/ = Files=16, Tests=121, PASS (verified 8+ consecutive runs, plus MOJO_REACTOR=Mojo::Reactor::Poll and -j4). Not committed.
+
+2026-09-21 21:42 Live config reload implemented and tested; needs review + README/Changes (orchestrator owns those)
