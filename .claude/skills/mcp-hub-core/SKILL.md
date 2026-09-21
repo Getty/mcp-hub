@@ -50,7 +50,8 @@ lib/MCP/Hub/Facade/Tool.pm      # MCP::Tool-Subklasse: validate_input aus, `extr
 lib/MCP/Hub/Facade/Server.pm    # MCP::Server-Subklasse: rendert die `extra`-Felder in tools/list mit
 lib/MCP/Hub/Aggregate.pm        # der /all-Server
 lib/MCP/Hub/Native/*.pm         # ClaudeHistory, ClaudeSessions, Status
-lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, token — hinter bin/mcp-hub
+lib/MCP/Hub/Help.pm             # die HTML-Setup-Seite an GET / (token-gated in clients mode)
+lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token — hinter bin/mcp-hub
 ```
 
 Jede Unit ist allein testbar: `Config` auf Strings, `Manifest` auf temp dir, `Auth` auf
@@ -98,8 +99,19 @@ einem Config-Hash, `Façade` auf einem Manifest-Hash mit Mock-Upstream, `Stdio` 
 - **404 vs 401 vs 503 tragen Bedeutung.** Server nicht im Profil → **404** (der Client
   soll nicht erfahren, dass es ihn gibt). Fehlendes/falsches Token in clients mode →
   **401** + `WWW-Authenticate: Bearer`. Upstream, der sein erstes Manifest noch holt
-  oder `failed` ist → **503** `{"error": …}` (damit `claude mcp list` den Fehler zeigt
-  statt eines Servers mit null Tools). Nicht zu „leere Tool-Liste" verwässern.
+  oder `failed` ist → **503** `{"error": …}` mit Grund (damit `claude mcp list` den
+  Fehler zeigt statt eines Servers mit null Tools). Admin-API ohne `admin`-Profil →
+  **403**. Nicht zu „leere Tool-Liste" verwässern.
+- **`failed` ist sichtbar und klebt bis zum expliziten `refresh`.** Ein Eintrag, der sich
+  nicht bauen lässt (z. B. `class` nicht ladbar), wird nicht verworfen, sondern durch
+  einen Placeholder (Basis-`Upstream`, `state => 'failed'`, `error`) ersetzt — er bleibt
+  in Status, Setup-Seite, `mcp-hub config` und `/all` (ohne Tools). Ein stdio-Upstream
+  wird nach 3 Exits in 5 s `failed`; `start_p` lehnt dann ab (kein stiller Respawn durch
+  einen normalen `tools/call`), nur `refresh_p` räumt Flag und Exit-Historie.
+- **Die Setup-Seite liest das Token ausschließlich aus `Authorization: Bearer`.** Kein
+  `?token=`, kein Form-POST, keine `POST /`-Route; das Login-Formular ist Inline-JS
+  (`fetch` mit Header, Dokument ersetzen). Ohne gültiges Token rendert clients mode
+  nur das Formular — nie Servernamen.
 - **`/all` ruft die Original-Tool-Objekte direkt.** Für jeden Upstream `u` und Tool `t`
   registriert das Aggregate `<u>__<t>`, dessen `code` `$t->call(...)` aufruft — so gelten
   Façade-Fehlerbehandlung, Filter und In-process-Server genauso wie am eigenen Endpunkt.
@@ -129,12 +141,19 @@ einem Config-Hash, `Façade` auf einem Manifest-Hash mit Mock-Upstream, `Stdio` 
 
 ## Config
 
-Eine JSON-Datei: `--config PATH`, sonst `$MCP_HUB_CONFIG`, sonst
-`~/.config/mcp-hub/config.json`. `mcpServers` ist ein Superset von `.mcp.json` (Einträge
-1:1). Genau eines von `command` oder `class` je Eintrag. `${VAR}` und `${VAR:-default}`
-werden in `command`, jedem `args`-Element, jedem `env`-Wert und `cwd` expandiert — eine
-** unset** Variable ohne Default ist ein Config-Fehler beim Laden (strenger als Claude
-Code, das den Literal behält). Server-Namen matchen `^[A-Za-z0-9][A-Za-z0-9_-]*$`; `all`
+Eine Datei, JSON **oder YAML — die Endung entscheidet** (`.yml`/`.yaml` → `YAML::PP`,
+lazy geladen, Core-Schema, ein Dokument, keine Duplikat-Keys; alles andere → JSON):
+`--config PATH`, sonst `$MCP_HUB_CONFIG`, sonst in `~/.config/mcp-hub/` das erste
+existierende von `config.json`, `config.yml`, `config.yaml`. YAML ist nur eine zweite
+Schreibweise: `Config->from_file` ist der **einzige** Einstieg „Pfad → validierte Config",
+danach läuft dieselbe `from_data`-Validierung mit identischen Fehlermeldungen — nichts
+darf nur in YAML ausdrückbar sein. `mcpServers` ist ein Superset von `.mcp.json`
+(Einträge 1:1). Genau eines von `command`, `class` oder `url` je Eintrag. `${VAR}` und
+`${VAR:-default}` werden in `command`, jedem `args`-Element, jedem `env`-Wert, `cwd`,
+`url`, jedem `headers`-Wert sowie im `hub`-Block in `listen`, `cache_dir` und jedem
+Client-`token` expandiert — eine **unset** Variable ohne Default ist ein Config-Fehler
+beim Laden (strenger als Claude Code, das den Literal behält). `hub.auto_reload`
+(bool) schaltet den Datei-Watcher ein (siehe Reload). Server-Namen matchen `^[A-Za-z0-9][A-Za-z0-9_-]*$`; `all`
 und führendes `_` sind reserviert. Unbekannte Keys in einem Eintrag sind ein Fehler —
 Tippfehler tauchen beim Start auf, mit JSON-Pfad in der Meldung
 (`mcpServers.playwright.hub.idle_timeout`).
@@ -143,9 +162,37 @@ Tippfehler tauchen beim Start auf, mit JSON-Pfad in der Meldung
 
 `daemon` (Vordergrund, single daemon), `config [--client NAME] [--all] [--url BASE]`
 (druckt `{"mcpServers": …}`; in clients mode ist `--client` nötig und fügt den Bearer
-hinzu), `status` (ruft `GET /_hub/status`), `refresh [NAME]` (`POST /_hub/refresh`),
-`token` (32 Zufallsbytes base64url, fasst die Config nie an). `--config`/`MCP_HUB_CONFIG`
-gelten für alle.
+hinzu), `status` (ruft `GET /_hub/status`), `refresh [NAME]` (`POST /_hub/refresh`; auch
+der einzige Weg aus `failed`), `reload` (`POST /_hub/reload`, druckt die Diff-Summary,
+Exit ≠ 0 bei abgelehnter Config), `token` (32 Zufallsbytes base64url, fasst die Config
+nie an). `status`/`refresh`/`reload` nehmen `--client NAME` und `--url BASE`.
+`--config`/`MCP_HUB_CONFIG` gelten für alle.
+
+## Reload
+
+`MCP::Hub->reload` ist **synchron** und der einzige Mechanismus; SIGHUP (nur im
+`daemon`-Command; `EV::signal` unter EV, sonst `%SIG`), `hub.auto_reload` (Poll per
+Pfad-`stat`, Intervall = Hub-Attribut `auto_reload_interval`), `POST /_hub/reload` und
+`mcp-hub reload` sind nur Auslöser, gebündelt über `schedule_reload`. Regeln:
+
+- **Erst vollständig validieren, dann mutieren.** Ungültige Datei → nichts ändert sich,
+  Fehler geloggt und zurückgegeben. Nie halb anwenden, nie den Daemon beenden.
+- **Diff pro normalisiertem Eintrag.** Unverändert → **selbes Objekt, selber pid, selbe
+  Stats, selber Idle-Timer** (dafür existiert das Feature; `t/reload.t` prüft `refaddr`).
+  Nur Timeouts → `apply_timeouts` in place. Geändert → nur dieser Upstream neu. Entfernt →
+  `stop` + 404. Neu → gemountet und gewärmt wie beim Daemon-Start, d. h. mit
+  gecachtem Manifest **kein Spawn** (Lazy-Start gilt auch hier).
+- **profiles/clients/public_profile werden in place getauscht** (`auth->config($new)`);
+  `Auth::last_seen` lebt deshalb auf `Auth`, nicht auf der Config. Danach
+  `notify_list_changed`.
+- **Broken Placeholder wird bei jedem Reload neu versucht**; ein crash-gelooptes stdio-
+  `failed` nicht — dort bleibt `refresh` der Weg zurück.
+- `hub.listen`/`hub.cache_dir` sind nicht live anwendbar → Warnung in der Summary. Der
+  Config-Pfad wird beim Start festgehalten; der Default-Lookup läuft nur einmal.
+- **Routing ist dynamisch:** eine Route `POST /#name`, nach `/all` und `/_hub/*`
+  registriert, schlägt den Upstream pro Request nach; `to_action` wird pro
+  Upstream-Objekt gecacht (`$up->action`). Unbekannter Name und Server außerhalb des
+  Profils liefern **byte-identisch** dasselbe 404.
 
 ## Natives — Claude-History
 

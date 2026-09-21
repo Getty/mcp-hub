@@ -22,9 +22,11 @@ Audit only — you report findings; the worker fixes them and the maintainer rel
    `require` in `lib/` and `bin/` against the declared list, in both directions. The
    declared floors must still reflect what the code assumes: `MCP` ≥ 0.15 (façades
    extend `MCP::Server`; `slow_eq` and random tokens come via its `CryptX`),
-   `Mojolicious` ≥ 9.0 (`Mojo::Base -signatures`, `Mojo::Promise`, `Mojo::SSE`,
-   `Test::Mojo`). Everything else the design leans on is a core module — confirm nothing
-   non-core slipped in undeclared, and nothing declared has gone unused.
+   `Mojolicious` ≥ 9.49 (the floor is `Mojo::SSE`; `Mojo::Base -signatures`,
+   `Mojo::Promise` and `Test::Mojo` are older), `YAML::PP` (`.yml`/`.yaml` configs;
+   loaded lazily with `require`, so a plain `use` grep misses it). Everything else the
+   design leans on is a core module — confirm nothing non-core slipped in undeclared,
+   and nothing declared has gone unused.
 2. **dist.ini** — `[@Author::GETTY]` bundle, `copyright_year` current, and the
    `[PruneFiles] match = ^\.claude/` still present so the agent scaffolding stays out of
    the tarball.
@@ -37,8 +39,11 @@ Audit only — you report findings; the worker fixes them and the maintainer rel
    (`Native::ClaudeHistory`, `Native::ClaudeSessions`, `Native::Status`) must match what
    `README.md` and the module POD advertise; `bin/mcp-hub`'s POD synopsis must list the
    commands that actually exist under `lib/MCP/Hub/Command/` (`daemon`, `config`,
-   `status`, `refresh`, `token`). A tool or command added in one place and not the others
-   is the drift most likely to ship.
+   `status`, `refresh`, `reload`, `token`). The configuration reference in `README.md` must list
+   exactly the keys `MCP::Hub::Config` accepts (`%ENTRY_KEYS`, `%ENTRY_HUB_KEYS`,
+   `%HUB_KEYS`, `%PROFILE_KEYS`, `%CLIENT_KEYS`), and no POD may still describe the
+   upstream types as only `stdio` and `perl`. A tool, command or key added in one place
+   and not the others is the drift most likely to ship.
 6. **Docker consistency** — `Dockerfile`/`docker-compose.yml` install the same Perl
    dependency set the `cpanfile` declares; flag any registry/tag or dependency
    disagreement between the image and the distribution, but **do not pick a side** —

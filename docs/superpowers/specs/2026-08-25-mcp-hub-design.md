@@ -1,6 +1,7 @@
 # MCP::Hub — Design
 
-**Status:** Draft for review
+**Status:** Draft for review — the original v1 design. The code has moved past it; where they disagree, the code, `README.md` and the `mcp-hub-core` skill win.
+**Added since (2026-09-21), not described below:** remote HTTP upstreams; YAML config files (by extension, `YAML::PP`); `${VAR}` expansion also in `url`, `headers`, `hub.listen`, `hub.cache_dir` and client tokens; live config reload that touches only what changed (`mcp-hub reload`, `SIGHUP`, `POST /_hub/reload`, `hub.auto_reload`) on top of one dynamic `POST /<name>` route; unbuildable entries kept as visible `failed` placeholders, and `failed` left only by an explicit refresh; setup-page sign-in via the `Authorization` header only; `--url` on `status`/`refresh`/`reload`.
 **Date:** 2026-08-25
 **Scope:** A single HTTP MCP server (`mcp-hub`) that embeds any number of stdio MCP servers and in-process Perl MCP servers, exposes each of them to many agents on the same machine as its own endpoint, decides per client which of them it may use, and prints ready-to-paste client configuration. Goal in one line: a lot of MCP for very little RAM.
 
@@ -122,14 +123,14 @@ One JSON file. Location: `--config PATH`, else `$MCP_HUB_CONFIG`, else `~/.confi
 
 ### `mcpServers` entries
 
-Exactly one of `command` or `class` is required.
+Exactly one of `command`, `class` or `url` is required.
 
 | Key | Meaning |
 |---|---|
 | `command`, `args`, `env`, `cwd` | As in `.mcp.json`. `env` is merged over the hub's own environment. `cwd` defaults to the hub's working directory. |
 | `class` | Perl class name, loaded with `Mojo::Loader::load_class`. Must be an `MCP::Server` subclass. |
 | `args` (with `class`) | Hash passed to `new`. If the class has a `hub` attribute, the `MCP::Hub` instance is injected. |
-| `url`, `type: "http"/"sse"` | Rejected: "HTTP upstreams are not supported yet". |
+| `url`, `type: "http"/"sse"`, `headers` | A remote HTTP upstream (`MCP::Hub::Upstream::Http`): Streamable HTTP (`http`, the default) or HTTP+SSE (`sse`); `headers` for auth. Originally rejected in v1, implemented since — see Non-goals. |
 | `hub.idle_timeout` | Seconds. Overrides `hub.idle_timeout`. `0` means never stop. |
 | `hub.always_on` | Boolean. Start at daemon start and never stop. Equivalent to `idle_timeout: 0` plus eager start. |
 | `hub.request_timeout` | Seconds per request. Overrides the global value. |
