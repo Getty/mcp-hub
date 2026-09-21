@@ -1,0 +1,21 @@
+---
+claimed_at: 2026-09-21T21:47:36Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-09-21T21:47:36Z
+created: 2026-09-21T20:15:27Z
+id: 12
+priority: medium
+started: 2026-09-21T21:47:36Z
+status: done
+tags:
+- review-2026-09-21
+title: YAML configuration files (.yml/.yaml) alongside JSON
+updated: 2026-09-21T21:47:36Z
+---
+
+Select the parser by file extension; same validated data model and JSON-path style errors. Motivation: comments, so an entry can be commented out instead of deleted. Default path lookup should also find config.yml/config.yaml.
+
+2026-09-21 21:00 YAML via YAML::PP (Core schema, boolean=>perl, cyclic_refs=>fatal, duplicate_keys=>0), lazy-required in Config::_decode_yaml, hard 'requires' in cpanfile. from_file stays the single path->config entry point (ticket k13 gets YAML for free). Default lookup config.json -> config.yml -> config.yaml in MCP::Hub::_default_config_path. New t/config-yaml.t (12 subtests); prove -lr t/ = Files=15, Tests=103, PASS. Not committed.
+
+2026-09-21 21:00 Implemented + tested, needs review. Scope kept to lib/, bin/, t/, cpanfile; README/Changes/docs untouched for the orchestrator. Docker: cpanfile change is enough, but MCP_HUB_CONFIG=/config/mcp.json is baked into the image, so a YAML user must override it (-e MCP_HUB_CONFIG=/config/mcp.yml).
