@@ -1,0 +1,19 @@
+---
+claimed_at: 2026-09-22T02:18:06Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-09-22T02:18:06Z
+created: 2026-09-16T15:26:51Z
+id: 1
+priority: medium
+started: 2026-09-22T01:28:18Z
+status: done
+tags:
+- native
+- claude-history
+- verify
+title: Verify ai-title parsing against a real ~/.claude jsonl
+updated: 2026-09-22T02:18:06Z
+---
+
+ClaudeHistory reads the session title from a line with type:"ai-title", field "title". This field/type was guessed from the design pass, never confirmed against a real ~/.claude jsonl. Confirm the shape and fix if wrong; add a fixture line that reflects reality.
