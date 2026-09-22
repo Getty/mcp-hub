@@ -18,7 +18,9 @@ package FakeHub {
   has report => sub {
     {mode => 'open', upstreams => [{name => 'run', type => 'perl', state => 'ready'}], clients => []};
   };
-  has counts => sub { {run => 3, context7 => 5} };
+  has counts => sub {
+    {run => {count => 3, state => 'ready'}, context7 => {count => 5, state => 'ready'}};
+  };
   sub status_report ($self) { $self->report }
   sub hub_config    ($self) { FakeConfig->new(mode => $self->mode) }
   sub refresh_p ($self, $name = undef) { Mojo::Promise->resolve($self->counts) }
@@ -70,7 +72,7 @@ subtest 'hub_refresh in open mode returns counts' => sub {
   my $tool   = tool_named($server, 'hub_refresh');
   my $result = _await($tool->call({}, MCP::Server::Context->new));
   my $data   = decode_json($result->{content}[0]{text});
-  is $data->{context7}, 5, 'counts returned';
+  is $data->{context7}{count}, 5, 'counts returned';
 };
 
 subtest 'hub_refresh in clients mode needs admin' => sub {
@@ -86,7 +88,7 @@ subtest 'hub_refresh in clients mode needs admin' => sub {
   my $admin_ctx = MCP::Server::Context->new(controller => FakeController->new->stash('mcp.profile' => {admin => 1}));
   my $allowed = _await($tool->call({}, $admin_ctx));
   my $data = decode_json($allowed->{content}[0]{text});
-  is $data->{run}, 3, 'admin allowed, counts returned';
+  is $data->{run}{count}, 3, 'admin allowed, counts returned';
 };
 
 done_testing;

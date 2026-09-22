@@ -3,35 +3,32 @@ our $VERSION = '0.001';
 use Mojo::Base 'Mojolicious::Command', -signatures;
 
 use Getopt::Long   qw(GetOptionsFromArray :config no_auto_abbrev no_ignore_case);
-use MCP::Hub::Command::status;    # _base and _admin_token are shared with it
+use MCP::Hub::Command::status;    # _endpoint (base URL + auth) is shared with it
 use Mojo::UserAgent;
 
 # ABSTRACT: Ask the running hub to re-read its configuration file
 
 has description => 'Re-read the configuration on the running hub';
 has usage       => <<'USAGE';
-Usage: mcp-hub reload [--client NAME] [--url BASE]
+Usage: mcp-hub reload [--client NAME] [--url BASE] [--token TOKEN]
 
   mcp-hub reload               # re-read the configuration, apply what changed
 
 Options:
   --client NAME   Client whose token to authenticate with (default: first admin client)
   --url BASE      Base URL of the running hub (default derived from the listen address)
+  --token TOKEN   Bearer token to authenticate with, instead of a configured client
+                  (or $MCP_HUB_TOKEN); with --url the config file is never read
 USAGE
 
 sub run ($self, @args) {
-  GetOptionsFromArray(\@args, 'client=s' => \my $client, 'url=s' => \my $url) or die $self->usage;
+  GetOptionsFromArray(\@args,
+    'client=s' => \my $client, 'url=s' => \my $url, 'token=s' => \my $token) or die $self->usage;
 
-  my $app  = $self->app;
-  my $base = MCP::Hub::Command::status::_base($app, $url);
-  my %headers = ('Content-Type' => 'application/json');
-  if ($app->hub_config->mode eq 'clients') {
-    my $token = MCP::Hub::Command::status::_admin_token($app, $client)
-      // die "no admin client to authenticate with\n";
-    $headers{Authorization} = "Bearer $token";
-  }
+  my ($base, $headers) = MCP::Hub::Command::status::_endpoint($self->app, $url, $client, $token);
+  $headers->{'Content-Type'} = 'application/json';
 
-  my $tx = Mojo::UserAgent->new->post("$base/_hub/reload" => \%headers => '{}');
+  my $tx = Mojo::UserAgent->new->post("$base/_hub/reload" => $headers => '{}');
   my $summary = $tx->res->json;
   if (my $err = $tx->error) {
     return print "hub is not running at $base ($err->{message})\n" unless $err->{code};
@@ -65,6 +62,7 @@ sub _print_summary ($summary) {
 
   mcp-hub reload
   mcp-hub reload --url http://hub.local:3080
+  mcp-hub reload --url http://hub.local:3080 --token s3cret
 
 =head1 DESCRIPTION
 
@@ -85,7 +83,10 @@ this command prints that and exits non-zero:
   Invalid configuration at mcpServers.serper.hub.idle_timeout: must be an integer
 
 In clients mode it authenticates as the first admin client (or C<--client>).
-C<--url> points it at another base URL, as for C<mcp-hub status>.
+C<--url> points it at another base URL, and C<--token> (or C<$MCP_HUB_TOKEN>)
+authenticates without reading the local configuration, both as for
+C<mcp-hub status> -- so a broken local configuration file does not stop C<reload>
+from telling the daemon to re-read its own.
 
 =head1 SEE ALSO
 

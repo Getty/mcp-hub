@@ -175,11 +175,16 @@ subtest 'an upstream that cannot be built stays visible' => sub {
 
 subtest 'refresh via the admin API' => sub {
   my $config = {
-    mcpServers => {history => {class => 'MCP::Hub::Native::ClaudeHistory', args => {root => $FIXTURES}}},
+    mcpServers => {
+      history => {class => 'MCP::Hub::Native::ClaudeHistory', args => {root => $FIXTURES}},
+      broken  => {class => 'No::Such::Class'},
+    },
   };
   my $app = MCP::Hub->new(hub_config_input => $config);
   my $t   = Test::Mojo->new($app);
-  $t->post_ok('/_hub/refresh' => json => {})->status_is(200)->json_is('/history', 4);
+  $t->post_ok('/_hub/refresh' => json => {})->status_is(200)
+    ->json_is('/history/count', 4)->json_is('/history/state', 'ready')
+    ->json_is('/broken/state', 'failed')->json_like('/broken/error', qr/No::Such::Class/);
 };
 
 subtest 'config command output' => sub {

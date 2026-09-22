@@ -9,25 +9,22 @@ use Mojo::UserAgent;
 
 has description => 'Show the running hub status as a table';
 has usage       => <<'USAGE';
-Usage: mcp-hub status [--client NAME] [--url BASE]
+Usage: mcp-hub status [--client NAME] [--url BASE] [--token TOKEN]
 
 Options:
   --client NAME   Client whose token to authenticate with (default: first admin client)
   --url BASE      Base URL of the running hub (default derived from the listen address)
+  --token TOKEN   Bearer token to authenticate with, instead of a configured client
+                  (or $MCP_HUB_TOKEN); with --url the config file is never read
 USAGE
 
 sub run ($self, @args) {
-  GetOptionsFromArray(\@args, 'client=s' => \my $client, 'url=s' => \my $url) or die $self->usage;
+  GetOptionsFromArray(\@args,
+    'client=s' => \my $client, 'url=s' => \my $url, 'token=s' => \my $token) or die $self->usage;
 
-  my $app  = $self->app;
-  my $base = _base($app, $url);
-  my %headers;
-  if ($app->hub_config->mode eq 'clients') {
-    my $token = _admin_token($app, $client) // die "no admin client to authenticate with\n";
-    $headers{Authorization} = "Bearer $token";
-  }
+  my ($base, $headers) = _endpoint($self->app, $url, $client, $token);
 
-  my $tx = Mojo::UserAgent->new->get("$base/_hub/status" => \%headers);
+  my $tx = Mojo::UserAgent->new->get("$base/_hub/status" => $headers);
   if (my $err = $tx->error) {
     return print "hub is not running at $base ($err->{message})\n" unless $err->{code};
     die "status request failed: $err->{code} $err->{message}\n";
@@ -37,8 +34,26 @@ sub run ($self, @args) {
   return;
 }
 
-sub _base ($app, $url) {
-  return MCP::Hub::_base_url($url // $app->hub_config->listen);
+# The base URL and auth headers for talking to the daemon, shared by status,
+# refresh and reload. Given both --url and an explicit token (flag or
+# $MCP_HUB_TOKEN) the on-disk config is never read, so a broken config file does
+# not stop a command that was told exactly where the daemon is and how to auth.
+# Otherwise the listen address and/or the admin token come from the config,
+# which must load and validate now (assert_config -- a clean error if it does
+# not).
+sub _endpoint ($app, $url, $client, $token) {
+  $token = $ENV{MCP_HUB_TOKEN} unless defined $token && length $token;
+
+  if (defined $url && defined $token && length $token) {
+    return (MCP::Hub::_base_url($url), {Authorization => "Bearer $token"});
+  }
+
+  $app->assert_config;
+  my $base = MCP::Hub::_base_url($url // $app->hub_config->listen);
+  return ($base, {Authorization => "Bearer $token"}) if defined $token && length $token;
+  return ($base, {}) unless $app->hub_config->mode eq 'clients';
+  my $admin = _admin_token($app, $client) // die "no admin client to authenticate with\n";
+  return ($base, {Authorization => "Bearer $admin"});
 }
 
 sub _admin_token ($app, $client) {
@@ -87,6 +102,7 @@ sub _ago ($epoch) {
   mcp-hub status
   mcp-hub status --client main
   mcp-hub status --url http://hub.local:3080
+  mcp-hub status --url http://hub.local:3080 --token s3cret
 
 =head1 DESCRIPTION
 
@@ -99,6 +115,12 @@ token of the first admin client, or the one named with C<--client>.
 The daemon is looked for at the configured C<listen> address, with a wildcard
 (C<*>, C<0.0.0.0> or C<[::]>) rewritten to loopback. C<--url> points the command
 at another base URL, for a hub in a container or on another host.
+
+C<--token> (or C<$MCP_HUB_TOKEN>) authenticates with a token given on the spot
+rather than one from the configuration. Given together with C<--url> it means
+the command never reads the configuration file at all, so a broken configuration
+does not stop C<status>, C<refresh> or C<reload> from reaching a daemon whose
+address and token it was handed.
 
 =head1 SEE ALSO
 

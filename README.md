@@ -269,9 +269,9 @@ tool list:
 |---|---|
 | `mcp-hub daemon` | Run the hub in the foreground (single process). |
 | `mcp-hub config [--client NAME] [--all] [--url BASE]` | Print `mcpServers` JSON. |
-| `mcp-hub status [--client NAME] [--url BASE]` | Table of the running hub's upstreams and clients. |
-| `mcp-hub refresh [NAME] [--client NAME] [--url BASE]` | Re-fetch manifests; also the way to retry a `failed` server. |
-| `mcp-hub reload [--client NAME] [--url BASE]` | Re-read the config and apply only what changed. |
+| `mcp-hub status [--client NAME] [--url BASE] [--token TOKEN]` | Table of the running hub's upstreams and clients. |
+| `mcp-hub refresh [NAME] [--client NAME] [--url BASE] [--token TOKEN]` | Re-fetch manifests; also the way to retry a `failed` server. |
+| `mcp-hub reload [--client NAME] [--url BASE] [--token TOKEN]` | Re-read the config and apply only what changed. |
 | `mcp-hub token` | Print a fresh random bearer token. |
 
 A global `--config PATH` (or `-c PATH`, or `$MCP_HUB_CONFIG`) selects the config
@@ -281,7 +281,10 @@ file for every command.
 address (a wildcard such as `0.0.0.0` or `[::]` is reached over loopback). If the
 daemon listens somewhere else — `daemon -l …`, a remapped Docker port, another
 machine — point them at it with `--url http://host:port`. In clients mode they
-authenticate as the first `admin` client, or the one named with `--client`.
+authenticate as the first `admin` client, or the one named with `--client`, or a
+token given on the spot with `--token TOKEN` (or `$MCP_HUB_TOKEN`). Given `--url`
+together with a token they never read the config file at all, so a broken local
+config does not stop you reaching a daemon whose address and token you know.
 
 ## Changing the config while it runs
 
@@ -357,6 +360,10 @@ the reason.
   `mcp-hub daemon -m production`, or pick one with `MOJO_LOG_LEVEL=debug`.
 - **`status`/`refresh` say the hub is not running.** They look at the config's
   `listen` address; use `--url` if the daemon listens elsewhere.
+- **A command dies on a broken config while the daemon is still up.** `status`,
+  `refresh` and `reload` normally read the config for the address and token; pass
+  `--url` and `--token` (or `$MCP_HUB_TOKEN`) to skip the file and reach the
+  running daemon anyway — `reload` then tells it to re-read the fixed config.
 
 ## Native Perl servers
 

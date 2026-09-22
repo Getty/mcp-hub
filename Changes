@@ -24,8 +24,11 @@ Revision history for MCP-Hub
     upstream) that repeatedly fails to connect stays visible as `failed`
     with its reason (`mcp-hub status`, `hub_status`, setup page, 503 body)
     instead of disappearing; `mcp-hub refresh NAME` retries it.
-  - `mcp-hub status` and `mcp-hub refresh` take `--url` to reach a hub that
-    does not listen where the config says.
+  - `mcp-hub status`, `refresh` and `reload` take `--url` to reach a hub that
+    does not listen where the config says, and `--token` (or `$MCP_HUB_TOKEN`)
+    to authenticate with a token given on the spot. Given both, the command
+    never reads the config file, so a broken config no longer stops a command
+    that was told exactly where the daemon is and how to authenticate.
   - Native in-process Perl servers, no subprocess per session:
     ClaudeHistory, ClaudeSessions and Status.
   - Docker image (`raudssus/mcp-hub`), batteries-included (Node, Python,

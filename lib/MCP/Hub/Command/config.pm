@@ -28,6 +28,10 @@ sub run ($self, @args) {
     'url=s'    => \my $url,
   ) or die $self->usage;
 
+  # Emitting client configuration needs the servers, so a broken file (deferred
+  # at start-up in cli mode) is fatal here, with a clean message.
+  $self->app->assert_config;
+
   my $data = $self->app->export_config(client => $client, all => $all, url => $url);
   print JSON::PP->new->pretty->canonical->encode($data);
   return;

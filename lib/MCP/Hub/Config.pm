@@ -318,6 +318,18 @@ sub _err ($path, $message) {
   croak "Invalid configuration$where: $message\n";
 }
 
+# Fold a croaked configuration error onto one line and drop the " at FILE line
+# N." tail Carp tacks on: it names the hub's own internals, never the file the
+# user has to fix -- the JSON path they need is in the message itself. Shared by
+# the startup, CLI and reload boundaries (see MCP::Hub) so a config error reads
+# the same wherever it surfaces.
+sub _strip_location ($error) {
+  ($error = "$error") =~ s/\s+/ /g;
+  $error =~ s/(?: at \S+ line \d+\.?)+\s*$//;
+  $error =~ s/^\s+|\s+$//g;
+  return $error;
+}
+
 1;
 
 =encoding utf8

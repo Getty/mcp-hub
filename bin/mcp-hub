@@ -15,7 +15,11 @@ while (defined(my $arg = shift @ARGV)) {
   else                                       { push @argv, $arg }
 }
 
-MCP::Hub->new->start(@argv);
+# cli => 1: a broken configuration file is deferred rather than thrown at
+# start-up, so a client command told exactly where the daemon is (--url plus a
+# token) can still reach it. Any command that needs the config asks for it and
+# fails cleanly then (MCP::Hub::assert_config).
+MCP::Hub->new(cli => 1)->start(@argv);
 
 =encoding utf8
 

@@ -7,6 +7,11 @@ use Mojo::Base 'Mojolicious::Command::daemon', -signatures;
 has description => 'Run the MCP hub in the foreground';
 
 sub run ($self, @args) {
+  # The daemon needs a valid configuration: if the file was broken it was
+  # deferred at start-up (cli mode), so turn it into a clean fatal error now
+  # rather than starting an empty hub.
+  $self->app->assert_config;
+
   @args = $self->default_listen(@args);
 
   # Only the daemon starts upstreams: kick off background manifest fetches (and

@@ -22,6 +22,8 @@ use Time::HiRes  qw(stat);
 has 'hub_config_input';
 has 'hub_config';
 has 'hub_config_path';
+has 'config_error';
+has cli => 0;
 has 'active_cache_dir';
 has auto_reload_interval => 2;
 has 'auth';
@@ -74,15 +76,27 @@ sub refresh_p ($self, $name = undef) {
   return Mojo::Promise->reject("unknown server '$name'") if defined $name && !@targets;
 
   my @promises = map {
-    my $up = $_;
-    $up->refresh_p->then(sub { +{name => $up->name, count => scalar @{$up->server->tools}} })
-      ->catch(sub { +{name => $up->name, count => scalar @{$up->server->tools}} });
+    my $up   = $_;
+    my $done = sub { +{name => $up->name, result => _refresh_result($up)} };
+    $up->refresh_p->then($done)->catch($done);
   } @targets;
 
   return Mojo::Promise->all(@promises)->then(sub (@results) {
     $self->rebuild_aggregate;
-    return {map { $_->[0]{name} => $_->[0]{count} } @results};
+    return {map { $_->[0]{name} => $_->[0]{result} } @results};
   });
+}
+
+# What a refresh reports for one upstream: the new tool count, its state, and --
+# when it is failed (an unbuildable placeholder, or a crash-looping child a
+# refresh could not revive) -- the reason, so `mcp-hub refresh` and hub_refresh
+# show it as failed instead of "0 tools".
+sub _refresh_result ($up) {
+  return {
+    count => scalar @{$up->server->tools},
+    state => $up->state,
+    (defined $up->error ? (error => $up->error) : ()),
+  };
 }
 
 sub rebuild_aggregate ($self) {
@@ -143,13 +157,10 @@ sub reload ($self) {
 
 sub _refuse_reload ($self, $error) {
   # Carp appends its caller's location whatever the message ends in, and the
-  # JSON decoder puts one of its own inside: neither tells anyone anything
-  # about the file they are looking at. Fold what is left onto one line, the
-  # way MCP::Hub::Config already does for a YAML syntax error.
-  ($error = "$error") =~ s/\s+/ /g;
-  $error =~ s/(?: at \S+ line \d+\.?)+\s*$//;
-  $error =~ s/^\s+|\s+$//g;
-
+  # JSON decoder puts one of its own inside: neither tells anyone anything about
+  # the file they are looking at. The same stripper folds the startup and CLI
+  # errors, so a refused reload reads exactly like a rejected start-up.
+  $error = MCP::Hub::Config::_strip_location($error);
   $self->log->error("configuration reload refused, keeping the running one: $error");
   return {ok => 0, error => $error};
 }
@@ -337,7 +348,30 @@ sub _resolve_config ($self) {
     $empty->{_missing} = $path;
     return $empty;
   }
-  return MCP::Hub::Config->from_file($path);
+
+  my $config = eval { MCP::Hub::Config->from_file($path) };
+  return $config if $config;
+
+  # A broken configuration file. Strip Carp's caller location, which points at
+  # the hub's own internals rather than the file to fix (the JSON path is in the
+  # message). On the command line a client command told exactly where the daemon
+  # is (--url plus a token) must still run, so the error is remembered rather
+  # than thrown and surfaces only if the command turns out to need the config
+  # (see assert_config). Everywhere else -- an embedder, or a command that does
+  # need it -- it is fatal now, the way it always was.
+  my $error = MCP::Hub::Config::_strip_location($@);
+  die "$error\n" unless $self->cli;
+  $self->config_error($error);
+  return MCP::Hub::Config->from_data({mcpServers => {}});
+}
+
+# The command layer calls this before it reaches for anything out of the
+# configuration: if the file was broken and we deferred the error (see cli), now
+# is when it becomes fatal, with the same clean message. A no-op when the
+# configuration loaded.
+sub assert_config ($self) {
+  die $self->config_error . "\n" if defined $self->config_error;
+  return $self;
 }
 
 sub _build_upstreams ($self) {
@@ -651,7 +685,7 @@ Embed the hub in your own L<Mojolicious>-based tests or tooling:
   my $data = $hub->export_config(url => 'http://127.0.0.1:3080');
 
   # refresh one upstream's manifest and get the new tool count
-  $hub->refresh_p('context7')->then(sub ($counts) { say $counts->{context7} });
+  $hub->refresh_p('context7')->then(sub ($counts) { say $counts->{context7}{count} });
 
 A bare C<mcpServers> block is a valid open-mode config, so an existing
 F<.mcp.json> can be handed to the hub unchanged.
@@ -699,6 +733,21 @@ How often the C<hub.auto_reload> watcher stats the configuration file, in
 seconds. Defaults to C<2>. It is an attribute rather than a configuration key
 because there is nothing to tune in a deployment; tests set it lower.
 
+=head2 cli
+
+Whether the hub is running as the C<mcp-hub> command-line tool, set by
+F<bin/mcp-hub> and false when embedded. When true, a broken configuration
+B<file> is remembered in L</config_error> rather than thrown at start-up, so a
+client command told exactly where the daemon is (C<--url> plus a token) can
+still reach it while the file is invalid. See L</assert_config>.
+
+=head2 config_error
+
+The reason the configuration file could not be loaded, folded onto one line
+with Carp's location stripped, or C<undef> when it loaded. Only ever set under
+L</cli>; L</assert_config> turns it back into a fatal error where the
+configuration is actually needed.
+
 =head2 hub_config
 
 The resolved L<MCP::Hub::Config>. (Named C<hub_config> because L<Mojolicious>
@@ -742,6 +791,15 @@ The same, keyed by name.
 
 L<MCP::Hub> inherits all methods from L<Mojolicious> and adds:
 
+=head2 assert_config
+
+  $hub->assert_config;
+
+Die with the deferred L</config_error> when there is one, otherwise do nothing.
+The command layer calls it before reaching for anything out of the
+configuration, so a broken file is fatal exactly where the configuration is
+needed and silent where it is not (see L</cli>).
+
 =head2 export_config
 
   my $data = $hub->export_config(client => 'main', all => 0, url => $base);
@@ -755,7 +813,9 @@ server the profile allows. Behind C<mcp-hub config>.
   $hub->refresh_p('context7')->then(...);
 
 Re-fetch upstream manifests (all, or one by name) and resolve to a
-C<< { name => tool_count } >> hash reference.
+C<< { name => { count, state, error } } >> hash reference: the new tool count
+and state of each refreshed upstream, plus C<error> with the reason when it is
+C<failed> -- so a failed upstream reports its failure rather than C<0> tools.
 
 =head2 rebuild_aggregate
 

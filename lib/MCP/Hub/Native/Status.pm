@@ -82,7 +82,8 @@ the known clients with their profile and C<last_seen>.
 
 =head2 hub_refresh
 
-Re-fetch upstream manifests and return the new tool counts. Takes an optional
+Re-fetch upstream manifests and return each server's new tool count and state,
+with C<error> and the reason for one that is still C<failed>. Takes an optional
 C<name> to refresh a single server, and is also how a C<failed> upstream is
 given another try. In clients mode it requires an admin profile, otherwise it
 returns an error result.
