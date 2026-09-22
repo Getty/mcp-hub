@@ -196,7 +196,7 @@ sub _scan ($self, $file) {
     $last = $rec->{timestamp} if defined $rec->{timestamp};
 
     my $type = $rec->{type} // '';
-    $title = $rec->{title} // $rec->{content} if $type eq 'ai-title';
+    $title = $rec->{aiTitle} if $type eq 'ai-title';
 
     if ($type eq 'user' || $type eq 'assistant') {
       $count++;
