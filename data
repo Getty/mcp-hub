@@ -1,0 +1,17 @@
+---
+claimed_at: 2026-09-22T02:18:14Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-09-22T02:18:14Z
+created: 2026-09-21T21:47:19Z
+id: 15
+priority: low
+started: 2026-09-22T01:28:22Z
+status: done
+tags:
+- review-2026-09-21
+title: Upstream::Http has no failure state
+updated: 2026-09-22T02:18:14Z
+---
+
+A permanently dead remote is retried on every call; there is no crash-loop equivalent to Stdio's failed, so status never shows it as failed. Decide whether consecutive connect failures should mark it failed (left only by refresh, like stdio).
