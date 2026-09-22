@@ -1,0 +1,19 @@
+---
+claimed_at: 2026-09-22T02:44:23Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-09-22T02:44:23Z
+created: 2026-09-16T15:27:00Z
+id: 3
+priority: low
+started: 2026-09-22T02:32:50Z
+status: done
+tags:
+- docs
+- pod
+- style
+title: Decide on POD house-style conversion (=head1/=head2 vs =attr/=method)
+updated: 2026-09-22T02:44:23Z
+---
+
+Module POD is standard =head1/=head2, not the [@Author::GETTY] =attr/=method house style. A safe bulk convert was skipped because the POD is heterogeneous (natives carry prose under METHODS). Decide whether to convert per-module or leave as documented deviation.
