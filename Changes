@@ -32,4 +32,7 @@ Revision history for MCP-Hub
   - Native in-process Perl servers, no subprocess per session:
     ClaudeHistory, ClaudeSessions and Status.
   - Docker image (`raudssus/mcp-hub`), batteries-included (Node, Python,
-    Deno, Bun), with a bundled `docker-compose.yml`.
+    Deno, Bun), with a bundled `docker-compose.yml`. It finds its config as
+    `mcp.json`, `mcp.yml` or `mcp.yaml` under the mounted `/config`
+    (first that exists, JSON leading), so a YAML config is picked up without
+    an env override while the extension still chooses the parser.

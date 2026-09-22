@@ -611,20 +611,31 @@ sub _base_url ($listen) {
   return $base;
 }
 
-# Tried in the config directory when no path was given, first one that exists
-# wins. JSON leads, so a hub that has always had a config.json keeps using it
-# even if a config.yml turns up beside it.
-my @CONFIG_NAMES = qw(config.json config.yml config.yaml);
+# Config file extensions tried in a directory, first that exists wins. JSON
+# leads, so a directory that has always held a .json config keeps using it even
+# if a .yml turns up beside it -- and the extension still picks the parser.
+my @CONFIG_EXTS = qw(json yml yaml);
 
+# Where the config file is looked up when no path is pinned. $MCP_HUB_CONFIG_DIR
+# names a config-mount directory (the file is `mcp.<ext>` there, the convention
+# the Docker image mounts at /config); otherwise the XDG config directory is
+# searched for `config.<ext>`. Either way it is file-name resolution, not a
+# tunable knob: $MCP_HUB_CONFIG still pins an exact file and skips this.
 sub _default_config_path {
+  my $dir = $ENV{MCP_HUB_CONFIG_DIR};
+  return _stem_config_path($dir, 'mcp') if defined $dir && length $dir;
+
   my $home = $ENV{XDG_CONFIG_HOME} || ($ENV{HOME} ? "$ENV{HOME}/.config" : '.config');
-  my $dir  = "$home/mcp-hub";
-  for my $name (@CONFIG_NAMES) {
-    return "$dir/$name" if -f "$dir/$name";
+  return _stem_config_path("$home/mcp-hub", 'config');
+}
+
+# First existing <dir>/<stem>.<ext>, JSON leading. When none is there, name the
+# canonical .json one, so the warning points at the file a user should create.
+sub _stem_config_path ($dir, $stem) {
+  for my $ext (@CONFIG_EXTS) {
+    return "$dir/$stem.$ext" if -f "$dir/$stem.$ext";
   }
-  # None of them is there: name the canonical one, so the warning points at the
-  # file a user should create.
-  return "$dir/$CONFIG_NAMES[0]";
+  return "$dir/$stem.$CONFIG_EXTS[0]";
 }
 
 1;
@@ -760,11 +771,13 @@ ready L<MCP::Hub::Config>. A path is read by L<MCP::Hub::Config/from_file>, so
 its extension picks the syntax -- C<.yml> and C<.yaml> are YAML, anything else
 is JSON -- and an explicitly given path is used exactly as given.
 
-When unset, C<$MCP_HUB_CONFIG> is used, and failing that the config directory
-(C<$XDG_CONFIG_HOME/mcp-hub>, or C<~/.config/mcp-hub>) is searched for
-F<config.json>, then F<config.yml>, then F<config.yaml>; the first that exists
-wins. If none does, the hub starts with no servers and logs a warning naming
-F<config.json>.
+When unset, C<$MCP_HUB_CONFIG> is used, and failing that a directory is searched
+for the first file that exists, JSON leading: C<$MCP_HUB_CONFIG_DIR> when set --
+a config-mount directory holding F<mcp.json>, F<mcp.yml> or F<mcp.yaml>, the
+convention the Docker image mounts at F</config> -- otherwise the XDG config
+directory (C<$XDG_CONFIG_HOME/mcp-hub>, or C<~/.config/mcp-hub>) holding
+F<config.json>, F<config.yml> or F<config.yaml>. If none exists, the hub starts
+with no servers and logs a warning naming the F<.json> one.
 
 =head2 hub_config_path
 

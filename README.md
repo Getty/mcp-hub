@@ -564,11 +564,12 @@ exists. A file must hold a single YAML document; duplicate keys are an error,
 and no YAML tag can construct an object. `mcp-hub config` always prints JSON —
 that output is for MCP clients.
 
-The Docker image sets `MCP_HUB_CONFIG=/config/mcp.json`, so to use YAML there,
-mount the file under a YAML name and point the variable at it:
+The Docker image sets `MCP_HUB_CONFIG_DIR=/config` and finds `mcp.json`, then
+`mcp.yml`, then `mcp.yaml` there (first that exists, JSON leading), so a YAML
+config just needs mounting under one of those names — no env override:
 
 ```bash
-docker run … -v "$PWD/mcp.yml:/config/mcp.yml:ro" -e MCP_HUB_CONFIG=/config/mcp.yml raudssus/mcp-hub
+docker run … -v "$PWD/mcp.yml:/config/mcp.yml:ro" raudssus/mcp-hub
 ```
 
 ### `mcpServers` entries

@@ -35,5 +35,7 @@ services:
     environment:
       # ...or list single ones here, e.g.:
       # - CONTEXT7_API_KEY=${CONTEXT7_API_KEY}
-      - MCP_HUB_CONFIG=/config/mcp.json
+      # The image finds mcp.json, then mcp.yml, then mcp.yaml under here, so a
+      # YAML config just needs mounting under one of those names (no override).
+      - MCP_HUB_CONFIG_DIR=/config
     restart: unless-stopped

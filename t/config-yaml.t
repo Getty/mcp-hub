@@ -316,4 +316,66 @@ subtest 'an explicitly given path is used as is' => sub {
   is $explicit->source, $elsewhere, 'the explicit path is used exactly as given';
 };
 
+# --- the config-mount directory ($MCP_HUB_CONFIG_DIR) ----------------------
+# What the Docker image mounts at /config. It searches the directory for the
+# first of mcp.{json,yml,yaml} that exists, so a YAML config is picked up
+# without an env override -- while the extension still decides the parser.
+
+subtest 'a pinned JSON path ignores a YAML sibling (the old Docker trap)' => sub {
+  local %ENV = %ENV;
+  delete $ENV{MCP_HUB_CONFIG_DIR};
+  my $mount = tempdir;
+  # A YAML config is mounted, but the variable pins the JSON name, as the image
+  # used to bake it. The sibling is never even looked at.
+  $mount->child('mcp.yaml')->spurt("mcpServers:\n  fromyaml:\n    command: x\n");
+  $ENV{MCP_HUB_CONFIG} = $mount->child('mcp.json')->to_string;
+  $ENV{XDG_CACHE_HOME} = $mount->child('cache')->to_string;
+  $ENV{MOJO_LOG_LEVEL} = 'fatal';
+
+  my $app = MCP::Hub->new;
+  is_deeply $app->hub_config->server_names, [], 'the YAML sibling is not picked up';
+  is $app->hub_config->{_missing}, $mount->child('mcp.json')->to_string,
+    'the pinned JSON path is used exactly, and reported missing';
+};
+
+subtest '$MCP_HUB_CONFIG_DIR finds mcp.{json,yml,yaml}, first that exists' => sub {
+  local %ENV = %ENV;
+  delete $ENV{MCP_HUB_CONFIG};
+  my $mount = tempdir;
+  $ENV{MCP_HUB_CONFIG_DIR} = "$mount";
+  $ENV{XDG_CACHE_HOME}     = $mount->child('cache')->to_string;
+  $ENV{MOJO_LOG_LEVEL}     = 'fatal';
+
+  # Least preferred first, so each step proves the order, not just existence.
+  $mount->child('mcp.yaml')->spurt("mcpServers:\n  fromyaml:\n    command: x\n");
+  my $yaml_only = MCP::Hub->new->hub_config;
+  is_deeply $yaml_only->server_names, ['fromyaml'],
+    'mcp.yaml is found when it is the only one (YAML picked up, no override)';
+
+  $mount->child('mcp.yml')->spurt("mcpServers:\n  fromyml:\n    command: x\n");
+  my $yml_too = MCP::Hub->new->hub_config;
+  is_deeply $yml_too->server_names, ['fromyml'], 'mcp.yml wins over mcp.yaml';
+
+  $mount->child('mcp.json')->spurt('{"mcpServers":{"fromjson":{"command":"x"}}}');
+  my $json = MCP::Hub->new;
+  is_deeply $json->hub_config->server_names, ['fromjson'], 'mcp.json wins over both';
+  is $json->hub_config_path, $mount->child('mcp.json')->to_string,
+    'and its exact path is remembered, so an existing mcp.json mount still resolves';
+};
+
+subtest '$MCP_HUB_CONFIG still pins an exact file over $MCP_HUB_CONFIG_DIR' => sub {
+  local %ENV = %ENV;
+  my $mount = tempdir;
+  $mount->child('mcp.json')->spurt('{"mcpServers":{"fromdir":{"command":"x"}}}');
+  my $pinned = write_config('pinned.yml', "mcpServers:\n  pinned:\n    command: x\n");
+  $ENV{MCP_HUB_CONFIG}     = $pinned;
+  $ENV{MCP_HUB_CONFIG_DIR} = "$mount";
+  $ENV{XDG_CACHE_HOME}     = $mount->child('cache')->to_string;
+  $ENV{MOJO_LOG_LEVEL}     = 'fatal';
+
+  my $pinned_cfg = MCP::Hub->new->hub_config;
+  is_deeply $pinned_cfg->server_names, ['pinned'],
+    '$MCP_HUB_CONFIG wins, and $MCP_HUB_CONFIG_DIR is not consulted';
+};
+
 done_testing;

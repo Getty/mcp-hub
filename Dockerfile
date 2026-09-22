@@ -88,7 +88,7 @@ RUN chmod 0755 /usr/local/bin/with-node /app/bin/mcp-hub
 ENV PERL5LIB=/opt/perl5/lib/perl5:/app/lib \
     PATH=/app/bin:/opt/node/bin:/usr/local/bin:/usr/bin:/bin \
     XDG_CACHE_HOME=/cache \
-    MCP_HUB_CONFIG=/config/mcp.json \
+    MCP_HUB_CONFIG_DIR=/config \
     MCP_HUB_NODE_CACHE=/cache/node \
     npm_config_cache=/cache/npm \
     UV_CACHE_DIR=/cache/uv \
