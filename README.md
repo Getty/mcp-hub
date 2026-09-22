@@ -480,11 +480,16 @@ The suite spawns only one upstream, a tiny Perl stdio server
 (`t/upstream/echo.pl`) — no node, no network. A separate **live** integration
 test exercises the hub against a real classic npx MCP server
 (`@modelcontextprotocol/server-everything`); it is off by default and only runs
-when you ask for it and `npx` with a recent enough node is on `PATH`:
+when you opt in or during a release, and `npx` with a recent enough node is on
+`PATH`:
 
 ```bash
 MCP_HUB_TEST_NPX=1 prove -l t/npx.t
 ```
+
+A plain `dzil test` never touches npm or the network; only an explicit
+`MCP_HUB_TEST_NPX=1` or a genuine release run (`RELEASE_TESTING`, i.e.
+`dzil release` / `dzil test --release`) exercises the live server.
 
 ## How it works
 

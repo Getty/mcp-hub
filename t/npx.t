@@ -12,10 +12,13 @@ use MCP::Client;
 # @modelcontextprotocol/server-everything reference server -- to prove the hub
 # talks to the node servers in the wild, not just the Perl echo server. It only
 # runs when npx and a recent enough node are on PATH; otherwise it skips, so it
-# never fails a build on a machine without node or without network.
+# never fails a build on a machine without node or without network. A plain
+# `dzil test` (AUTHOR_TESTING) must NOT hit npm/network on its own -- this needs
+# an explicit opt-in or a genuine release run (RELEASE_TESTING, e.g.
+# `dzil release` / `dzil test --release`).
 
-plan skip_all => 'set MCP_HUB_TEST_NPX=1 to run the live npx integration test'
-  unless $ENV{MCP_HUB_TEST_NPX} || $ENV{AUTHOR_TESTING} || $ENV{RELEASE_TESTING};
+plan skip_all => 'set MCP_HUB_TEST_NPX=1 (or run under RELEASE_TESTING) to run the live npx integration test'
+  unless $ENV{MCP_HUB_TEST_NPX} || $ENV{RELEASE_TESTING};
 
 my $npx = _which('npx');
 plan skip_all => 'npx not found on PATH' unless $npx;
