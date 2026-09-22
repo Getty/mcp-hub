@@ -1,0 +1,18 @@
+---
+claimed_at: 2026-09-22T02:31:50Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-09-22T02:31:50Z
+created: 2026-09-21T21:47:23Z
+id: 16
+priority: low
+started: 2026-09-22T02:19:09Z
+status: done
+tags:
+- review-2026-09-21
+- docker
+title: 'Docker: baked MCP_HUB_CONFIG=/config/mcp.json makes YAML an explicit opt-in'
+updated: 2026-09-22T02:31:50Z
+---
+
+The extension picks the parser, and the image pins the path to mcp.json, so a YAML user must override MCP_HUB_CONFIG (documented in README). Option: have the image look for /config/mcp.{json,yml,yaml}. Changing the documented mount path would be breaking; decide before the first release.
