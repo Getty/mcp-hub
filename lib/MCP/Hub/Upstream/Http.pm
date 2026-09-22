@@ -445,16 +445,16 @@ of L<MCP::Hub::Upstream::Stdio>.
 L<MCP::Hub::Upstream::Http> inherits all attributes from L<MCP::Hub::Upstream>
 and adds:
 
-=head2 cache_dir
+=attr cache_dir
 
 Where the manifest cache lives.
 
-=head2 req_ua
+=attr req_ua
 
 The L<Mojo::UserAgent> used for POSTs, with L<MCP::Hub::Upstream/request_timeout>
 applied.
 
-=head2 ua
+=attr ua
 
 The L<Mojo::UserAgent> used for the long-lived SSE stream.
 
@@ -463,12 +463,12 @@ The L<Mojo::UserAgent> used for the long-lived SSE stream.
 L<MCP::Hub::Upstream::Http> inherits all methods from L<MCP::Hub::Upstream> and
 adds:
 
-=head2 apply_timeouts
+=method apply_timeouts
 
 As L<MCP::Hub::Upstream/apply_timeouts>, and additionally discards L</req_ua>,
 which carries the request timeout it was built with.
 
-=head2 transport
+=method transport
 
   my $mode = $up->transport;
 

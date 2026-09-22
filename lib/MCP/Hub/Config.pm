@@ -405,7 +405,7 @@ integer>, so a typo surfaces at start-up instead of hours later.
 
 =head1 ATTRIBUTES
 
-=head2 auto_reload
+=attr auto_reload
 
   my $bool = $config->auto_reload;
 
@@ -414,47 +414,47 @@ when it changes, from C<hub.auto_reload>. Defaults to false, in which case a
 reload happens only on C<SIGHUP>, C<POST /_hub/reload> or C<mcp-hub reload>. See
 L<MCP::Hub/reload>.
 
-=head2 cache_dir
+=attr cache_dir
 
   my $dir = $config->cache_dir;
 
 Directory the manifest cache lives under. Defaults to C<$XDG_CACHE_HOME/mcp-hub>
 or C<~/.cache/mcp-hub>. C<${VAR}> is expanded, then a leading C<~/>.
 
-=head2 clients
+=attr clients
 
   my $clients = $config->clients;
 
 Hash reference of C<< name => { name, token, profile } >>, the token with
 C<${VAR}> expanded. Empty in open mode.
 
-=head2 idle_timeout
+=attr idle_timeout
 
 Seconds of no requests before a stdio upstream is stopped. Defaults to C<300>.
 
-=head2 listen
+=attr listen
 
 Listen address for the daemon, with C<${VAR}> expanded. Defaults to
 C<http://127.0.0.1:3080>.
 
-=head2 mode
+=attr mode
 
 C<open> when L</clients> is empty, C<clients> otherwise. Derived, never declared.
 
-=head2 profiles
+=attr profiles
 
 Hash reference of normalized profiles, each C<< { servers, tools, admin } >>.
 
-=head2 public_profile
+=attr public_profile
 
 Name of the profile applied to requests without a token in clients mode, or
 C<undef>.
 
-=head2 request_timeout
+=attr request_timeout
 
 Seconds to wait for an upstream response. Defaults to C<60>.
 
-=head2 servers
+=attr servers
 
 Array reference of normalized server entries, in name order. Each entry is a
 hash reference with C<name>, a C<type> derived from which of C<command>, C<url>
@@ -481,14 +481,14 @@ C<class> and C<class_args> (the entry's C<args>, a JSON object here).
 Plus any per-entry C<idle_timeout>, C<request_timeout> and C<always_on> from its
 C<hub> block.
 
-=head2 source
+=attr source
 
 Where the configuration came from, for error messages. A file path, or
 C<config> for data passed directly.
 
 =head1 METHODS
 
-=head2 from_file
+=method from_file
 
   my $config = MCP::Hub::Config->from_file($path);
 
@@ -500,20 +500,20 @@ a clear message if the file is missing, does not parse, or fails validation.
 This is the single entry point from a path to a validated configuration: give
 it a path and it does the right thing with it, whatever the syntax.
 
-=head2 from_data
+=method from_data
 
   my $config = MCP::Hub::Config->from_data($hashref);
   my $config = MCP::Hub::Config->from_data($hashref, $source);
 
 Validate an already-decoded configuration. Useful in tests.
 
-=head2 server
+=method server
 
   my $entry = $config->server('context7');
 
 The normalized entry for a server by name, or C<undef>.
 
-=head2 server_names
+=method server_names
 
   my $names = $config->server_names;
 

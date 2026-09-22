@@ -67,7 +67,7 @@ L</extra>, keyed by name and URI.
 
 L<MCP::Hub::Facade::Server> inherits all attributes from L<MCP::Server> and adds:
 
-=head2 extra
+=attr extra
 
   my $extra = $server->extra;
 

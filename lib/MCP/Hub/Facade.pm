@@ -106,13 +106,13 @@ resource extras are stored on the server.
 
 =head1 METHODS
 
-=head2 build
+=method build
 
   my $server = MCP::Hub::Facade->build($upstream, $manifest);
 
 Return a fresh L<MCP::Hub::Facade::Server> built from the manifest.
 
-=head2 apply
+=method apply
 
   MCP::Hub::Facade->apply($server, $upstream, $manifest);
 

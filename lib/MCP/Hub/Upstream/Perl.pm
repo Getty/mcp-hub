@@ -66,7 +66,7 @@ L<MCP::Hub::Upstream/refresh_p> are no-ops.
 
 L<MCP::Hub::Upstream::Perl> inherits all methods from L<MCP::Hub::Upstream>.
 
-=head2 start_p
+=method start_p
 
 Resolves immediately; there is nothing to start.
 

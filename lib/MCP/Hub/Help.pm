@@ -333,7 +333,7 @@ The page has no external dependencies, so it works offline behind the daemon.
 
 =head1 METHODS
 
-=head2 page
+=method page
 
   my $html = MCP::Hub::Help->page($hub, $c);
 

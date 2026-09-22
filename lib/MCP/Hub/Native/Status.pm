@@ -92,7 +92,7 @@ returns an error result.
 
 L<MCP::Hub::Native::Status> inherits all attributes from L<MCP::Server> and adds:
 
-=head2 hub
+=attr hub
 
 The L<MCP::Hub> instance this server reports on.
 

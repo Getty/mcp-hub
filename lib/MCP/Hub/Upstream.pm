@@ -234,7 +234,7 @@ the transport.
 
 =head1 ATTRIBUTES
 
-=head2 action
+=attr action
 
 The L<Mojolicious> action serving this upstream's L</server>, built on first use
 and then kept. The hub mounts one dynamic route for all upstreams and resolves
@@ -242,34 +242,34 @@ the name per request, so the action belongs to the upstream rather than to a
 route; keeping it also keeps the L<MCP::Server> transport, and with it any open
 streaming subscription.
 
-=head2 config
+=attr config
 
 The normalized configuration entry from L<MCP::Hub::Config>.
 
-=head2 error
+=attr error
 
 Why the upstream is C<failed>, as a string, or C<undef>. Set when an entry
 cannot be built at all (an unloadable C<class>, say), when a stdio child
 crash-loops, and when a remote HTTP upstream repeatedly fails to connect;
 reported in L</status_row> and in the C<503> body of its endpoint.
 
-=head2 hub
+=attr hub
 
 The L<MCP::Hub> instance, when mounted in one.
 
-=head2 last_used
+=attr last_used
 
 Epoch seconds of the last request, updated by L</touch>.
 
-=head2 log
+=attr log
 
 A L<Mojo::Log>.
 
-=head2 name
+=attr name
 
 The server name, and the path it is mounted at.
 
-=head2 placeholder
+=attr placeholder
 
 True when this upstream is the stand-in the hub puts in place of an entry that
 could not be built at all (see L<MCP::Hub/upstreams>). It holds no process and
@@ -278,35 +278,35 @@ when its entry did not change -- "I installed the missing module, now reload"
 works. A genuine upstream that failed later, a crash-looping child say, is left
 alone by a reload; L</refresh_p> is the way back from that.
 
-=head2 protocol_version
+=attr protocol_version
 
 The protocol version the handshake opens with. Defaults to C<2025-06-18>; the
 version the upstream answers with is what the hub then uses.
 
-=head2 request_timeout
+=attr request_timeout
 
 Seconds to wait for an upstream response. Defaults to C<60>.
 
-=head2 server
+=attr server
 
 The L<MCP::Server> agents talk to.
 
-=head2 state
+=attr state
 
 One of C<stopped>, C<starting>, C<ready> or C<failed>.
 
-=head2 stats
+=attr stats
 
 Hash reference with C<calls>, C<errors>, C<started_at> and C<pid>.
 
 =head1 METHODS
 
-=head2 always_on
+=method always_on
 
 Whether the upstream is started at daemon start and never idle-stopped, from the
 entry's C<hub.always_on>.
 
-=head2 apply_timeouts
+=method apply_timeouts
 
   $up->apply_timeouts({idle_timeout => 120, request_timeout => 30});
 
@@ -315,13 +315,13 @@ reload changed nothing about an entry except its timeouts, so that a global
 C<hub.idle_timeout> edit does not restart every child. The stdio subclass also
 re-arms a running idle timer with the new value.
 
-=head2 build
+=method build
 
   my $upstream = MCP::Hub::Upstream->build($entry, hub => $hub);
 
 Construct the right subclass for a configuration entry.
 
-=head2 call_tool
+=method call_tool
 
   my $promise = $up->call_tool($name, $args);
 
@@ -329,55 +329,55 @@ Forward a C<tools/call>, starting the upstream if needed. Always resolves to a
 result hash: the upstream's own result unchanged, or an error result on a
 JSON-RPC error, timeout, crash or failed start.
 
-=head2 get_prompt
+=method get_prompt
 
   my $promise = $up->get_prompt($name, $args);
 
 Forward a C<prompts/get>, starting the upstream if needed.
 
-=head2 manifest_fetched_at
+=method manifest_fetched_at
 
 When the manifest currently in L</server> was fetched, as an ISO timestamp, or
 C<undef> when none has been fetched yet.
 
-=head2 read_resource
+=method read_resource
 
   my $promise = $up->read_resource($uri);
 
 Forward a C<resources/read>, starting the upstream if needed.
 
-=head2 refresh_p
+=method refresh_p
 
 Re-fetch the manifest and rebuild L</server>. A promise. For a C<failed>
 upstream this is the explicit "try again": it clears the failure first. A no-op
 for Perl upstreams.
 
-=head2 rss_kb
+=method rss_kb
 
 Resident set size of the child in kilobytes from C</proc>, or C<undef>.
 
-=head2 start_p
+=method start_p
 
 Start the upstream if needed and resolve when it is C<ready>. Idempotent. A
 C<failed> upstream is not started: the promise is rejected with L</error>, so a
 tool call reports the failure instead of restarting a crash loop. Only
 L</refresh_p> leaves the C<failed> state.
 
-=head2 status_row
+=method status_row
 
 The per-upstream row of C<GET /_hub/status>: C<name>, C<type>, C<state>, C<pid>,
 C<rss_kb>, C<manifest_fetched_at>, C<last_used>, C<calls>, C<errors>, and
 C<error> when one is set.
 
-=head2 stop
+=method stop
 
 Terminate the upstream. A no-op for Perl upstreams.
 
-=head2 touch
+=method touch
 
 Reset L</last_used> and the idle timer.
 
-=head2 type
+=method type
 
 C<stdio>, C<http>, C<sse> or C<perl>.
 

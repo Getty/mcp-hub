@@ -77,7 +77,7 @@ written and then renamed into place.
 
 =head1 ATTRIBUTES
 
-=head2 cache_dir
+=attr cache_dir
 
   my $dir = $manifest->cache_dir;
 
@@ -85,40 +85,40 @@ The hub cache directory. Manifests live in its C<manifests/> subdirectory.
 
 =head1 METHODS
 
-=head2 dir
+=method dir
 
   my $dir = $manifest->dir;
 
 The C<manifests/> directory as a L<Mojo::File>.
 
-=head2 file
+=method file
 
   my $file = $manifest->file($name, $hash);
 
 The cache file for a server name and command hash, as a L<Mojo::File>.
 
-=head2 fresh
+=method fresh
 
   my $bool = $manifest->fresh($name, $hash);
 
 True when a manifest for C<$name> is cached and its stored hash matches C<$hash>,
 so the cached tool list may be used without re-fetching.
 
-=head2 hash
+=method hash
 
   my $hash = $manifest->hash($command, $args, $cwd);
 
 The 16-character command hash. C<$args> defaults to an empty list and C<$cwd> to
 the empty string.
 
-=head2 load
+=method load
 
   my $manifest = $manifest->load($name, $hash);
 
 The cached manifest hash reference, or C<undef> if the file is missing or
 corrupt.
 
-=head2 store
+=method store
 
   my $file = $manifest->store($manifest);
 

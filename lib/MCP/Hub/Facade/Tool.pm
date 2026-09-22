@@ -45,7 +45,7 @@ survive the trip through the hub.
 
 L<MCP::Hub::Facade::Tool> inherits all attributes from L<MCP::Tool> and adds:
 
-=head2 extra
+=attr extra
 
   my $extra = $tool->extra;
 
@@ -56,7 +56,7 @@ entry, present only when the upstream declared them.
 
 L<MCP::Hub::Facade::Tool> inherits all methods from L<MCP::Tool> and overrides:
 
-=head2 validate_input
+=method validate_input
 
   my $bool = $tool->validate_input($args);
 

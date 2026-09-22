@@ -125,13 +125,13 @@ client cannot even tell it exists.
 
 =head1 ATTRIBUTES
 
-=head2 config
+=attr config
 
   my $config = $auth->config;
 
 The L<MCP::Hub::Config> the decisions are made against.
 
-=head2 last_seen
+=attr last_seen
 
   my $epoch = $auth->last_seen->{worker};
 
@@ -142,13 +142,13 @@ does not lose it; C<GET /_hub/status> and C<mcp-hub status> report it.
 
 =head1 METHODS
 
-=head2 allows_server
+=method allows_server
 
   my $bool = $auth->allows_server($profile, $name);
 
 True if the profile's C<servers> list includes the server (or C<"*">).
 
-=head2 authenticate
+=method authenticate
 
   my $ok = $auth->authenticate($c);
 
@@ -157,33 +157,33 @@ Resolve the request to a profile and store it in the stash as C<mcp.profile>
 resolves to a client also stamps L</last_seen>. In clients mode with no valid
 token and no public profile it renders a C<401> and returns false.
 
-=head2 filter_aggregate
+=method filter_aggregate
 
   $auth->filter_aggregate($profile, $tools);
 
 Filter the C<< <server>__<tool> >>-prefixed tools of the C</all> endpoint in
 place, dropping any whose server the profile may not see or whose tool it denies.
 
-=head2 filter_tools
+=method filter_tools
 
   $auth->filter_tools($profile, $server_name, $tools);
 
 Filter a server's tools in place according to the profile's C<allow>/C<deny>
 rules for that server. A no-op when the profile has no rule for the server.
 
-=head2 open_profile
+=method open_profile
 
   my $profile = $auth->open_profile;
 
 The implicit wildcard-and-admin profile used in open mode.
 
-=head2 resolve_client
+=method resolve_client
 
   my $client = $auth->resolve_client($token);
 
 The client hash reference whose token matches, or C<undef>.
 
-=head2 tool_visible
+=method tool_visible
 
   my $bool = $auth->tool_visible($profile, $server_name, $tool_name);
 

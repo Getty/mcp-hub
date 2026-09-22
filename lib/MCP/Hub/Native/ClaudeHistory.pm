@@ -349,7 +349,7 @@ C<[tool_result]>.
 L<MCP::Hub::Native::ClaudeHistory> inherits all attributes from L<MCP::Server>
 and adds:
 
-=head2 root
+=attr root
 
 The Claude configuration directory. Defaults to C<$CLAUDE_CONFIG_DIR> or
 C<~/.claude>.

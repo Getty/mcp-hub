@@ -82,7 +82,7 @@ to apply the profile's C<servers> and C<tools> rules.
 
 L<MCP::Hub::Aggregate> inherits all methods from L<MCP::Server> and adds:
 
-=head2 rebuild
+=method rebuild
 
   $all->rebuild(\@upstreams);
 

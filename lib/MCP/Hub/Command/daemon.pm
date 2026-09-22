@@ -92,7 +92,7 @@ a reload cannot apply -- that needs a restart, and the reload says so.
 
 =head1 METHODS
 
-=head2 default_listen
+=method default_listen
 
   my @args = $command->default_listen(@args);
 

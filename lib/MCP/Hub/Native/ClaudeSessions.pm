@@ -150,17 +150,17 @@ last_prompt, git_branch}]>.
 L<MCP::Hub::Native::ClaudeSessions> inherits all attributes from L<MCP::Server>
 and adds:
 
-=head2 proc_root
+=attr proc_root
 
 The C</proc> directory, overridable for testing. Defaults to C</proc>.
 
-=head2 root
+=attr root
 
 The Claude configuration directory, as for L<MCP::Hub::Native::ClaudeHistory>.
 
 =head1 METHODS
 
-=head2 list_running_sessions
+=method list_running_sessions
 
 The tool as a plain method, returning the array reference described above.
 

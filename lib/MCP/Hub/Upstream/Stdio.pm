@@ -448,11 +448,11 @@ background refresh.
 L<MCP::Hub::Upstream::Stdio> inherits all attributes from L<MCP::Hub::Upstream>
 and adds:
 
-=head2 cache_dir
+=attr cache_dir
 
 Where the manifest cache lives.
 
-=head2 idle_timeout
+=attr idle_timeout
 
 Seconds of no requests before the child is stopped. Defaults to C<300>.
 

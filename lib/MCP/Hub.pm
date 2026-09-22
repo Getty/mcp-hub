@@ -724,27 +724,27 @@ promises, so one slow upstream does not block the others.
 
 L<MCP::Hub> inherits all attributes from L<Mojolicious> and adds:
 
-=head2 active_cache_dir
+=attr active_cache_dir
 
 The manifest cache directory the hub actually uses, fixed when it started. A
 reload reports that C<hub.cache_dir> changed and keeps this one, so the
 upstreams never disagree about where their manifests live.
 
-=head2 aggregate
+=attr aggregate
 
 The L<MCP::Hub::Aggregate> mounted at C</all>.
 
-=head2 auth
+=attr auth
 
 The L<MCP::Hub::Auth>.
 
-=head2 auto_reload_interval
+=attr auto_reload_interval
 
 How often the C<hub.auto_reload> watcher stats the configuration file, in
 seconds. Defaults to C<2>. It is an attribute rather than a configuration key
 because there is nothing to tune in a deployment; tests set it lower.
 
-=head2 cli
+=attr cli
 
 Whether the hub is running as the C<mcp-hub> command-line tool, set by
 F<bin/mcp-hub> and false when embedded. When true, a broken configuration
@@ -752,19 +752,19 @@ B<file> is remembered in L</config_error> rather than thrown at start-up, so a
 client command told exactly where the daemon is (C<--url> plus a token) can
 still reach it while the file is invalid. See L</assert_config>.
 
-=head2 config_error
+=attr config_error
 
 The reason the configuration file could not be loaded, folded onto one line
 with Carp's location stripped, or C<undef> when it loaded. Only ever set under
 L</cli>; L</assert_config> turns it back into a fatal error where the
 configuration is actually needed.
 
-=head2 hub_config
+=attr hub_config
 
 The resolved L<MCP::Hub::Config>. (Named C<hub_config> because L<Mojolicious>
 already owns C<config>.)
 
-=head2 hub_config_input
+=attr hub_config_input
 
 What to load the configuration from: a file path, a decoded hash reference, or a
 ready L<MCP::Hub::Config>. A path is read by L<MCP::Hub::Config/from_file>, so
@@ -779,7 +779,7 @@ directory (C<$XDG_CONFIG_HOME/mcp-hub>, or C<~/.config/mcp-hub>) holding
 F<config.json>, F<config.yml> or F<config.yaml>. If none exists, the hub starts
 with no servers and logs a warning naming the F<.json> one.
 
-=head2 hub_config_path
+=attr hub_config_path
 
 The file L</hub_config> was read from, resolved once at start-up and then fixed,
 or C<undef> when the configuration was handed over as data. L</reload> re-reads
@@ -788,7 +788,7 @@ F<config.yml> dropped next to an active F<config.json> cannot take over
 silently. It is set even when the file was not there at start-up, so creating it
 and reloading works.
 
-=head2 upstreams
+=attr upstreams
 
 Array reference of L<MCP::Hub::Upstream> objects, in server-name order (the
 order L<MCP::Hub::Config/servers> normalizes to). An entry that could not be
@@ -796,7 +796,7 @@ built at all keeps its place as a C<failed> upstream carrying the reason in
 L<MCP::Hub::Upstream/error>, so one broken entry is visible in the status report
 and on its own endpoint instead of taking the daemon down or disappearing.
 
-=head2 upstreams_by_name
+=attr upstreams_by_name
 
 The same, keyed by name.
 
@@ -804,7 +804,7 @@ The same, keyed by name.
 
 L<MCP::Hub> inherits all methods from L<Mojolicious> and adds:
 
-=head2 assert_config
+=method assert_config
 
   $hub->assert_config;
 
@@ -813,14 +813,14 @@ The command layer calls it before reaching for anything out of the
 configuration, so a broken file is fatal exactly where the configuration is
 needed and silent where it is not (see L</cli>).
 
-=head2 export_config
+=method export_config
 
   my $data = $hub->export_config(client => 'main', all => 0, url => $base);
 
 The C<< {mcpServers => {...}} >> structure an agent needs, one HTTP entry per
 server the profile allows. Behind C<mcp-hub config>.
 
-=head2 refresh_p
+=method refresh_p
 
   $hub->refresh_p->then(sub ($counts) { ... });
   $hub->refresh_p('context7')->then(...);
@@ -830,11 +830,11 @@ C<< { name => { count, state, error } } >> hash reference: the new tool count
 and state of each refreshed upstream, plus C<error> with the reason when it is
 C<failed> -- so a failed upstream reports its failure rather than C<0> tools.
 
-=head2 rebuild_aggregate
+=method rebuild_aggregate
 
 Rebuild the C</all> server from the current upstreams.
 
-=head2 reload
+=method reload
 
   my $summary = $hub->reload;
 
@@ -892,7 +892,7 @@ C<hub.listen> and C<hub.cache_dir> cannot be applied to a running daemon.
 Everything else is applied and the summary's C<warnings> say what needs a
 restart.
 
-=head2 schedule_reload
+=method schedule_reload
 
   $hub->schedule_reload('SIGHUP');
 
@@ -900,7 +900,7 @@ Queue a L</reload> on the event loop instead of running it here and now.
 Triggers coalesce: anything arriving before the loop gets round to it joins the
 reload already queued, so signals and file events can never race.
 
-=head2 start_background_fetches
+=method start_background_fetches
 
   $hub->start_background_fetches;
 
@@ -910,7 +910,7 @@ is stopped again right afterwards). Called by the C<daemon> command, so that
 C<config>, C<status>, C<token> and C<refresh> never spawn a child just by loading
 the application.
 
-=head2 start_config_watch
+=method start_config_watch
 
   $hub->start_config_watch;
 
@@ -924,22 +924,22 @@ rather than the single file, whose inode a bind mount would pin. A write that
 does not validate is complained about once and keeps the running configuration;
 the next write is picked up as usual.
 
-=head2 startup
+=method startup
 
 The L<Mojolicious> startup hook: load the configuration, build the upstreams and
 the aggregate, and mount the routes. It starts no upstream itself.
 
-=head2 status_report
+=method status_report
 
 The structure behind C<GET /_hub/status> and the C<hub_status> tool: the mode, a
 row per upstream (L<MCP::Hub::Upstream/status_row>) and a row per client with
 its C<profile> and the C<last_seen> epoch of its last authenticated request.
 
-=head2 stop_config_watch
+=method stop_config_watch
 
 Stop the C<hub.auto_reload> watcher.
 
-=head2 watch_sighup
+=method watch_sighup
 
   $hub->watch_sighup;
 
@@ -949,7 +949,7 @@ the L<EV> reactor an L<EV> signal watcher is installed rather than a C<%SIG>
 handler, because a C<%SIG> handler is only dispatched when the loop happens to
 wake up for something else; L<EV> is only used when it is already loaded.
 
-=head2 watching_config
+=method watching_config
 
 Whether the C<hub.auto_reload> watcher is currently running.
 
