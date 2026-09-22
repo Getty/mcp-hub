@@ -140,11 +140,6 @@ most recent user prompt.
 
 Linux only: on other systems the tool returns an error result saying so.
 
-=head2 list_running_sessions
-
-Returns C<[{pid, cwd, project, session_id, started_at, last_activity,
-last_prompt, git_branch}]>.
-
 =head1 ATTRIBUTES
 
 L<MCP::Hub::Native::ClaudeSessions> inherits all attributes from L<MCP::Server>
@@ -162,7 +157,9 @@ The Claude configuration directory, as for L<MCP::Hub::Native::ClaudeHistory>.
 
 =method list_running_sessions
 
-The tool as a plain method, returning the array reference described above.
+The tool as a plain method. Returns
+C<[{pid, cwd, project, session_id, started_at, last_activity, last_prompt,
+git_branch}]>.
 
 =head1 SEE ALSO
 
