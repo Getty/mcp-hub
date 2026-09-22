@@ -1,0 +1,19 @@
+---
+claimed_at: 2026-09-22T02:18:10Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-09-22T02:18:10Z
+created: 2026-09-16T15:26:56Z
+id: 2
+priority: medium
+started: 2026-09-22T01:28:26Z
+status: done
+tags:
+- tests
+- release
+- npx
+title: Decide whether dzil test should run t/npx.t under AUTHOR_TESTING
+updated: 2026-09-22T02:18:10Z
+---
+
+t/npx.t hits the real @modelcontextprotocol/server-everything via npx and runs during dzil test whenever AUTHOR_TESTING + npx + network are present. That can make an author-side release build depend on npm/network. Decide: keep as-is, gate more tightly, or require explicit opt-in only.
