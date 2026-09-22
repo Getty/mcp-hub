@@ -12,6 +12,12 @@ use Mojo::UserAgent;
 
 # ABSTRACT: An HTTP MCP server (Streamable HTTP or HTTP+SSE) mounted as an upstream
 
+# The same crash-loop threshold as MCP::Hub::Upstream::Stdio (three exits within
+# KILL_GRACE seconds): a remote that refuses to connect three times within five
+# seconds is marked `failed` rather than reconnected on every call.
+use constant FAIL_THRESHOLD => 3;
+use constant FAIL_WINDOW    => 5;
+
 # The streaming user agent for the long-lived SSE GET stream (no timeout).
 has ua => sub {
   my $ua = Mojo::UserAgent->new;
@@ -41,6 +47,7 @@ sub new ($class, %args) {
   $self->{headers}         = $c->{headers} // {};
   $self->{id}              = 0;
   $self->{pending}         = {};
+  $self->{failures}        = [];
 
   $self->_build_server;
   return $self;
@@ -54,6 +61,13 @@ sub start_p ($self) {
   return Mojo::Promise->resolve($self) if $self->state eq 'ready';
   return $self->{start_promise} if $self->{start_promise};
 
+  # A dead remote is left only by an explicit refresh: an ordinary call against a
+  # failed upstream reports why instead of reconnecting to it all over again.
+  return Mojo::Promise->reject("upstream @{[$self->name]}: "
+      . ($self->error // 'failed')
+      . ", run 'mcp-hub refresh @{[$self->name]}' to try again")
+    if $self->state eq 'failed';
+
   $self->state('starting');
   my $done = Mojo::Promise->new;
   $self->{start_promise} = $done;
@@ -61,6 +75,8 @@ sub start_p ($self) {
   my $prep = $self->{transport} eq 'sse' ? $self->_open_sse_p : Mojo::Promise->resolve;
   $prep->then(sub { $self->_handshake_p })->then(sub ($manifest) {
     $self->_apply_manifest($manifest);
+    delete $self->{failed};    # a live connection is never failed
+    $self->error(undef);
     $self->state('ready');
     delete $self->{start_promise};
     $self->touch;
@@ -68,7 +84,8 @@ sub start_p ($self) {
   })->catch(sub ($err) {
     $self->log->error("[@{[$self->name]}] handshake failed: $err");
     $self->_close_sse;
-    $self->state('stopped');
+    $self->_record_failure;
+    $self->state($self->{failed} ? 'failed' : 'stopped');
     delete $self->{start_promise};
     $done->reject("$err");
     return;    # never hand the rejected promise back into the chain
@@ -85,10 +102,13 @@ sub stop ($self) {
 }
 
 sub refresh_p ($self) {
-  return $self->start_p unless $self->state eq 'ready';
-  return $self->_list_all_p
-    ->then(sub ($lists) { $self->_apply_manifest($self->_manifest_from($lists)); return $self })
-    ->catch(sub ($err) { $self->log->debug("[@{[$self->name]}] refresh failed: $err"); return $self });
+  if ($self->state eq 'ready') {
+    return $self->_list_all_p
+      ->then(sub ($lists) { $self->_apply_manifest($self->_manifest_from($lists)); return $self })
+      ->catch(sub ($err) { $self->log->debug("[@{[$self->name]}] refresh failed: $err"); return $self });
+  }
+  $self->_clear_failure if $self->state eq 'failed';
+  return $self->start_p;
 }
 
 sub apply_timeouts ($self, $timeouts) {
@@ -342,6 +362,28 @@ sub _close_sse ($self) {
   return $self;
 }
 
+# A failed start (a refused connection or a handshake that never completed) marks
+# the upstream `failed` once FAIL_THRESHOLD of them land within FAIL_WINDOW
+# seconds -- the stdio child's crash-loop rule, over connect failures instead of
+# process exits.
+sub _record_failure ($self) {
+  my $now = time;
+  push @{$self->{failures}}, $now;
+  @{$self->{failures}} = grep { $_ >= $now - FAIL_WINDOW } @{$self->{failures}};
+  return $self unless @{$self->{failures}} >= FAIL_THRESHOLD;
+  $self->{failed} = 1;
+  $self->error(scalar(@{$self->{failures}}) . ' connect failures within ' . FAIL_WINDOW . 's');
+  return $self;
+}
+
+sub _clear_failure ($self) {
+  delete $self->{failed};
+  @{$self->{failures}} = ();
+  $self->error(undef);
+  $self->state('stopped');
+  return $self;
+}
+
 1;
 
 =encoding utf8
@@ -389,8 +431,14 @@ exposing a C<< …/sse >> URL (such as crawl4ai) speak.
 Configured C<headers> (for example an C<Authorization> bearer) are sent with
 every request but never logged and never mixed into the manifest hash. The
 handshake, manifest cache and facade are shared with the other upstreams through
-L<MCP::Hub::Upstream>; there is no subprocess, so there is no idle-stop, crash or
-restart lifecycle.
+L<MCP::Hub::Upstream>; there is no subprocess, so there is no idle-stop or
+restart lifecycle. A remote that will not connect is retried until it does, but
+three connect failures within five seconds mark the upstream C<failed> -- with
+the reason in L<MCP::Hub::Upstream/error>, a C<503> from its endpoint and a row
+in C<mcp-hub status> -- so a permanently dead remote is reported instead of
+reconnected on every call. L<MCP::Hub::Upstream/refresh_p> (C<mcp-hub refresh
+NAME>) clears the failure and tries once more, mirroring the crash-loop handling
+of L<MCP::Hub::Upstream::Stdio>.
 
 =head1 ATTRIBUTES
 

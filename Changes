@@ -20,9 +20,10 @@ Revision history for MCP-Hub
   - Web setup page at `GET /`: ready-to-paste `.mcp.json`, plus each
     server's tools and instructions; token-gated in clients mode, the token
     accepted from the `Authorization` header only.
-  - A server that cannot be built or that crash-loops stays visible as
-    `failed` with its reason (`mcp-hub status`, `hub_status`, setup page,
-    503 body) instead of disappearing; `mcp-hub refresh NAME` retries it.
+  - A server that cannot be built, that crash-loops, or (for a remote HTTP
+    upstream) that repeatedly fails to connect stays visible as `failed`
+    with its reason (`mcp-hub status`, `hub_status`, setup page, 503 body)
+    instead of disappearing; `mcp-hub refresh NAME` retries it.
   - `mcp-hub status` and `mcp-hub refresh` take `--url` to reach a hub that
     does not listen where the config says.
   - Native in-process Perl servers, no subprocess per session:

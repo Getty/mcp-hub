@@ -249,8 +249,9 @@ The normalized configuration entry from L<MCP::Hub::Config>.
 =head2 error
 
 Why the upstream is C<failed>, as a string, or C<undef>. Set when an entry
-cannot be built at all (an unloadable C<class>, say) and when a stdio child
-crash-loops; reported in L</status_row> and in the C<503> body of its endpoint.
+cannot be built at all (an unloadable C<class>, say), when a stdio child
+crash-loops, and when a remote HTTP upstream repeatedly fails to connect;
+reported in L</status_row> and in the C<503> body of its endpoint.
 
 =head2 hub
 
