@@ -1,0 +1,18 @@
+---
+claimed_at: 2026-09-22T02:18:18Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-09-22T02:18:18Z
+created: 2026-09-21T21:47:15Z
+id: 14
+priority: low
+started: 2026-09-22T01:39:13Z
+status: done
+tags:
+- review-2026-09-21
+title: 'CLI polish: commands die on an invalid config file; Carp location tail on
+  config errors; refresh reports ''0 tools'' for a broken placeholder'
+updated: 2026-09-22T02:18:18Z
+---
+
+(1) status/refresh/reload load the config themselves to find listen + admin token, so while the file on disk is invalid they die in their own startup and never reach the daemon (seen in the 2026-09-21 smoke test: 'Invalid configuration at hub.bogus_key ... at lib/MCP/Hub.pm line 340.'). The daemon-side refusal via POST /_hub/reload works. Decide: accept, or let --url + explicit token bypass config loading. (2) Config::_err croaks, and Carp appends 'at FILE line N.' even with a trailing newline; reload strips it at its boundary, startup and CLI do not. (3) 'mcp-hub refresh' prints 'NAME 0 tools' for an unbuildable entry, which reads as success.
