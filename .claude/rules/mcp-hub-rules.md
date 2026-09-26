@@ -33,8 +33,8 @@ This rule depends on whether the Agent/Task tool is available to you.
 
 - **You can spawn subagents** (orchestrating main agent): Do NOT touch behavior-relevant
   MCP-Hub code yourself — delegate to `mcp-hub-worker` (or `mcp-hub-test-writer` for test
-  mechanics, `mcp-hub-release-checker` for a release audit). Your lane: coordinate,
-  inspect, plan, review diffs, run tests, manage git, edit non-behavioral docs. When in
+  mechanics, `mcp-hub-release-manager` for a release audit). Your lane: coordinate,
+  inspect, plan, review diffs, run tests, edit non-behavioral docs. When in
   doubt, delegate. Why: only the `mcp-hub-*` agents get their skills force-loaded via
   `briefing.skills`; you get no briefing and would touch internals with too little context.
 
@@ -42,7 +42,7 @@ This rule depends on whether the Agent/Task tool is available to you.
   |---|---|
   | Implement / refactor / debug behavior-relevant code | `mcp-hub-worker` (default) |
   | Write/extend tests | `mcp-hub-test-writer` |
-  | Pre-release audit | `mcp-hub-release-checker` |
+  | Commits, `Changes`, card → done, pre-release audit | `mcp-hub-release-manager` |
 
 - **You cannot spawn subagents** (you ARE `mcp-hub-worker` or similar): The delegation
   lock does not apply to you — implement, refactor, debug, and test per these rules.
@@ -52,15 +52,18 @@ client and its lifecycle, config parsing and mode derivation, auth/profile decis
 manifest caching, the façade and aggregate, native servers, tests. Prose docs, `Changes`
 notes, and the README are not.
 
+**Only `mcp-hub-release-manager` commits.** A worker leaves a commit-ready tree and hands its card
+to `review`; you then dispatch `mcp-hub-release-manager` to cut the commit and close the card.
+
 ## Coordination — karr board (always in scope)
 
 Ticket coordination is the orchestrating agent's job, so `karr` is always in scope — don't
-invoke the `kanban-issues-karr-cli` skill first, just use it. Git-native kanban; state
+invoke the `kanban-issues-karr-coordination` skill first, just use it. Git-native kanban; state
 lives in `refs/karr/*`; this repo is a single distribution — one board, no cross-repo
 handoff. Day-to-day: `karr list --compact` / `karr board` for open work; `karr show ID`
 for detail; `karr create/edit/move/handoff` for the workflow; mutating commands auto-sync,
 `karr sync --pull|--push` for explicit exchange. Full command surface: skill
-`kanban-issues-karr-cli`.
+`kanban-issues-karr-coordination`.
 
 **Serialize board mutations when fanning out.** Keep implementation parallel if you like,
 but collect results and then loop `karr move`/`handoff`/`sync` sequentially — N landing at

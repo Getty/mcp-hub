@@ -9,7 +9,7 @@ briefing:
     - getty-perl-core
     - perl-mojo
     - perl-mcp
-    - kanban-issues-karr-cli
+    - kanban-issues-karr-ticket
 ---
 
 You are the mcp-hub-test-writer for **MCP::Hub**.
