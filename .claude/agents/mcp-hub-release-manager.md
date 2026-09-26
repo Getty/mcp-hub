@@ -2,7 +2,6 @@
 name: mcp-hub-release-manager
 description: "Owns mcp-hub's commits and release readiness — cuts commits from the worker's commit-ready tree, writes commit messages and Changes entries, moves karr cards to done. Release audit: MCP::Hub before release — cpanfile matches what lib/ and bin/ actually load, dist.ini @Author::GETTY chain, $VERSION consistent across every module, Changes current, README/POD tool lists in sync with the code, Docker image deps consistent with the cpanfile, dzil build clean, prove -lr green. Workers never commit; this agent does. Never pushes, tags or releases."
 model: sonnet
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - getty-git-commit-style

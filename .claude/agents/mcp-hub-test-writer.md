@@ -2,7 +2,6 @@
 name: mcp-hub-test-writer
 description: "Write MCP::Hub tests with Test::More and Test::Mojo — config parsing, auth/profile decisions, façade pass-through, stdio lifecycle against t/upstream/echo.pl, the /all aggregate, native servers against fixtures. No test spawns node or touches the network or the real ~/.claude. Use for test additions, regression scaffolding, and coverage of new upstreams or tools."
 model: sonnet
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - mcp-hub-core
