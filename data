@@ -1,0 +1,36 @@
+---
+class: standard
+created: 2026-10-06T19:43:09Z
+id: 18
+priority: medium
+status: backlog
+tags:
+- security
+- http
+- sse
+- review-2026-10-06
+title: 'HTTP+SSE upstream: endpoint event is trusted without an origin check, configured
+  headers follow it'
+updated: 2026-10-06T19:43:09Z
+---
+
+## What is wrong
+
+`_on_sse_event` (`lib/MCP/Hub/Upstream/Http.pm:273-277`) takes the `endpoint` event the server sends and makes it absolute against the configured URL:
+
+    $self->{endpoint} = Mojo::URL->new($event->{text})->to_abs(Mojo::URL->new($self->{url}))->to_string;
+
+An absolute URL in the event wins as it stands; there is no comparison with the origin of `$self->{url}`. `_sse_post` (`Http.pm:312-315`) then POSTs every request to that endpoint **with the configured headers**, which is where the upstream's `Authorization: Bearer ...` lives:
+
+    $self->req_ua->post($endpoint => {%{$self->{headers}}, 'Content-Type' => 'application/json'} => json => $obj => sub { });
+
+So a compromised or misconfigured upstream (or anyone on the path of a plain-http upstream) can redirect the hub's JSON-RPC traffic and the upstream credential to a host of its choosing. The reference clients refuse this ("Endpoint origin does not match connection origin").
+
+## Done
+
+- The resolved endpoint must share scheme, host and port with the configured `url`; otherwise the connect fails with a clear reason and the upstream counts a connect failure (visible in `mcp-hub status`).
+- Test in `t/http.t`: an SSE server announcing an endpoint on another origin is refused and receives no POST.
+- POD of MCP::Hub::Upstream::Http states the rule.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: verified
