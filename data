@@ -1,0 +1,41 @@
+---
+class: standard
+created: 2026-10-06T19:43:04Z
+id: 17
+priority: medium
+status: backlog
+tags:
+- bug
+- upstream
+- robustness
+- review-2026-10-06
+title: Upstream answering with a non-object "error" leaves the request pending forever
+updated: 2026-10-06T19:43:04Z
+---
+
+## What is wrong
+
+`MCP::Hub::Upstream::Stdio::_on_response` (`lib/MCP/Hub/Upstream/Stdio.pm:200-210`) first deletes the pending entry and removes its timeout timer, then reads the error as a hash:
+
+    if (my $err = $msg->{error}) {
+      $pending->{promise}->reject("upstream ...: " . ($err->{message} // 'error'));
+
+If the upstream sends `"error": "some string"` (or an array), `$err->{message}` dies under strict refs inside the stream's read callback. The reactor swallows the exception, the promise is neither resolved nor rejected, and because the timer is already gone `request_timeout` no longer saves the caller.
+
+## Reproduce
+
+Upstream that answers every line with `{"jsonrpc":"2.0","id":1,"error":"nope"}`, `request_timeout => 2`:
+
+    Mojo::Reactor::EV: I/O watcher failed: Can't use string ("nope") as a HASH ref while "strict refs" in use at lib/MCP/Hub/Upstream/Stdio.pm line 205.
+    start_p: STILL PENDING after 4s (request_timeout=2)
+
+The agent's request against the hub hangs until it gives up on its own. The HTTP+SSE path has the identical code (`lib/MCP/Hub/Upstream/Http.pm:324-326`, `_on_message`).
+
+## Done
+
+- Both `_on_response` (Stdio) and `_on_message` (Http) reject with a message for any truthy `error`, reading `message` only when `error` is a hash (otherwise stringify / JSON-encode it).
+- The promise is settled before anything that can throw; no path leaves a deleted pending entry unsettled.
+- Tests in `t/stdio.t` and `t/http.t` with a string and an array `error`.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: verified
