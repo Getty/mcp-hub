@@ -1,0 +1,36 @@
+---
+class: standard
+created: 2026-10-06T19:43:13Z
+id: 19
+priority: low
+status: backlog
+tags:
+- bug
+- stdio
+- lifecycle
+- review-2026-10-06
+title: 'Stdio upstream: a child that dies during startup is counted twice, so two
+  failed starts already mark it failed'
+updated: 2026-10-06T19:43:13Z
+---
+
+## What is wrong
+
+When the child exits during the handshake, `_on_close` runs first: it records the exit (`lib/MCP/Hub/Upstream/Stdio.pm:269-272`), rejects the pending handshake request and deletes `{stopping}` (`:275`). The rejection then reaches the `catch` in `start_p` (`Stdio.pm:70-79`), which records the same exit a second time (`:74`) and sets `{stopping} = 1` again (`:75`) for a child that is already gone. That flag stays set, so the next unexpected exit is treated as a deliberate stop: no warning is logged and `_on_close` skips its own `_record_exit`.
+
+## Reproduce
+
+    command => '/bin/false'
+    start #1 -> state=stopped exits=2 stopping=1
+    start #2 -> state=failed  exits=3 stopping=1
+
+The rule documented and tested (`t/stdio.t:117`, "failed after three quick exits") is three exits within the window; a server that fails at startup is locked out after two attempts and needs `mcp-hub refresh NAME`. The stale `stopping` flag also hides the "child exited" warning of the following crash.
+
+## Done
+
+- A startup exit is recorded exactly once (the `catch` records only when `_on_close` has not already handled this pid, e.g. on a handshake timeout where the child is still alive).
+- `{stopping}` is only set while a pid exists.
+- `t/stdio.t` gains a case with a command that exits immediately: state is `stopped` after one and two attempts, `failed` after the third.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: verified
