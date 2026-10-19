@@ -53,7 +53,8 @@ sub start_p ($self) {
   my $done = Mojo::Promise->new;
   $self->{start_promise} = $done;
 
-  unless (eval { $self->_spawn; 1 }) {
+  my $pid;
+  unless (eval { $pid = $self->_spawn; 1 }) {
     my $err = $@ =~ s/\n\z//r;
     $self->state('stopped');
     delete $self->{start_promise};
@@ -71,8 +72,19 @@ sub start_p ($self) {
     $done->resolve($self);
   })->catch(sub ($err) {
     $self->log->error("[@{[$self->name]}] handshake failed: $err");
-    $self->_record_exit;
-    $self->{stopping} = 1;
+
+    # A child that died during the handshake was already counted by _on_close.
+    # Counting it a second time here would lock the upstream out after two
+    # attempts instead of three. The exit is only ours to record when the child
+    # is still there -- a handshake timeout, say, which we kill ourselves.
+    $self->_record_exit unless ($self->{exited_pid} // 0) == $pid;
+
+    # The stopping flag means "this exit is deliberate" -- it may only be set
+    # while there is a child to stop. Set for a child that is already gone, it
+    # would make the next unexpected exit look deliberate: no warning, no
+    # exit recorded.
+    $self->{stopping} = 1 if $self->{pid};
+
     $self->_kill_now;
     $self->state($self->{failed} ? 'failed' : 'stopped');
     delete $self->{start_promise};
@@ -251,6 +263,10 @@ sub _on_stderr ($self, $bytes) {
 sub _on_close ($self) {
   my $pid = $self->{pid} or return;    # already handled
 
+  # Remember which pid this exit belongs to: the catch in start_p must not
+  # count it a second time.
+  $self->{exited_pid} = $pid;
+
   # Where SIGCHLD is ignored the kernel reaps the child itself and waitpid
   # fails with ECHILD, leaving $? at -1 -- which reads as "signal 127". The
   # exit status is simply unknown then.
@@ -302,6 +318,7 @@ sub _spawn ($self) {
   close $err_w;
   $self->{pid}               = $pid;
   $self->{socket}            = $parent;
+  delete $self->{exited_pid};    # a new attempt, a new child
   $self->stats->{pid}        = $pid;
   $self->stats->{started_at} = time;
   $self->log->info("[@{[$self->name]}] started $c->{command} (pid $pid)");

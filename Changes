@@ -41,3 +41,5 @@ Revision history for MCP-Hub
   - An HTTP+SSE upstream whose `endpoint` event names a URL on another origin
     is refused: the connect fails with that reason, and the foreign host
     receives neither the request nor the configured headers.
+  - An exit is counted once, whether the child died during the handshake or
+    later: a stdio server that dies at startup gets three attempts, not two.

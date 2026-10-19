@@ -154,6 +154,39 @@ subtest 'failed after three quick exits' => sub {
   settle;
 };
 
+subtest 'a child that dies at startup is counted once' => sub {
+  # The child exits during the handshake: _on_close records the exit, and the
+  # catch in start_p must not record it a second time. Counted twice, two
+  # attempts would lock the upstream out -- and the stale stopping flag would
+  # swallow the warning of the next exit.
+  my @lines;
+  my $log = Mojo::Log->new;
+  $log->unsubscribe('message');
+  $log->on(message => sub ($l, $level, @msg) { push @lines, "$level @msg" });
+
+  my $up = MCP::Hub::Upstream::Stdio->new(
+    name      => 'false',
+    config    => {type => 'stdio', command => $^X, args => ['-e', 'exit 0']},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log($log);
+
+  for my $n (1 .. 2) {
+    my $r = _await($up->start_p);
+    ok $r->{err}, "attempt $n fails" or diag explain $r;
+    is $up->state, 'stopped', "stopped after attempt $n -- one exit counted, not two";
+    ok +(grep { /child exited/ } @lines), "attempt $n logs the exit" or diag explain \@lines;
+    @lines = ();
+  }
+
+  my $r = _await($up->start_p);
+  ok $r->{err}, 'the third attempt fails';
+  is $up->state, 'failed', 'failed after the third attempt';
+
+  $up->stop;
+  settle;
+};
+
 subtest 'a command that cannot be executed is logged loudly' => sub {
   my $dir = tempdir;
   my $up  = MCP::Hub::Upstream::Stdio->new(
