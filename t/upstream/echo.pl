@@ -7,8 +7,16 @@ use Mojo::Base -strict, -signatures;
 
 use MCP::Server;
 use Mojo::IOLoop;
-use Mojo::JSON qw(encode_json);
+use Mojo::JSON qw(decode_json encode_json);
 use Mojo::Promise;
+
+# --bad-error=string|array switches the peer into a mode that answers a
+# tools/call with a broken error shape -- "error": "text" or "error": [..]
+# instead of the error object the protocol asks for. Upstreams in the wild do
+# that, and the hub must report it instead of leaving the request pending.
+my $BAD_ERROR = (grep { m{^--bad-error=(?:string|array)$} } @ARGV)[0];
+$BAD_ERROR =~ s/^--bad-error=// if defined $BAD_ERROR;
+if (defined $BAD_ERROR) { _bad_error_peer($BAD_ERROR); exit 0 }
 
 my $server = MCP::Server->new(name => 'echo-server', version => '9.9.9');
 $server->instructions('Echo things back.');
@@ -92,3 +100,36 @@ $server->resource(
 );
 
 $server->to_stdio;
+
+# A hand-rolled peer: it speaks just enough of the legacy handshake to get the
+# hub to call a tool, and answers that call with an error that is not an object.
+sub _bad_error_peer ($shape) {
+  $| = 1;    # the hub reads line by line, so nothing may sit in the buffer
+
+  while (my $line = <STDIN>) {
+    my $msg = eval { decode_json($line) };
+    next unless ref $msg eq 'HASH';
+    my $id = $msg->{id};
+    next unless defined $id;    # a notification gets no answer
+    my $method = $msg->{method} // '';
+    if ($method eq 'initialize') {
+      _reply({jsonrpc => '2.0', id => $id, result => {
+        protocolVersion => '2025-06-18',
+        capabilities    => {},
+        serverInfo      => {name => 'bad-error-server', version => '0.0.1'},
+      }});
+    }
+    elsif ($method eq 'tools/list') {
+      _reply({jsonrpc => '2.0', id => $id, result => {tools => [
+        {name => 'boom', description => 'Answers with a broken error', inputSchema => {type => 'object'}},
+      ]}});
+    }
+    else {
+      my $error = $shape eq 'string' ? 'nope' : ['nope', 'still nope'];
+      _reply({jsonrpc => '2.0', id => $id, error => $error});
+    }
+  }
+  return;
+}
+
+sub _reply ($obj) { print STDOUT encode_json($obj) . "\n" }

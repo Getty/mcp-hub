@@ -4,6 +4,7 @@ use Mojo::Base 'Mojo::EventEmitter', -signatures;
 
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
+use Mojo::JSON qw(encode_json);
 use Mojo::Log;
 use Mojo::Promise;
 
@@ -175,6 +176,25 @@ sub _paginate_p ($self, $method, $key, $cursor = undef, $acc = undef) {
 sub _request_p ($self, @) { return Mojo::Promise->reject('_request_p not implemented') }
 sub _notify    ($self, @) { return undef }
 sub _hash      ($self)    { return $self->name }
+
+# A JSON-RPC error is normally an object with a "message", but upstreams in the
+# wild also answer "error": "text" or "error": [..]. Reading ->{message} from
+# anything but a hash dies under strict refs -- and an exception thrown while a
+# request is pending leaves that request pending forever, because its timeout
+# is already gone. So the message is read defensively and can never throw: the
+# promise is always settled.
+sub _error_message ($self, $err) {
+  my $msg = eval {
+    return 'error' unless defined $err;
+    if (ref $err eq 'HASH') {
+      my $message = $err->{message};
+      return 'error' unless defined $message;
+      return ref $message ? encode_json($message) : $message;
+    }
+    return ref $err ? encode_json($err) : $err;
+  };
+  return defined $msg ? $msg : 'error';
+}
 
 sub _now_iso {
   my @t = gmtime;

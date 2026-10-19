@@ -4,6 +4,7 @@ use Test::Mojo;
 use Mojolicious;
 use Mojo::File   qw(tempdir);
 use Mojo::IOLoop;
+use Mojo::JSON qw(encode_json);
 use Mojo::Promise;
 use Mojo::Server::Daemon;
 use IO::Socket::INET;
@@ -44,6 +45,83 @@ my $port = $daemon->ports->[0];
 my $url  = "http://127.0.0.1:$port/mcp";
 
 sub _await ($p) { my $o; $p->then(sub { $o = shift })->catch(sub { $o = {err => shift} })->wait; $o }
+
+# A request that is never settled must fail the test instead of hanging it: the
+# promise is raced against a timeout.
+sub _await_bounded ($promise, $seconds = 5) {
+  my $out;
+  Mojo::Promise->race(Mojo::Promise->timeout($seconds), $promise)
+    ->then(sub { $out = shift })->catch(sub { $out = {err => shift} })->wait;
+  return $out;
+}
+
+# The text of an error result -- or '' when the call did not answer at all.
+sub _error_text ($result) {
+  return '' unless ref $result eq 'HASH';
+  return '' unless ref $result->{content} eq 'ARRAY';
+  return '' unless ref $result->{content}[0] eq 'HASH';
+  return $result->{content}[0]{text} // '';
+}
+
+# A fake HTTP+SSE MCP server: the GET stream announces an endpoint, every
+# JSON-RPC response comes back as a "message" event on that stream -- the way
+# the servers the hub's SSE transport talks to behave. It records every POST it
+# receives, so a test can prove that a request did not reach it.
+sub fake_sse (%opt) {
+  my $app = Mojolicious->new;
+  $app->log->level('warn');
+  my $state = {tx => undef, posts => [], endpoint => $opt{endpoint} // '/messages'};
+
+  $app->routes->get('/sse' => sub ($c) {
+    $c->render_later;
+    $c->res->headers->content_type('text/event-stream');
+    $state->{tx} = $c->tx;
+    $c->write_sse({type => 'endpoint', text => $state->{endpoint}});
+    $c->tx->resume;
+  });
+
+  $app->routes->post('/messages' => sub ($c) {
+    my $req = eval { $c->req->json } // {};
+    push @{$state->{posts}}, $req;
+    my $res = $opt{answer} ? $opt{answer}->($req) : undef;
+    if ($res && defined $res->{id}) {
+      my $content = $state->{tx}->res->content;
+      $content->write_sse({type => 'message', text => encode_json($res)});
+      $state->{tx}->resume;
+    }
+    $c->render(text => 'ok', status => 202);
+  });
+
+  my $daemon = Mojo::Server::Daemon->new(app => $app, listen => ['http://127.0.0.1'], silent => 1);
+  $daemon->start;
+  $state->{port}   = $daemon->ports->[0];
+  $state->{url}    = "http://127.0.0.1:$state->{port}/sse";
+  $state->{daemon} = $daemon;
+  return $state;
+}
+
+# The MCP conversation of the fake server: a proper handshake, and a tools/call
+# that answers with the given error.
+sub mcp_answer ($error) {
+  return sub ($req) {
+    my $id = $req->{id};
+    return undef unless defined $id;    # a notification gets no answer
+    my $method = $req->{method} // '';
+    if ($method eq 'initialize') {
+      return {jsonrpc => '2.0', id => $id, result => {
+        protocolVersion => '2025-06-18',
+        capabilities    => {},
+        serverInfo      => {name => 'fake-sse', version => '0.0.1'},
+      }};
+    }
+    if ($method eq 'tools/list') {
+      return {jsonrpc => '2.0', id => $id, result => {tools => [
+        {name => 'boom', description => 'Answers with an error', inputSchema => {type => 'object'}},
+      ]}};
+    }
+    return {jsonrpc => '2.0', id => $id, error => $error};
+  };
+}
 
 subtest 'streamable http upstream: handshake and calls' => sub {
   my $up = MCP::Hub::Upstream::Http->new(
@@ -148,6 +226,29 @@ subtest 'connect failures mark it failed after N, refresh clears it' => sub {
   is_deeply \@tools, [qw(echo slow)], 'tools discovered after recovery';
 
   $daemon2->stop;
+};
+
+subtest 'sse upstream: a non-object error is reported, not swallowed' => sub {
+  # "error": "text" and "error": [..] -- shapes that are out there in the wild.
+  # Reading ->{message} from them dies under strict refs, and the request it
+  # belongs to then stays pending forever.
+  for my $shape (qw(string array)) {
+    my $error = $shape eq 'string' ? 'nope' : ['nope', 'still nope'];
+    my $fake  = fake_sse(answer => mcp_answer($error));
+    my $up    = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'sse', url => $fake->{url}, request_timeout => 5},
+      cache_dir => tempdir->to_string,
+    );
+
+    my $r = _await_bounded($up->call_tool('boom', {}), 10);
+    ok $r->{isError}, "$shape error is an error result" or diag explain $r;
+    like _error_text($r), qr/^upstream fake:/, "$shape error names the upstream";
+    like _error_text($r), qr/nope/, "$shape error carries the upstream message";
+
+    $up->stop;
+    $fake->{daemon}->stop;
+  }
 };
 
 done_testing;

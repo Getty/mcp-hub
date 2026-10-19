@@ -22,6 +22,23 @@ sub _await ($promise) {
   return $out;
 }
 
+# A request that is never settled must fail the test instead of hanging it: the
+# promise is raced against a timeout.
+sub _await_bounded ($promise, $seconds = 5) {
+  my $out;
+  Mojo::Promise->race(Mojo::Promise->timeout($seconds), $promise)
+    ->then(sub { $out = shift })->catch(sub { $out = {err => shift} })->wait;
+  return $out;
+}
+
+# The text of an error result -- or '' when the call did not answer at all.
+sub _error_text ($result) {
+  return '' unless ref $result eq 'HASH';
+  return '' unless ref $result->{content} eq 'ARRAY';
+  return '' unless ref $result->{content}[0] eq 'HASH';
+  return $result->{content}[0]{text} // '';
+}
+
 sub settle ($seconds = 0.2) { Mojo::Promise->timer($seconds)->wait }
 
 subtest 'handshake, manifest and echo' => sub {
@@ -89,6 +106,21 @@ subtest 'error results' => sub {
 
   $up->stop;
   settle;
+};
+
+subtest 'a non-object error is reported, not swallowed' => sub {
+  # An upstream that answers "error": "text" or "error": [..] -- shapes that
+  # are out there in the wild. Reading ->{message} from them dies under strict
+  # refs, and the request it belongs to then stays pending forever.
+  for my $shape (qw(string array)) {
+    my $up = upstream(args => ['-Ilib', "$ECHO", "--bad-error=$shape"]);
+    my $r  = _await_bounded($up->call_tool('boom', {}), 5);
+    ok $r->{isError}, "$shape error is an error result" or diag explain $r;
+    like _error_text($r), qr/^upstream echo:/, "$shape error names the upstream";
+    like _error_text($r), qr/nope/, "$shape error carries the upstream message";
+    $up->stop;
+    settle;
+  }
 };
 
 subtest 'request timeout' => sub {

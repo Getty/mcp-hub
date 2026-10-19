@@ -156,7 +156,7 @@ sub _http_request_p ($self, $method, $params) {
 
   return $self->req_ua->start_p($tx)->then(sub ($tx) {
     if (my $err = $tx->error) {
-      die "upstream @{[$self->name]}: " . ($err->{message} // 'error') . "\n" unless $found;
+      die "upstream @{[$self->name]}: " . $self->_error_message($err) . "\n" unless $found;
     }
     if (my $sid = $tx->res->headers->header('Mcp-Session-Id')) { $self->{session_id} = $sid }
 
@@ -165,7 +165,7 @@ sub _http_request_p ($self, $method, $params) {
     # does not SSE-parse -- the de-chunked events sit in the body; parse those.
     my $res = $found // _reply_from_body($tx, $id);
     die "upstream @{[$self->name]}: no response for $method\n" unless ref $res eq 'HASH';
-    die "upstream @{[$self->name]}: " . ($res->{error}{message} // 'error') . "\n" if $res->{error};
+    die "upstream @{[$self->name]}: " . $self->_error_message($res->{error}) . "\n" if $res->{error};
     return $res->{result} // {};
   });
 }
@@ -322,7 +322,7 @@ sub _on_message ($self, $msg) {
     my $pending = delete $self->{pending}{$msg->{id}} or return;
     Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
     if (my $err = $msg->{error}) {
-      $pending->{promise}->reject("upstream @{[$self->name]}: " . ($err->{message} // 'error'));
+      $pending->{promise}->reject("upstream @{[$self->name]}: " . $self->_error_message($err));
     }
     else { $pending->{promise}->resolve($msg->{result} // {}) }
     return;

@@ -202,7 +202,7 @@ sub _on_response ($self, $msg) {
     or return $self->log->debug("[@{[$self->name]}] response with unknown id @{[$msg->{id} // '?']}");
   Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
   if (my $err = $msg->{error}) {
-    $pending->{promise}->reject("upstream @{[$self->name]}: " . ($err->{message} // 'error'));
+    $pending->{promise}->reject("upstream @{[$self->name]}: " . $self->_error_message($err));
   }
   else {
     $pending->{promise}->resolve($msg->{result} // {});
