@@ -1,0 +1,77 @@
+---
+class: standard
+completed: 2026-10-19T21:59:16Z
+created: 2026-10-06T19:43:04Z
+id: 17
+priority: medium
+started: 2026-10-19T20:32:49Z
+status: done
+tags:
+- bug
+- upstream
+- robustness
+- review-2026-10-06
+title: Upstream answering with a non-object "error" leaves the request pending forever
+updated: 2026-10-19T21:59:16Z
+---
+
+## What is wrong
+
+`MCP::Hub::Upstream::Stdio::_on_response` (`lib/MCP/Hub/Upstream/Stdio.pm:200-210`) first deletes the pending entry and removes its timeout timer, then reads the error as a hash:
+
+    if (my $err = $msg->{error}) {
+      $pending->{promise}->reject("upstream ...: " . ($err->{message} // 'error'));
+
+If the upstream sends `"error": "some string"` (or an array), `$err->{message}` dies under strict refs inside the stream's read callback. The reactor swallows the exception, the promise is neither resolved nor rejected, and because the timer is already gone `request_timeout` no longer saves the caller.
+
+## Reproduce
+
+Upstream that answers every line with `{"jsonrpc":"2.0","id":1,"error":"nope"}`, `request_timeout => 2`:
+
+    Mojo::Reactor::EV: I/O watcher failed: Can't use string ("nope") as a HASH ref while "strict refs" in use at lib/MCP/Hub/Upstream/Stdio.pm line 205.
+    start_p: STILL PENDING after 4s (request_timeout=2)
+
+The agent's request against the hub hangs until it gives up on its own. The HTTP+SSE path has the identical code (`lib/MCP/Hub/Upstream/Http.pm:324-326`, `_on_message`).
+
+## Done
+
+- Both `_on_response` (Stdio) and `_on_message` (Http) reject with a message for any truthy `error`, reading `message` only when `error` is a hash (otherwise stringify / JSON-encode it).
+- The promise is settled before anything that can throw; no path leaves a deleted pending entry unsettled.
+- Tests in `t/stdio.t` and `t/http.t` with a string and an array `error`.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: verified
+
+2026-10-19 21:06 Implementation note (mcp-hub-worker).
+
+What changed
+- lib/MCP/Hub/Upstream.pm: new private helper _error_message(). It reads the
+  "message" of a JSON-RPC error only when the error is a hash, otherwise it
+  stringifies or JSON-encodes it. The helper is eval-guarded and can never
+  throw, so the promise is always settled -- a deleted pending entry is never
+  left unsettled.
+- lib/MCP/Hub/Upstream/Stdio.pm: _on_response rejects with that message.
+- lib/MCP/Hub/Upstream/Http.pm: _on_message rejects with that message.
+- lib/MCP/Hub/Upstream/Http.pm: the two die() calls in _http_request_p use it
+  as well. Not named in the card, but the same defect class on the Streamable
+  HTTP path (a non-object error there died in the response handler, so the
+  caller saw the raw Perl error instead of the upstream message), so it is
+  fixed too. No public API or visible behaviour changed otherwise.
+
+Tests
+- t/upstream/echo.pl: --bad-error=string|array switches the peer into a mode
+  that answers a tools/call with "error": "text" or "error": [..].
+- t/stdio.t: 'a non-object error is reported, not swallowed' -- both shapes.
+- t/http.t: 'sse upstream: a non-object error is reported, not swallowed' --
+  both shapes over the SSE transport (a fake SSE server lives in the test
+  file now).
+
+Verified
+- prove -lr t/ green (16 files, 134 tests).
+- Red against the old lib: t/stdio.t subtest 4 and t/http.t subtest 4 fail
+  there -- the request stays pending, the bounded await times out. The failure
+  is the behaviour, not a missing module.
+
+2026-10-19 21:06 Done: both error paths report the upstream message, the promise is always settled, tests for string and array error are in t/stdio.t and t/http.t (red against the old lib).
+
+2026-10-19 21:59 Koordinator: umgesetzt und geprueft, drei Commits auf main (4fc57c0, dc38dcc, c98633a). Volle Suite gruen: 16 Dateien, 135 Tests PASS.
