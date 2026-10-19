@@ -1,0 +1,79 @@
+---
+claimed_at: 2026-10-19T21:59:30Z
+claimed_by: mcp-hub-worker
+class: standard
+completed: 2026-10-19T21:59:35Z
+created: 2026-10-06T19:43:09Z
+id: 18
+priority: medium
+started: 2026-10-19T20:32:54Z
+status: done
+tags:
+- security
+- http
+- sse
+- review-2026-10-06
+title: 'HTTP+SSE upstream: endpoint event is trusted without an origin check, configured
+  headers follow it'
+updated: 2026-10-19T21:59:35Z
+---
+
+## What is wrong
+
+`_on_sse_event` (`lib/MCP/Hub/Upstream/Http.pm:273-277`) takes the `endpoint` event the server sends and makes it absolute against the configured URL:
+
+    $self->{endpoint} = Mojo::URL->new($event->{text})->to_abs(Mojo::URL->new($self->{url}))->to_string;
+
+An absolute URL in the event wins as it stands; there is no comparison with the origin of `$self->{url}`. `_sse_post` (`Http.pm:312-315`) then POSTs every request to that endpoint **with the configured headers**, which is where the upstream's `Authorization: Bearer ...` lives:
+
+    $self->req_ua->post($endpoint => {%{$self->{headers}}, 'Content-Type' => 'application/json'} => json => $obj => sub { });
+
+So a compromised or misconfigured upstream (or anyone on the path of a plain-http upstream) can redirect the hub's JSON-RPC traffic and the upstream credential to a host of its choosing. The reference clients refuse this ("Endpoint origin does not match connection origin").
+
+## Done
+
+- The resolved endpoint must share scheme, host and port with the configured `url`; otherwise the connect fails with a clear reason and the upstream counts a connect failure (visible in `mcp-hub status`).
+- Test in `t/http.t`: an SSE server announcing an endpoint on another origin is refused and receives no POST.
+- POD of MCP::Hub::Upstream::Http states the rule.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: verified
+
+2026-10-19 21:06 Implementation note (mcp-hub-worker).
+
+What changed
+- lib/MCP/Hub/Upstream/Http.pm: the resolved endpoint is checked against the
+  configured url before it is stored. Scheme, host and port have to match --
+  the default ports 80/443 are normalized, since Mojo::URL leaves an implicit
+  port undefined. A relative endpoint ('/messages') is made absolute against
+  the configured url first, so it matches by construction.
+- A refused endpoint is never stored, so _sse_post has nothing to post to:
+  the foreign origin receives no POST, and with it no configured header (the
+  Authorization bearer among them).
+- The refusal counts as a connect failure like any other: the connect fails
+  with a clear reason ('SSE endpoint ... does not match the configured origin
+  ...'), three of them within five seconds mark the upstream failed.
+- The reason of the refused attempt is part of the error message, so
+  'mcp-hub status' shows why the upstream failed and not only the count.
+  This is a small addition to the existing message ('3 connect failures
+  within 5s: <reason>'); the count alone was there before. Say the word if
+  you would rather see the count only.
+- POD of MCP::Hub::Upstream::Http states the rule.
+
+Tests
+- t/http.t: 'sse upstream: an endpoint on another origin is refused'. A fake
+  SSE server announces the endpoint of a second server on another port: the
+  connect fails with a reason naming the origin, the second server receives
+  no POST, and the upstream ends up failed with the reason in the status row.
+  The fake SSE server lives in the test file.
+
+Verified
+- prove -lr t/ green (16 files, 134 tests).
+- Red against the old lib: t/http.t subtest 5 fails there -- the endpoint is
+  trusted and the foreign origin receives the POST.
+
+2026-10-19 21:06 Done: the resolved SSE endpoint must share scheme, host and port with the configured url, a foreign endpoint is refused with a reason, gets no POST and counts as a connect failure; POD states the rule.
+
+2026-10-19 21:59 Koordinator: umgesetzt und geprueft, Commit dc38dcc auf main. Volle Suite gruen: 16 Dateien, 135 Tests PASS.
+
+2026-10-19 21:59 Koordinator (Entscheidung zur offenen Frage der Karte): die Begruendung bleibt in der Statusmeldung stehen. Die Meldung lautet dann '3 connect failures within 5s: <Begruendung>' -- der Zaehler bleibt wie bisher, die Ursache des letzten Versuchs wird angehaengt. Damit ist am Status-Output erkennbar, ob es ein fremder Origin war, ein abgelehnter Connect oder etwas anderes; ein separates Feld waere ein API-Zusatz ohne Nutzen fuer den Aufrufer. Die Begruendung gehoert zum Fehler, nicht in einen neuen Status.
