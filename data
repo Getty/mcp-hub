@@ -1,0 +1,50 @@
+---
+class: standard
+created: 2026-10-19T22:00:07Z
+id: 20
+priority: medium
+status: backlog
+tags:
+- bug
+- test
+- flakiness
+title: 't/stdio.t: the three quick exits do not fit into the 5 second window under
+  load'
+updated: 2026-10-19T22:00:07Z
+---
+
+## What is wrong
+
+`subtest 'failed after three quick exits'` in `t/stdio.t` counts on a timing
+window: three spawn-and-handshake cycles have to fit into the `KILL_GRACE` of
+5 seconds (`MCP::Hub::Upstream::Stdio`). Under load the three cycles took
+5.25 s, so the third exit was not counted and the upstream ended up `stopped`
+instead of `failed` (`got: 'stopped' expected: 'failed'`).
+
+The subtest failed 1 in 3 in the full suite and never in isolation. It is not
+a regression of the k17/k18/k19 batch: the same failure happens with the code
+of `main` before the batch, and the old and the new library count the exits
+identically (3 exits, 3 s).
+
+## Reproduce
+
+    cd p5-mcp-hub && prove -lr t/
+
+fails about every third time when the machine is busy. In isolation:
+
+    prove -l t/stdio.t
+
+passes every time.
+
+## Done
+
+- The subtest does not depend on the wall clock: either the window is measured
+  from the first exit, or the child is told to exit at once and the elapsed
+  time is checked against a generous limit.
+- The failure window and `KILL_GRACE` are not tested against each other: a test
+  that needs three cycles in five seconds says more about the machine than
+  about the code.
+
+---
+
+Found by the coordinator during the k17/k18/k19 hand-off on 2026-10-19.
