@@ -71,6 +71,7 @@ sub start_p ($self) {
   $self->state('starting');
   my $done = Mojo::Promise->new;
   $self->{start_promise} = $done;
+  delete $self->{failure_reason};    # the reason belongs to this attempt only
 
   my $prep = $self->{transport} eq 'sse' ? $self->_open_sse_p : Mojo::Promise->resolve;
   $prep->then(sub { $self->_handshake_p })->then(sub ($manifest) {
@@ -272,11 +273,37 @@ sub _sse_dechunk ($self) {
 
 sub _on_sse_event ($self, $event) {
   if (($event->{type} // '') eq 'endpoint') {
-    $self->{endpoint} = Mojo::URL->new($event->{text})->to_abs(Mojo::URL->new($self->{url}))->to_string;
+    my $endpoint = Mojo::URL->new($event->{text})->to_abs(Mojo::URL->new($self->{url}));
+
+    # The endpoint event may not move the JSON-RPC traffic -- and with it the
+    # configured headers, the Authorization bearer among them -- to another
+    # origin. The reference clients refuse such an endpoint too.
+    if (my $reason = $self->_foreign_origin($endpoint)) {
+      $self->log->error("[@{[$self->name]}] $reason");
+      $self->{failure_reason} = $reason;
+      return $self->_sse_resolve(0, $reason);
+    }
+
+    $self->{endpoint} = $endpoint->to_string;
     return $self->_sse_resolve(1);
   }
   my $msg = eval { from_json($event->{text} // '') };
   $self->_on_message($msg) if ref $msg eq 'HASH';
+}
+
+# The scheme, the host and the port of the endpoint have to be the ones of the
+# configured URL. Returns the reason when they are not, undef when they are.
+sub _foreign_origin ($self, $endpoint) {
+  my $base   = Mojo::URL->new($self->{url});
+  my $scheme = lc($endpoint->scheme // '');
+  my $host   = lc($endpoint->host // '');
+  return "SSE endpoint $endpoint is not an absolute URL" if $scheme eq '' || $host eq '';
+
+  my $port      = $endpoint->port // ($scheme eq 'https' ? 443 : 80);
+  my $base_port = $base->port // (lc($base->scheme // '') eq 'https' ? 443 : 80);
+  return "SSE endpoint $endpoint does not match the configured origin $base"
+    if $scheme ne lc($base->scheme // '') || $host ne lc($base->host // '') || $port != $base_port;
+  return undef;
 }
 
 sub _sse_resolve ($self, $ok, $err = undef) {
@@ -365,19 +392,22 @@ sub _close_sse ($self) {
 # A failed start (a refused connection or a handshake that never completed) marks
 # the upstream `failed` once FAIL_THRESHOLD of them land within FAIL_WINDOW
 # seconds -- the stdio child's crash-loop rule, over connect failures instead of
-# process exits.
+# process exits. The reason of the last attempt (an endpoint on a foreign
+# origin, say) is part of the message, so `mcp-hub status` says why.
 sub _record_failure ($self) {
   my $now = time;
   push @{$self->{failures}}, $now;
   @{$self->{failures}} = grep { $_ >= $now - FAIL_WINDOW } @{$self->{failures}};
   return $self unless @{$self->{failures}} >= FAIL_THRESHOLD;
   $self->{failed} = 1;
-  $self->error(scalar(@{$self->{failures}}) . ' connect failures within ' . FAIL_WINDOW . 's');
+  $self->error(scalar(@{$self->{failures}}) . ' connect failures within ' . FAIL_WINDOW . 's'
+    . (defined $self->{failure_reason} ? ': ' . $self->{failure_reason} : ''));
   return $self;
 }
 
 sub _clear_failure ($self) {
   delete $self->{failed};
+  delete $self->{failure_reason};
   @{$self->{failures}} = ();
   $self->error(undef);
   $self->state('stopped');
@@ -425,6 +455,13 @@ The older two-endpoint transport: a long-lived C<GET> stream delivers an
 C<endpoint> event naming the URL to POST messages to, and every JSON-RPC
 response comes back as a C<message> event on that stream. This is what servers
 exposing a C<< …/sse >> URL (such as crawl4ai) speak.
+
+The C<endpoint> event has to name a URL on the same origin -- the same scheme,
+host and port -- as the configured C<url>. The hub sends every request, with the
+configured headers, to that endpoint, so an endpoint on another origin would
+hand the JSON-RPC traffic and the upstream credential to a foreign host. Such an
+endpoint is refused: the connect fails with that reason, it counts as a connect
+failure like any other, and it is reported in L<MCP::Hub::Upstream/error>.
 
 =back
 

@@ -251,4 +251,38 @@ subtest 'sse upstream: a non-object error is reported, not swallowed' => sub {
   }
 };
 
+subtest 'sse upstream: an endpoint on another origin is refused' => sub {
+  # The endpoint event may not move the JSON-RPC traffic -- and with it the
+  # configured Authorization header -- to a foreign host.
+  my $foreign = fake_sse();
+  my $fake    = fake_sse(endpoint => "http://127.0.0.1:$foreign->{port}/messages");
+
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {
+      type            => 'sse',
+      url             => $fake->{url},
+      request_timeout => 5,
+      headers         => {Authorization => 'Bearer secret'},
+    },
+    cache_dir => tempdir->to_string,
+  );
+
+  my $r = _await_bounded($up->start_p, 10);
+  ok $r->{err}, 'the connect fails' or diag explain $r;
+  like $r->{err}, qr/origin/, 'the reason names the origin mismatch';
+  is scalar @{$foreign->{posts}}, 0, 'the foreign origin received no POST';
+  is $up->state, 'stopped', 'one connect failure is not fatal yet';
+
+  # Three connect failures within five seconds mark the upstream failed, and
+  # the reason shows up in the status row.
+  _await_bounded($up->start_p, 10) for 2 .. 3;
+  is $up->state, 'failed', 'failed after the third connect failure';
+  like $up->status_row->{error}, qr/connect failure/, 'the failure count is reported';
+  like $up->status_row->{error}, qr/origin/, 'and so is the reason';
+
+  $fake->{daemon}->stop;
+  $foreign->{daemon}->stop;
+};
+
 done_testing;
