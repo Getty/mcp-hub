@@ -1,0 +1,75 @@
+---
+class: standard
+completed: 2026-10-19T21:59:47Z
+created: 2026-10-06T19:43:13Z
+id: 19
+priority: low
+started: 2026-10-19T20:32:59Z
+status: done
+tags:
+- bug
+- stdio
+- lifecycle
+- review-2026-10-06
+title: 'Stdio upstream: a child that dies during startup is counted twice, so two
+  failed starts already mark it failed'
+updated: 2026-10-19T21:59:47Z
+---
+
+## What is wrong
+
+When the child exits during the handshake, `_on_close` runs first: it records the exit (`lib/MCP/Hub/Upstream/Stdio.pm:269-272`), rejects the pending handshake request and deletes `{stopping}` (`:275`). The rejection then reaches the `catch` in `start_p` (`Stdio.pm:70-79`), which records the same exit a second time (`:74`) and sets `{stopping} = 1` again (`:75`) for a child that is already gone. That flag stays set, so the next unexpected exit is treated as a deliberate stop: no warning is logged and `_on_close` skips its own `_record_exit`.
+
+## Reproduce
+
+    command => '/bin/false'
+    start #1 -> state=stopped exits=2 stopping=1
+    start #2 -> state=failed  exits=3 stopping=1
+
+The rule documented and tested (`t/stdio.t:117`, "failed after three quick exits") is three exits within the window; a server that fails at startup is locked out after two attempts and needs `mcp-hub refresh NAME`. The stale `stopping` flag also hides the "child exited" warning of the following crash.
+
+## Done
+
+- A startup exit is recorded exactly once (the `catch` records only when `_on_close` has not already handled this pid, e.g. on a handshake timeout where the child is still alive).
+- `{stopping}` is only set while a pid exists.
+- `t/stdio.t` gains a case with a command that exits immediately: state is `stopped` after one and two attempts, `failed` after the third.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: verified
+
+2026-10-19 21:14 Implementation note (mcp-hub-worker).
+
+What changed
+- lib/MCP/Hub/Upstream/Stdio.pm: _on_close remembers the pid it handled
+  ({exited_pid}); the catch in start_p records the exit only when that pid is
+  not the one of the current attempt -- so a child that dies during the
+  handshake is counted once, by _on_close, and a handshake timeout (the child
+  is still alive) is counted once, by the catch.
+- {stopping} is now set only while a pid exists. Before, the catch set it for
+  a child that was already gone; the flag stayed set and made the next
+  unexpected exit look deliberate -- no warning, no exit recorded.
+- _spawn clears {exited_pid}, so a new attempt is never compared against the
+  pid of an older one.
+
+Tests
+- t/stdio.t: 'a child that dies at startup is counted once'. A command that
+  exits immediately: stopped after the first and the second attempt, failed
+  after the third. The log is captured as well: every attempt logs the
+  'child exited' warning, which the stale stopping flag used to swallow.
+
+Verified
+- prove -lr t/ green, twice (16 files, 135 tests).
+- Red against the old lib: t/stdio.t subtest 8 fails there -- 'stopped after
+  attempt 2' and 'attempt 2 logs the exit' are the failures; the old code
+  counted the exit twice and went failed after two attempts, exactly as the
+  card's repro says.
+
+Not changed
+- The three-exits-in-five-seconds rule itself, the crash-loop handling of a
+  child that dies during a call, and the deliberate stop are untouched: a
+  deliberate stop during the handshake is now not counted as an exit either,
+  which is what the flag means.
+
+2026-10-19 21:15 Done: a startup exit is counted exactly once, {stopping} is only set while a pid exists, and t/stdio.t has the case with a command that exits immediately (stopped, stopped, failed).
+
+2026-10-19 21:59 Koordinator: umgesetzt und geprueft, Commit c98633a auf main. Volle Suite gruen: 16 Dateien, 135 Tests PASS.
