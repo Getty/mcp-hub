@@ -5,6 +5,7 @@ model: sonnet
 briefing:
   skills:
     - mcp-hub-core
+    - mcp-hub-runtime
     - getty-perl-core
     - perl-mojo
     - perl-mcp

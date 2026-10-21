@@ -5,6 +5,7 @@ model: inherit
 briefing:
   skills:
     - mcp-hub-core
+    - mcp-hub-runtime
     - getty-perl-core
     - perl-mojo
     - perl-mcp
@@ -59,7 +60,8 @@ re-derive them here):
 `prove -lr t/` is the canonical run — **recursive**, because `t/native/` and `t/upstream/`
 are subdirs that plain `prove -l t/` silently skips; never use the non-recursive form as
 the green signal. `dzil test` is the release-time equivalent. The suite spawns exactly
-one upstream, `t/upstream/echo.pl` (a Perl `MCP::Server::Legacy`) — no node, no network;
+one upstream, `t/upstream/echo.pl` (a Perl `MCP::Server::Legacy`) — no node, no network,
+except the opt-in `t/npx.t` (`MCP_HUB_TEST_NPX=1` or `RELEASE_TESTING`);
 extend that fixture rather than reaching for a real server. `t/hub.t` drives the whole
 app with `Test::Mojo` + `MCP::Client` against a temp config and cache dir; the natives run
 against `t/fixtures/claude/projects/` — never against the real `~/.claude`.
