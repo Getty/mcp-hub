@@ -8,7 +8,8 @@ with the `[@Author::GETTY]` Dist::Zilla bundle.
 ## Delegation
 
 Delegate behavior-relevant code to the right agent instead of touching it yourself — the
-principle and the full lane definition live in `.claude/rules/mcp-hub-rules.md`.
+principle is the shared rule `getty-agent-delegation` (skilletor bundle `getty-cpan-dist@getty`);
+the full lane definition and the hazards live in `.claude/rules/mcp-hub-rules.md`.
 
 | Task | Agent |
 |---|---|
