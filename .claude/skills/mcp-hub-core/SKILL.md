@@ -167,6 +167,6 @@ temp Config/Cache, getrieben von `MCP::Client`; die Natives laufen gegen
 
 `Mojo::Base -strict, -signatures` durchgängig — **kein** Moo/Moose in dieser Distribution
 (`perl-mojo`). POD folgt der Deklaration im `[@Author::GETTY]`-Stil; `# ABSTRACT:` auf
-jedem Modul, `# PODNAME:` auf `bin/mcp-hub`. `.claude/` ist via `[PruneFiles]` aus dem
-Tarball. Geteilte Skills statt Wiederholung: Release `getty-perl-release-author-getty`,
+jedem Modul, `# PODNAME:` auf `bin/mcp-hub`. `.claude/` und `CLAUDE.md` gehen mit ins
+Tarball (Bundle-Default). Geteilte Skills statt Wiederholung: Release `getty-perl-release-author-getty`,
 dist.ini `perl-release-dist-ini`, MCP-Grundlagen `perl-mcp`, Docker `docker`.

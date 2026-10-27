@@ -34,9 +34,9 @@ code goes back to the worker as a note on its card, not as your own fix. **Never
    loaded lazily with `require`, so a plain `use` grep misses it). Everything else the
    design leans on is a core module — confirm nothing non-core slipped in undeclared,
    and nothing declared has gone unused.
-2. **dist.ini** — `[@Author::GETTY]` bundle, `copyright_year` current, and the
-   `[PruneFiles] match = ^\.claude/` still present so the agent scaffolding stays out of
-   the tarball.
+2. **dist.ini** — `[@Author::GETTY]` bundle, `copyright_year` current. `.claude/`,
+   `CLAUDE.md` and `misc/agent-context/` ship on purpose (the bundle default); `dist.ini`
+   excludes none of them. Not a finding.
 3. **`$VERSION` consistency** — every module under `lib/` carries the same version
    (`grep -rn 'our \$VERSION' lib bin`); the release bundle pins them, so a hand-edited
    outlier is the failure to catch.
