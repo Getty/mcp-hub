@@ -1,0 +1,12 @@
+# config.json, spelled as YAML: `mcp-hub config` prints the same for both
+# (t/binary.t, scripts/smoke-binary.sh).
+mcpServers:
+  echo:     {command: sh, args: [t/upstream/echo.sh]}
+  history:  {class: MCP::Hub::Native::ClaudeHistory, args: {root: t/fixtures/claude}}
+  sessions: {class: MCP::Hub::Native::ClaudeSessions, args: {root: t/fixtures/claude}}
+  hub:      {class: MCP::Hub::Native::Status}
+  remote:   {url: 'http://127.0.0.1:3999/history'}
+  boxed:    {docker: 'example/mcp-server:1'}
+  stack:    {compose: t/fixtures/binary, service: mcp}
+hub:
+  listen: 'http://127.0.0.1:3999'

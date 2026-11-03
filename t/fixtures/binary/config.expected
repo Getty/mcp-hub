@@ -1,0 +1,32 @@
+{
+   "mcpServers" : {
+      "boxed" : {
+         "type" : "http",
+         "url" : "http://127.0.0.1:3999/boxed"
+      },
+      "echo" : {
+         "type" : "http",
+         "url" : "http://127.0.0.1:3999/echo"
+      },
+      "history" : {
+         "type" : "http",
+         "url" : "http://127.0.0.1:3999/history"
+      },
+      "hub" : {
+         "type" : "http",
+         "url" : "http://127.0.0.1:3999/hub"
+      },
+      "remote" : {
+         "type" : "http",
+         "url" : "http://127.0.0.1:3999/remote"
+      },
+      "sessions" : {
+         "type" : "http",
+         "url" : "http://127.0.0.1:3999/sessions"
+      },
+      "stack" : {
+         "type" : "http",
+         "url" : "http://127.0.0.1:3999/stack"
+      }
+   }
+}

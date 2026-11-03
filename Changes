@@ -62,3 +62,10 @@ Revision history for MCP-Hub
     it started are gone.
   - A JSON `true` is no longer accepted where an integer is expected, such as
     `idle_timeout` or `port`.
+  - Build tooling for a standalone `mcp-hub` binary (PAR::Packer) for
+    machines without Perl: `scripts/build-binary.sh` packs every module the
+    hub loads by name, `scripts/verify-binary.sh` checks it against the Perl
+    CLI, `scripts/smoke-binary.sh` runs a real daemon without Perl. The
+    binary has no TLS and no EV, and `class` entries are limited to the
+    bundled native servers (README, "Standalone binary"). No prebuilt
+    binaries are published yet.

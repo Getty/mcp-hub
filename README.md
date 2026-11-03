@@ -147,6 +147,51 @@ systemctl --user daemon-reload
 systemctl --user enable --now mcp-hub
 ```
 
+## Standalone binary
+
+No Perl and no container on the machine? Each GitHub release also carries
+`mcp-hub` as one executable per platform — `linux-x86_64`, `linux-aarch64` and
+`macos-arm64` — with Perl and every module packed inside:
+
+```bash
+curl -fsSL https://github.com/Getty/mcp-hub/releases/latest/download/install.sh | sh
+```
+
+The install script picks the binary for your OS and architecture, checks it
+against the release's `SHA256SUMS` and installs it as `mcp-hub`. Or download
+`mcp-hub-<version>-<os>-<arch>` from the release page yourself, `chmod +x` it and
+put it on your `PATH` (on macOS, after a browser download:
+`xattr -d com.apple.quarantine mcp-hub`). The Linux binaries need glibc 2.28 or
+newer; on Alpine (musl) use the [Docker image](#docker-image).
+
+It is the same `mcp-hub` as the CPAN install — every command, JSON and YAML
+configs, stdio, `url`, `docker` and `compose` entries, both modes, the setup
+page — with these differences:
+
+- **No Perl modules from outside.** The binary loads only what is packed into
+  it; `PERL5LIB`, `PERL5OPT` and an installed `local::lib` are ignored. A `class`
+  entry can name the bundled natives — `MCP::Hub::Native::ClaudeHistory`,
+  `MCP::Hub::Native::ClaudeSessions`, `MCP::Hub::Native::Status` — and nothing
+  else: `MCP::Run`, `MCP::K8s` or [your own server](#writing-your-own-native-server)
+  shows up as `failed` with `cannot load class …`. Use the CPAN install for those,
+  or, with a Perl on the machine, mount them as a stdio upstream instead:
+  `{"command": "perl", "args": ["-MMy::Weather", "-e", "My::Weather->new->to_stdio"]}`.
+- **It replaces Perl, nothing else.** A stdio entry still runs its `command` —
+  `npx`, `uvx`, `docker`, … — from the host's `PATH`, and `docker`/`compose`
+  entries still need the Docker CLI, exactly as with the CPAN install.
+- **`url` upstreams speak `http://` only** — there is no TLS in the binary, and
+  `hub.listen` cannot be `https://` either. Reach an `https://` MCP server
+  through a stdio bridge such as
+  `{"command": "npx", "args": ["-y", "mcp-remote", "https://…"]}`.
+- It runs on Mojolicious' own event loop, never on `EV`, like the Docker image.
+
+The first start after installing or upgrading unpacks about 30 MB into
+`$TMPDIR/par-<user>/cache-<hash>` (set `PAR_GLOBAL_TMPDIR` to move it) and takes
+a few seconds; later starts reuse it. Let that first start finish before starting
+several `mcp-hub` at once, and remove the cache of an old version after an
+upgrade — nothing cleans it up. For the systemd unit above, point `ExecStart` at
+the binary, e.g. `%h/.local/bin/mcp-hub daemon`.
+
 ## Web setup page
 
 Because everything is served over HTTP, the hub also serves a **setup page** at
