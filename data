@@ -1,0 +1,53 @@
+---
+class: standard
+completed: 2026-11-03T18:41:02Z
+created: 2026-11-03T17:25:01Z
+id: 28
+priority: medium
+started: 2026-11-03T17:34:19Z
+status: done
+tags:
+- binary
+- release
+- feature
+title: Ship mcp-hub as a standalone binary (PAR::Packer)
+updated: 2026-11-03T18:41:02Z
+---
+
+The maintainer wants mcp-hub also as a normal standalone binary (2026-11-03), next to CPAN and the Docker image: one `pp` executable per platform (linux-x86_64, linux-aarch64, macos-arm64), attached to the GitHub release, runnable without Perl. Lane: `mcp-hub-binary-worker` (skill `perl-par-binary-release`), set up the same day.
+
+## Done
+- `scripts/build-binary.sh`, `scripts/loaded-modules.pl`, `scripts/verify-binary.sh`, `scripts/check-binary-libs.sh`, `scripts/smoke-binary.sh` and `.github/workflows/release-binaries.yml`, built from the closest sibling dist (locale-simple, langertha-raider).
+- Everything loaded by name is packed and checked: `MCP::Hub::Command::*`, the `%IMPL` upstream classes incl. Docker/Compose, `MCP::Hub::Native::*`, `YAML::PP`, Mojolicious resources. The EV decision is stated.
+- A local build passes `verify-binary.sh` (`verify: OK`), and the smoke runs without Perl: `token`, `config`, and a `daemon` that answers `tools/list` and spawns a stdio upstream on `tools/call`.
+- README has a binary section that says exactly what the binary can and cannot do: `class` entries beyond the natives; stdio upstreams still need their runtimes on the host.
+- Nothing is published: no tag, no workflow run, no upload.
+
+Maintainer decision 2026-11-03: mcp-hub becomes the second consumer of the bundle's planned binary release form (`binary = mcp-hub` in dist.ini, action `dzil-binary@v1`, shared install.sh/install.ps1) — see the draft ~/dev/p5-mcp-wiki/docs/superpowers/specs/2026-11-03-binary-release-design.md and the spike ~/dev/mcp-wiki-binary-spike. This card therefore covers only the per-dist part: the -M list for everything loaded by name, local pp build + verify, the no-Perl smoke, the EV decision, the README section. No own release-binaries.yml and no install.sh in this repo; those come from the bundle (its board, k17 and successors). mcp-hub's requirements on dzil-binary@v1 go to the bundle board once the worker reports.
+
+From k29 research (verified on the scratchpad binary): the packed hub strips PERL5LIB/PERLLIB/PERL5OPT/PERLIO — for itself AND for its stdio children. A local::lib-installed Perl stdio server (e.g. cpanm'd mcp-wiki) started by the packed hub dies with 'Can't locate …'. Workaround: `"env": {"PERL5LIB": "${HOME}/perl5/lib/perl5"}` on the entry; `${PERL5LIB}` is a config error there because it is already gone at config load. The README binary section must say this. Whether the hub should restore the caller's PERL5LIB for children instead is a lib/ question — note it for mcp-hub-worker if you think so.
+
+2026-11-03 18:33 binary-worker: per-dist part done, staged (git add), not committed. Files: scripts/{build-binary.sh,loaded-modules.pl,verify-binary.sh,check-binary-libs.sh,smoke-binary.sh}, t/binary.t, t/upstream/echo.sh (stdio MCP server in POSIX sh), t/fixtures/binary/{config.json,config.yaml,config.expected}, README section 'Standalone binary'. No release-binaries.yml and no install.sh (maintainer: dzil-binary consumer). The YAML fixture is config.yaml because .gitignore ignores every config.yml.
+Verified: dev-box build verify: OK; smoke OK without perl in debian:trixie-slim. Rehearsal of a portable leg: own no-crypt perl 5.40.5 (the spike's build-perl.sh) on almalinux:8. That build passes verify: OK and the library gate (only libc/libm/libdl/libpthread/librt/libutil/ld-linux, glibc floor 2.28). Its smoke without perl is OK on rockylinux:9 (no libcrypt.so.1), almalinux:8 and debian:bullseye-slim. prove -lr t/: PASS, 19 files / 178 tests; docker-live.t and npx.t skip as before. The dev-box build fails the library gate, as expected for that kind of build: libcrypt (Debian libperl), libz (Debian Compress::Raw::Zlib), glibc 2.38.
+Decisions: EV left out, so the binary runs on Mojo::Reactor::Poll like the Docker image. TLS left out, so url upstreams are http:// only (https listen and https url fail with 'IO::Socket::SSL 2.009+ required'); open maintainer question. scripts/ ships in the CPAN tarball (checked with dzil build): the action builds from the tarball and needs loaded-modules.pl and smoke-binary.sh.
+Outside loads: none. The packed @INC is only PAR's own dirs; PERL5LIB and PERL5OPT are ignored. A class entry other than the 3 natives becomes failed with 'cannot load class X: class not found' while the hub runs on. Workaround verified: run the class as a stdio upstream with the host perl (-MMy::Server -e 'My::Server->new->to_stdio').
+
+2026-11-03 18:33 Notes for mcp-hub-worker (nothing in lib/ or bin/ was changed):
+(1) bin/mcp-hub takes -c anywhere in argv as --config, so 'mcp-hub get -c JSON URL' breaks: Mojolicious get's -c ends up read as a config path. --content works.
+(2) An https url upstream without IO::Socket::SSL logs 'handshake failed: IO::Socket::SSL 2.009+ required' but answers agents 'upstream not ready yet' (the 503 meaning) forever, instead of failing. The same happens in a CPAN minimal install and in the Docker image: neither cpanfile nor Dockerfile carries IO::Socket::SSL.
+(3) 'mcp-hub status' exits 0 when the hub is down. This is documented, but scripts cannot detect it.
+(4) The help listing offers Mojolicious' prefork command, which goes against the 'never prefork' hazard.
+(5) Windows is blocked by Upstream::Stdio and MCP::Hub::Docker (fork + socketpair(AF_UNIX) + pipe streamed through Mojo::IOLoop; select on Windows polls sockets only), by the SIGHUP reload, and by HOME/XDG paths. ClaudeSessions is Linux-only (handled).
+For the bundle board (dzil-binary):
+(a) The -M set: 30 modules are invisible to pp's scanner (MCP::Hub::Command::*, MCP::Hub::Native::*, Mojolicious::Command::*/Plugin::*, Mojo::Server::*, YAML::PP::Schema::Core). Best taken from 'perl -Ilib scripts/loaded-modules.pl' rather than a static dist.ini list.
+(b) The -X set with namespace expansion, from 'scripts/loaded-modules.pl --left-out'.
+(c) -a for Mojolicious/resources from the installed Mojolicious.
+(d) PAR_VERBATIM=1, so 'help <cmd>' keeps its POD.
+(e) A hook on the build leg for scripts/verify-binary.sh, which needs perl and unzip.
+(f) The smoke is scripts/smoke-binary.sh (bash, /dev/tcp, no perl).
+(g) A cold-cache race: concurrent first starts crash, 1-2 of 3 die with a segfault or 'did not return a true value'; reproduced with both builds; a warm cache is fine. install.sh should run the binary once (--help) after installing.
+(h) Asset name: the agent definition says linux-aarch64, the design says linux-arm64; the maintainer has to pick one.
+
+2026-11-03 18:33 Per-dist part ready for review: everything is staged, nothing is committed or published. The release-manager cuts the commit. Bundle requirements are in the note above, (a)-(h).
+
+2026-11-03 18:40 Committed 0a1bf69 (release-manager, local only, not pushed). Claim of binary-worker released first: card was already handed off to review.
