@@ -13,8 +13,8 @@ use Mojo::UserAgent;
 # ABSTRACT: An HTTP MCP server (Streamable HTTP or HTTP+SSE) mounted as an upstream
 
 # The same crash-loop threshold as MCP::Hub::Upstream::Stdio (three exits within
-# KILL_GRACE seconds): a remote that refuses to connect three times within five
-# seconds is marked `failed` rather than reconnected on every call.
+# its fail_window of five seconds): a remote that refuses to connect three times
+# within five seconds is marked `failed` rather than reconnected on every call.
 use constant FAIL_THRESHOLD => 3;
 use constant FAIL_WINDOW    => 5;
 

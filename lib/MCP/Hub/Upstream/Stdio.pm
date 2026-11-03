@@ -18,6 +18,11 @@ use constant MAX_LINE_BUFFER => 16 * 1024 * 1024;
 use constant KILL_GRACE      => 5;
 
 has cache_dir    => sub ($self) { $self->hub ? $self->hub->hub_config->cache_dir : '.' };
+
+# The crash-loop window: three exits within it -- crashes or failed starts, not
+# a deliberate stop -- mark the upstream `failed`. It has nothing to do with
+# KILL_GRACE, the SIGTERM -> SIGKILL grace of stop; both are five seconds.
+has fail_window  => 5;
 has idle_timeout => 300;
 
 sub new ($class, %args) {
@@ -350,12 +355,13 @@ sub _kill_now ($self) {
 }
 
 sub _record_exit ($self) {
-  my $now = time;
+  my $now    = time;
+  my $window = $self->fail_window;
   push @{$self->{exits}}, $now;
-  @{$self->{exits}} = grep { $_ >= $now - KILL_GRACE } @{$self->{exits}};
+  @{$self->{exits}} = grep { $_ >= $now - $window } @{$self->{exits}};
   return $self unless @{$self->{exits}} >= 3;
   $self->{failed} = 1;
-  $self->error(scalar(@{$self->{exits}}) . ' exits within ' . KILL_GRACE . 's');
+  $self->error(scalar(@{$self->{exits}}) . ' exits within ' . $window . 's');
   return $self;
 }
 
@@ -468,6 +474,12 @@ and adds:
 =attr cache_dir
 
 Where the manifest cache lives.
+
+=attr fail_window
+
+Seconds within which three exits -- crashes or failed starts, not a
+deliberate stop -- mark the upstream C<failed>; see L</Lifecycle>. Defaults to
+C<5>.
 
 =attr idle_timeout
 

@@ -23,7 +23,9 @@ Revision history for MCP-Hub
   - A server that cannot be built, that crash-loops, or (for a remote HTTP
     upstream) that repeatedly fails to connect stays visible as `failed`
     with its reason (`mcp-hub status`, `hub_status`, setup page, 503 body)
-    instead of disappearing; `mcp-hub refresh NAME` retries it.
+    instead of disappearing; `mcp-hub refresh NAME` retries it. The stdio
+    crash-loop window (three exits within five seconds) is the upstream's
+    own `fail_window` attribute, apart from the SIGKILL grace period.
   - `mcp-hub status`, `refresh` and `reload` take `--url` to reach a hub that
     does not listen where the config says, and `--token` (or `$MCP_HUB_TOKEN`)
     to authenticate with a token given on the spot. Given both, the command

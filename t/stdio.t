@@ -8,6 +8,12 @@ use MCP::Hub::Upstream::Stdio;
 
 my $ECHO = curfile->sibling('upstream', 'echo.pl');
 
+# The crash-loop window for the subtests that count exits. Each cycle spawns
+# perl, loads Mojolicious and runs the handshake; on a busy machine three of
+# them do not fit into the default five seconds. These subtests are about the
+# count, not about how fast the machine is.
+my $WINDOW = 60;
+
 sub upstream (%config) {
   my $dir = tempdir;
   return MCP::Hub::Upstream::Stdio->new(
@@ -148,9 +154,24 @@ subtest 'crash mid-call and restart' => sub {
 };
 
 subtest 'failed after three quick exits' => sub {
-  my $up = upstream;
+  my $up = upstream()->fail_window($WINDOW);
   _await($up->call_tool('exit', {})) for 1 .. 3;
   is $up->state, 'failed', 'three exits within the window mark it failed';
+  is $up->error, "3 exits within ${WINDOW}s", 'the error names the count and the window';
+  $up->stop;
+  settle;
+};
+
+subtest 'exits older than the window are forgotten' => sub {
+  # The other side of the window, and safe under load: a busy machine only
+  # makes the pause longer. Two exits, a pause past the one-second window, a
+  # third exit -- only the third one is still inside, so this is no crash loop.
+  my $up = upstream()->fail_window(1);
+  _await($up->call_tool('exit', {})) for 1 .. 2;
+  settle(2.1);
+  _await($up->call_tool('exit', {}));
+  is $up->state, 'stopped', 'stopped, not failed';
+  is $up->error, undef, 'and no crash loop reported';
   $up->stop;
   settle;
 };
@@ -166,9 +187,10 @@ subtest 'a child that dies at startup is counted once' => sub {
   $log->on(message => sub ($l, $level, @msg) { push @lines, "$level @msg" });
 
   my $up = MCP::Hub::Upstream::Stdio->new(
-    name      => 'false',
-    config    => {type => 'stdio', command => $^X, args => ['-e', 'exit 0']},
-    cache_dir => tempdir->to_string,
+    name        => 'false',
+    config      => {type => 'stdio', command => $^X, args => ['-e', 'exit 0']},
+    cache_dir   => tempdir->to_string,
+    fail_window => $WINDOW,
   );
   $up->log($log);
 
@@ -228,7 +250,7 @@ subtest 'a command that cannot be executed is logged loudly' => sub {
 };
 
 subtest 'failed is left only by an explicit refresh' => sub {
-  my $up = upstream;
+  my $up = upstream()->fail_window($WINDOW);
   _await($up->call_tool('exit', {})) for 1 .. 3;
   is $up->state, 'failed', 'failed after three quick exits';
 
