@@ -1,0 +1,56 @@
+---
+claimed_at: 2026-11-03T07:47:57Z
+claimed_by: mcp-hub-worker
+class: standard
+completed: 2026-11-03T07:47:57Z
+created: 2026-11-03T03:05:47Z
+id: 21
+priority: high
+started: 2026-11-03T03:11:39Z
+status: done
+tags:
+- feature
+- docker
+- upstream
+title: 'Docker upstreams: mount an MCP server by image name (stdio or HTTP port) or
+  compose directory'
+updated: 2026-11-03T07:48:05Z
+---
+
+The maintainer wants Docker-shipped MCP servers to be as easy to mount as npx ones: name the image, the hub pulls, starts, wires the port, talks to it and stops it when idle -- no hand-written `docker run`, no separately managed container. Optional: a compose project directory ("Ziel-Directory").
+
+Design (agent-written, maintainer said "design it, I will tune later"): docs/superpowers/specs/2026-11-03-docker-upstreams-design.md
+
+## Done
+- New entry kinds `docker` (stdio container; with `port` an HTTP container) and `compose` (directory + `url`), plus `volumes`, `docker_args`, `port`, `path`; `hub.docker_command`, `hub.docker_network`.
+- Lazy start / idle stop / always_on / crash-loop / refresh / reload behave as for stdio; manifest hash never over env; no secret in any argv; cleanup touches only containers with this hub's owner label.
+- Hub Docker image ships the compose plugin; docker-compose.yml + README document socket, network and host-path gotchas.
+- Tests against a fake docker CLI (no real daemon, no network); `prove -lr t/` green.
+
+2026-11-03 03:26 Started. Baseline prove -lr t/ green (16 files, 136 tests). Read spec + Upstream/Stdio/Http/Config/Hub/Help/tests. Plan: MCP::Hub::Docker (non-blocking CLI helper), Upstream::Docker::Stdio (ISA Stdio), Upstream::Docker::Http (ISA Http), Upstream::Docker::Compose (ISA Docker::Http); normalized entries type=docker|compose + transport=stdio|http|sse.
+
+Progress: applied the maintainer's spec amendments (mode auto-detect via EXPOSE/published ports, stdio:true, compose requires service, compose stop <service> only). Built: MCP::Hub::Docker (non-blocking CLI helper), Upstream::Docker (owner: plan/pull/orphans/launch/readiness/idle/crash loop), Upstream::Compose, engines Upstream::Docker::{Stdio,Http} + ::Engine mixin (one engine per container run, transport reused from Stdio/Http unchanged). Config: docker/compose keys + hub.docker_command/docker_network. Hub: lazy set, shutdown_p; daemon waits bounded on shutdown. prove -lr t/ still green (136). Next: fake docker CLI + tests, docs, live smoke.
+
+Done, tree commit-ready (not committed; new files git-added). Maintainer's amendments applied: mode auto-detect (port / one EXPOSE or one published port → HTTP, none → stdio, several → "set port", stdio:true forces) and compose `service` required, only that service used, idle/reload/shutdown run `docker compose stop <service>` only.
+Fix found late: under Mojo::Reactor::EV (default here) libev reaps every child, so run_p's waitpid lost exit codes → t/docker.t flaked in the full suite. run_p now takes the status from an EV::child watcher under EV, polls WNOHANG elsewhere.
+Verified: prove -lr t/ green 3x (18 files, 165 tests; repo twice + built dist once); t/docker.t also under MOJO_REACTOR=Mojo::Reactor::Poll. Skipped: t/npx.t, t/docker-live.t (opt-in). MCP_HUB_TEST_DOCKER=1 prove -l t/docker-live.t PASS (mcp/time). Real smoke (docker CLI → rootless Podman 5.8.4, compose v5.5.1; docker_command=podman too): mcp/time stdio, raudssus/mcp-hub HTTP via EXPOSE, compose stdio + HTTP service → list from cache with no container, call starts, idle 8s stops/removes, pre-running service adopted and left running, TERM leaves nothing; own bystander and every foreign container untouched (journal: every stop/kill/DELETE hit my own containers). DZIL_DOCKER_API_SKIP=1 dzil build OK, ships new files. Compose plugin layer built in a throwaway image (docker compose v2.29.7 runs as uid 1000); full hub image not rebuilt.
+Drift for this board: (1) Upstream::Stdio::_on_close does a blocking waitpid($pid,0); under EV libev usually reaps first, so the exit reason/code is often lost, and a child that closes stdout but lingers blocks the loop — the run_p pattern fixes it. (2) Upstream::Http::_close_sse sets {stopping} and nothing clears it, so after a reconnect a dropped SSE stream never moves ready→stopped. (3) Idle-timer code is duplicated in Upstream::Stdio and Upstream::Docker; could move to the base class (touches Stdio, so left out).
+
+Ready for review: docker + compose upstreams per the amended spec (auto-detect mode, compose service). prove -lr t/ green (165), live test + real smoke on Podman pass, tree commit-ready. Proposed subject: Mount MCP servers from Docker images and compose services
+
+Review round: all 11 findings fixed. Each has a regression test that fails on the pre-review tree (snapshot) and passes now (docker.t 8/9/10/11/12/13/17/21/23/25/26, reload.t 'no reload once the hub shuts down', config.t port/idle_timeout true). Two more surfaced while verifying, both fixed: (a) the compose-stdio prepare test was too tight for a loaded host (request_timeout 2s); now 5s against 6s pull/build delays, so the claim still holds. (b) Docker::Stdio lost Docker's own stderr (e.g. 'name already in use') when the IOLoop saw the CLI's stdout end first. Fixed by _drain_stderr before the close is handled; a deterministic test removes the stderr watcher. The 16MB test now has room (request_timeout 30s, next call <20s). Verified: prove -lr t/ green (18 files, 174 tests; t/npx.t and t/docker-live.t skip themselves without opt-in). docker.t 27/27 under EV and under Poll. Every repro script shows the fixed behaviour. MCP_HUB_TEST_DOCKER=1 docker-live.t PASS; live name-conflict check on Podman OK, foreign containers untouched. dzil build OK. Declined: a strict stdio boolean (the codebase treats booleans as truthy: always_on, auto_reload); "port": true is refused via _int. Drift for this board: (1) Upstream::Stdio::_on_close drops the stderr pipe unread when stdout's end is seen first, so a plain stdio server loses its last stderr lines in the exit warning (fixed only in Docker::Stdio). (2) a blocking waitpid in Upstream::Stdio::_on_close under EV. (3) Upstream::Http::_close_sse never clears {stopping}. (4) the idle-timer code is duplicated in Stdio and Docker. (5) 'line buffer exceeded 16MB' is logged twice per kill. (6) Optional: a card for strict JSON booleans everywhere (always_on, auto_reload, stdio).
+
+Review findings 1-11 fixed, plus a lost-stderr race in Docker::Stdio. Every fix has a regression test that fails on the pre-review tree. Docs: README and the spec's As-built section updated. Tree commit-ready, new files git-added, nothing committed. prove -lr t/ green (174 tests); docker.t 27/27 under EV and Poll; live test PASS. Proposed subject: Mount MCP servers from Docker images and compose services
+
+Re-review round 3, all four findings fixed.
+(1) DESTRUCTIVE recreate: compose now never recreates what exists. HTTP start is `compose up -d --no-recreate SERVICE`; stdio deps `compose up -d --no-recreate DEPS`, the server `compose run --rm -T --no-deps`. Rule held: the hub may start a dep that does not run, never stops/recreates/restarts one that exists. A compose that rejects a flag fails the start with "... the hub needs Docker Compose 2 or later (docker compose version); podman-compose is not supported" (podman-compose also lacks `config --format json`). Measured live on compose v5.5.1/rootless Podman: default policy "diverged" recreates a running dep whose env-interpolated config differs; --no-recreate keeps its id.
+(2) dependency waits out of the handshake: the stdio prepare polls `compose ps -a --format json DEPS` every 0.5s until service_healthy deps are healthy and service_completed_successfully deps exited 0 (non-zero exit / exited / unhealthy / no healthcheck fail the start with a message naming the dep). Not `up --wait` (fails on a one-shot dep: "container ... exited (0)", exit 1; and a stop can't cut it short), not `compose wait` (doesn't see exited containers). No timeout, as compose has none; a stop ends the wait at once. One-shot deps re-run on every start, as compose does.
+(3) docs reworded with the exact sentence (README Compose section + "What the hub stops and removes", Compose.pm POD, spec As-built).
+(4) fake models the recreate policy (config hash per container; never/force/diverged; restarts keep the id), depends_on conditions (healthcheck x-healthy-after/x-health, oneshot kind x-exit/x-runtime), strict flags. New docker.t subtests: 'compose: a dependency that exists is never recreated, stopped or restarted' (HTTP + stdio; fails on the old tree: db and cache ids change) and 'compose: what the service waits for is ready before the handshake' (fails on the old tree: tool times out after 5s, messages differ, no version hint).
+Also fixed: _conditions_p's catch returned $done, so every failed/stopped wait warned "Unhandled rejected promise"; asserted now in subtest 28 (fails before the fix).
+Verified: prove -lr t/ PASS (18 files, 176 tests; t/npx.t and t/docker-live.t skip themselves without opt-in), t/docker.t 29/29 under EV (default) and Poll; subtest 28 6/6 in parallel under load (it flaked once at request_timeout 2s on the HTTP readiness; now 5s against 6s/7s dependency delays, claim kept). Live on compose v5.5.1/rootless Podman, project k21r3live (torn down): HTTP + stdio compose servers round-trip; user's db started with DB_PASSWORD=secret (hub env lacks it) keeps its container id and env, stopped cache is started with the same id, only mcp is stopped. MCP_HUB_TEST_DOCKER=1 docker-live.t PASS. No fake-docker.pl/echo.pl processes left behind; no container but my own touched.
+Drift (unchanged from round 2): Upstream::Stdio::_on_close loses unread stderr and does a blocking waitpid under EV; Upstream::Http::_close_sse never clears {stopping}; idle-timer code duplicated in Stdio and Docker; '16MB line buffer exceeded' logged twice per kill; optional strict-JSON-booleans card. New note: rootless Podman here never runs healthchecks (status stays "starting"), so a service_healthy dependency waits forever there -- compose itself behaves the same; environment quirk, not a hub bug.
+
+Round 3: destructive recreate fixed (--no-recreate / run --no-deps; nothing that exists is stopped, recreated or restarted), dependency conditions waited outside the handshake, docs reworded exactly, fake models the recreate policy. New tests fail on the old tree. prove -lr t/ PASS (176); docker.t 29/29 under EV and Poll; live compose recheck PASS; no leftover processes. Tree commit-ready, nothing committed. Proposed subject: Mount MCP servers from Docker images and compose services
+
+2026-11-03 07:48 Committed as 134a042 (Mount MCP servers from Docker images and compose services).
