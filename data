@@ -1,0 +1,22 @@
+---
+class: standard
+created: 2026-11-03T07:43:45Z
+id: 27
+priority: medium
+status: backlog
+tags:
+- docker
+- compose
+- design
+title: 'compose: waiting for depends_on conditions has no upper bound'
+updated: 2026-11-03T07:43:45Z
+---
+
+Found during k21 (2026-11-03). Before the handshake, a compose stdio start polls `compose ps -a --format json DEPS` until the `service_healthy` dependencies are healthy and the `service_completed_successfully` ones have exited 0. There is no timeout, because compose has none, so a stop is the only way out.
+
+Rootless Podman on the maintainer's machine never runs healthchecks, so a `service_healthy` dependency waits forever there. The tool call that triggered the start hangs with no error.
+
+Decide with the maintainer: an upper bound (a new per-entry `hub.start_timeout`? or reuse something), or at least a warning in the log/status after N seconds that names the dependency and its health state. The image pull has no timeout either, but it shows progress and ends.
+
+## Done
+- A start that waits on a dependency condition either ends with an error that names the dependency, or is visibly reported as waiting (log + status) -- never a silent hang.
