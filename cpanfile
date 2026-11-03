@@ -1,8 +1,8 @@
 requires 'perl' => '5.020';
 
+requires 'CryptX';           # Crypt::Misc::slow_eq, Crypt::PRNG::random_bytes
 requires 'MCP'          => '0.15';
 requires 'Mojolicious'  => '9.49';
-requires 'CryptX';           # Crypt::Misc::slow_eq, Crypt::PRNG::random_bytes
 requires 'YAML::PP';         # .yml/.yaml configuration files
 
 # YAML::PP is loaded on demand, only when a YAML config is actually read, but
