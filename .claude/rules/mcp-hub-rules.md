@@ -18,6 +18,7 @@ cross-repo handoff.
 |---|---|
 | Implement / refactor / debug behavior-relevant code | `mcp-hub-worker` (default) |
 | Write/extend tests | `mcp-hub-test-writer` |
+| Standalone binary: PAR::Packer build of `bin/mcp-hub`, `scripts/*binary*`, `release-binaries.yml` | `mcp-hub-binary-worker` |
 | Commits, `Changes`, card → done, pre-release audit | `mcp-hub-release-manager` |
 | Read-only research, audit, gap analysis | `mcp-hub-worker` ("read-only, change nothing") |
 

@@ -15,6 +15,7 @@ the full lane definition and the hazards live in `.claude/rules/mcp-hub-rules.md
 |---|---|
 | Implement / refactor / debug behavior-relevant code | `mcp-hub-worker` (default) |
 | Write/extend tests | `mcp-hub-test-writer` |
+| Standalone binary (PAR::Packer), its scripts and release workflow | `mcp-hub-binary-worker` |
 | Commits, `Changes`, card → done, pre-release audit | `mcp-hub-release-manager` |
 
 The agents carry their skills via `briefing.skills` (see `.claude/agents/`); the main

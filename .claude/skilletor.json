@@ -21,7 +21,8 @@
       "kanban-issues-karr-ticket@karr",
       "perl-mcp@getty",
       "perl-mojo@getty",
-      "perl-release-dist-ini@getty"
+      "perl-release-dist-ini@getty",
+      "perl-par-binary-release@getty"
     ],
     "bundles": [
       "getty-cpan-dist@getty"
