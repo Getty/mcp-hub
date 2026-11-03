@@ -10,8 +10,13 @@
 # upstream's manifest once, the second serves tools/list from that cache without
 # starting it, starts it on tools/call (t/upstream/echo.sh, a stdio MCP server in
 # POSIX sh), answers a native and a remote HTTP upstream and Mojolicious' 404 page,
-# and leaves no child behind on SIGTERM. scripts/verify-binary.sh is the other half:
-# the same CLI against `perl -Ilib`, and the packed module set.
+# and leaves no child behind on SIGTERM. Then TLS, with no curl or openssl on the
+# host -- the binary is every client: a hub listening on https with the test
+# certificate (t/fixtures/binary/tls), verified through SSL_CERT_FILE and refused
+# without it, which trust store the binary finds on this host and that it verifies
+# a real chain there (Let's Encrypt's R11, a fixture, at a fixed time, offline), and
+# a second https hub whose `url` upstream is the first. scripts/verify-binary.sh is
+# the other half: the same CLI against `perl -Ilib`, and the packed module set.
 set -euo pipefail
 
 [ -n "${1:-}" ] || { echo "usage: smoke-binary.sh <binary>" >&2; exit 1; }
@@ -19,9 +24,10 @@ BIN=$1; case "$BIN" in /*) ;; *) BIN="$PWD/$BIN" ;; esac
 [ -x "$BIN" ] || { echo "FAIL: not an executable: $BIN" >&2; exit 1; }
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d)
-daemon_pid=
+daemon_pid= tls_pid= front_pid=
 cleanup() {
-  [ -n "$daemon_pid" ] && kill -TERM "$daemon_pid" 2>/dev/null
+  local p
+  for p in $daemon_pid $tls_pid $front_pid; do kill -TERM "$p" 2>/dev/null; done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -31,9 +37,10 @@ fail() {
   exit 1
 }
 
-# Nothing of this host's Perl or of anybody's configuration.
+# Nothing of this host's Perl or of anybody's configuration, trust store or proxy.
 unset PERL5LIB PERL5OPT MCP_HUB_CONFIG XDG_CONFIG_HOME XDG_CACHE_HOME CLAUDE_CONFIG_DIR \
-      MOJO_MODE MOJO_REACTOR MOJO_HOME MOJO_LOG_LEVEL
+      MOJO_MODE MOJO_REACTOR MOJO_HOME MOJO_LOG_LEVEL MOJO_CA_FILE MOJO_INSECURE \
+      SSL_CERT_FILE SSL_CERT_DIR HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 export HOME="$work/home" PAR_GLOBAL_TMPDIR="$work/par"
 mkdir -p "$HOME" "$PAR_GLOBAL_TMPDIR"
 if command -v perl >/dev/null 2>&1; then
@@ -178,5 +185,114 @@ stop_daemon
 sleep 0.5
 if kill -0 "$echo_pid" 2>/dev/null; then fail "echo (pid $echo_pid) outlived the daemon"; fi
 echo "daemon run 2: OK (SIGTERM stopped the hub and its stdio child)"
+
+# --- TLS ---------------------------------------------------------------------------
+# The binary is the only TLS client on this host: `mcp-hub get` (Mojolicious' get
+# command) and the hub's own `url` upstream. Certificates by relative path: the
+# daemons run in the checkout, and a path in a listen URL's query must not need
+# escaping.
+ca=t/fixtures/binary/tls/ca.crt
+tls_url="https://127.0.0.1:$((port + 1))"
+front_http=$((port + 2))
+front_url="https://127.0.0.1:$((port + 3))"
+cat >"$work/tls.json" <<JSON
+{"mcpServers": {"history": {"class": "MCP::Hub::Native::ClaudeHistory", "args": {"root": "$root/t/fixtures/claude"}}},
+ "hub": {"listen": "$tls_url?cert=t/fixtures/binary/tls/server.crt&key=t/fixtures/binary/tls/server.key",
+         "cache_dir": "$work/cache-tls"}}
+JSON
+cat >"$work/front.json" <<JSON
+{"mcpServers": {"secure": {"url": "$tls_url/history"}},
+ "hub": {"cache_dir": "$work/cache-front"}}
+JSON
+# get ARGS...: the binary's own HTTP client; the body on STDOUT, errors on STDERR.
+get() { timeout 30 "$BIN" get "$@" </dev/null; }
+# wait_tls NAME PID GET-ARGS...: until the daemon answers /_hub/status over https.
+wait_tls() {
+  local name=$1 pid=$2 i; shift 2
+  for i in $(seq 1 60); do
+    get "$@" >"$work/out" 2>"$work/err" && grep -q '"upstreams"' "$work/out" && return 0
+    kill -0 "$pid" 2>/dev/null || fail "the $name hub exited at start-up"
+    sleep 0.2
+  done
+  fail "the $name hub did not answer over https: $(head -n 3 "$work/err")"
+}
+
+"$BIN" --config "$work/tls.json" daemon >"$work/daemon-tls.out" 2>"$work/daemon-tls.log" &
+tls_pid=$!
+SSL_CERT_FILE=$ca wait_tls tls "$tls_pid" "$tls_url/_hub/status"
+echo "https listen (hub.listen with cert= and key=): OK, verified against the test CA via SSL_CERT_FILE"
+
+# The same request, trusting only what the binary finds on this host: refused.
+rc=0; get "$tls_url/_hub/status" >"$work/out" 2>"$work/err" || rc=$?
+[ "$rc" != 0 ] || fail "a certificate from an unknown CA was accepted: $(head -c 200 "$work/out")"
+grep -q 'certificate verify failed' "$work/err" || fail "an unknown CA: no 'certificate verify failed': $(head -n 3 "$work/err")"
+echo "unknown CA without SSL_CERT_FILE: refused (certificate verify failed)"
+
+# Where the binary looks for trusted CAs here: the system's store below /etc/ssl,
+# else the packed Mozilla::CA bundle. It must exist and hold certificates.
+"$BIN" eval 'my %ca = IO::Socket::SSL::default_ca(); print "$_=$ca{$_}\n" for sort keys %ca' \
+  >"$work/ca" 2>"$work/err" || fail "default_ca: $(cat "$work/err")"
+[ -s "$work/ca" ] || fail "the binary finds no trust store on this host (not even Mozilla::CA)"
+store=
+while IFS='=' read -r kind loc; do
+  case "$kind" in
+    SSL_ca_file) n=$(grep -c 'BEGIN CERTIFICATE' "$loc" 2>/dev/null || true) ;;
+    SSL_ca_path) n=$(ls "$loc" 2>/dev/null | grep -cE '^[0-9a-f]{8}\.[0-9]+$' || true) ;;
+    *) fail "default_ca: unexpected '$kind=$loc'" ;;
+  esac
+  [ "${n:-0}" -ge 50 ] || fail "trust store $loc holds ${n:-0} certificates"
+  case "$loc" in */Mozilla/CA/cacert.pem) loc="the packed Mozilla::CA bundle" ;; esac
+  store="${store:+$store, }$loc ($n)"
+done <"$work/ca"
+echo "trust store on this host: $store"
+
+# That store verifies a real chain, offline: Let's Encrypt's intermediate R11 (a
+# fixture) against ISRG Root X1, which every store above holds -- checked at a fixed
+# time, so R11's expiry does not matter. On a hashed directory this is also the
+# subject-hash lookup of the binary's own OpenSSL.
+"$BIN" eval '
+  require IO::Socket::SSL;
+  my %ca  = IO::Socket::SSL::default_ca();
+  my $ctx = Net::SSLeay::CTX_new() or die "CTX_new failed\n";
+  Net::SSLeay::CTX_load_verify_locations($ctx, $ca{SSL_ca_file} || "", $ca{SSL_ca_path} || "")
+    or die "cannot load the trust store\n";
+  my $store = Net::SSLeay::CTX_get_cert_store($ctx);
+  my $param = Net::SSLeay::X509_VERIFY_PARAM_new();
+  Net::SSLeay::X509_VERIFY_PARAM_set_time($param, 1735689600);    # 2025-01-01
+  Net::SSLeay::X509_STORE_set1_param($store, $param);
+  my $bio  = Net::SSLeay::BIO_new_file("t/fixtures/binary/tls/le-r11.crt", "r") or die "cannot read le-r11.crt\n";
+  my $cert = Net::SSLeay::PEM_read_bio_X509($bio) or die "le-r11.crt holds no certificate\n";
+  my $vctx = Net::SSLeay::X509_STORE_CTX_new();
+  Net::SSLeay::X509_STORE_CTX_init($vctx, $store, $cert);
+  print Net::SSLeay::X509_verify_cert($vctx) == 1 ? "verified\n"
+    : Net::SSLeay::X509_verify_cert_error_string(Net::SSLeay::X509_STORE_CTX_get_error($vctx)) . "\n";
+' >"$work/out" 2>"$work/err" || fail "chain check: $(cat "$work/err")"
+[ "$(cat "$work/out")" = verified ] || fail "the trust store does not verify Let's Encrypt R11: $(cat "$work/out")"
+echo "trust store verifies a real chain: OK (Let's Encrypt R11 to ISRG Root X1, offline)"
+
+# A second hub whose `url` upstream is the first one, verified against the test CA.
+# It listens on https with Mojolicious' built-in certificate (no cert= in the listen
+# URL; the client turns verification off with -k) and on http, where the helpers
+# above send the tools/call -- its answer is an event stream, which `get` does not
+# print.
+SSL_CERT_FILE=$ca "$BIN" --config "$work/front.json" daemon -l "http://127.0.0.1:$front_http" -l "$front_url" \
+  >"$work/daemon-front.out" 2>"$work/daemon-front.log" &
+front_pid=$!
+wait_tls front "$front_pid" -k "$front_url/_hub/status"
+echo "https listen with the built-in certificate: OK (get -k)"
+port=$front_http    # http and mcp talk to $port
+out=$(mcp secure tools/list)
+grep -q '"name":"list_projects"' <<<"$out" || fail "tools/list on /secure (https url upstream): $(printf '%s' "$out" | tail -n 1 | head -c 300)"
+out=$(mcp secure tools/call '{"name":"list_projects","arguments":{}}')
+grep -q 'proj-a' <<<"$out" || fail "tools/call on /secure (https url upstream): $(printf '%s' "$out" | tail -n 3 | head -c 300)"
+echo "https url upstream: OK (manifest and tools/call through the second hub, verified against the test CA)"
+stop_tls() {
+  local rc=0
+  kill -TERM "$2"; wait "$2" || rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 143 ] || fail "the $1 hub exited $rc on SIGTERM"
+}
+stop_tls front "$front_pid"; front_pid=
+stop_tls tls "$tls_pid"; tls_pid=
+echo "TLS: OK"
 
 echo "smoke: OK"

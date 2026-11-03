@@ -14,8 +14,11 @@
 # lot: Mojolicious finds the commands (MCP::Hub::Command::*, Mojolicious::Command::*)
 # by namespace, its plugins and the reactor by name; Upstream::Perl mounts a `class`
 # (the natives MCP::Hub::Native::*) through Mojo::Loader; MCP::Hub::Config requires
-# YAML::PP only when a .yml/.yaml is read, and YAML::PP loads its schema by name.
-# Running all of that for real is what makes the set complete.
+# YAML::PP only when a .yml/.yaml is read, and YAML::PP loads its schema by name;
+# Mojo::IOLoop::TLS requires IO::Socket::SSL in an eval, and IO::Socket::SSL requires
+# Mozilla::CA only when the host has no trust store of its own. Running all of that
+# for real -- the daemon listens on http and https, and a `url` upstream speaks https
+# -- is what makes the set complete.
 use strict;
 use warnings;
 
@@ -26,11 +29,6 @@ use warnings;
 #                          Docker image and a plain `cpanm MCP::Hub` (EV is no
 #                          dependency). MCP::Hub uses EV only when it is the
 #                          running reactor (SIGHUP watcher, Docker child reaping).
-#   IO::Socket::SSL, Net::SSLeay, Mozilla::CA
-#                          TLS: Net::SSLeay links the build image's OpenSSL, a
-#                          non-system library (an old-glibc base has libssl.so.1.1,
-#                          which RHEL 9 and Ubuntu 22.04 lack), so a `url` upstream
-#                          speaks http:// only.
 #   IO::Socket::Socks, Net::DNS::Native, Cpanel::JSON::XS, Role::Tiny,
 #   Future::AsyncAwait     Mojolicious extras switched on only when installed;
 #                          neither the hub nor MCP uses them.
@@ -38,14 +36,24 @@ use warnings;
 #                          CryptX requires JSON.pm when installed, for JWK only,
 #                          and JSON.pm picks its backend by name. JSON::PP is core
 #                          and stays: the config command and the setup page use it.
+#   LWP                    IO::Socket::SSL::PublicSuffix requires LWP::UserAgent in
+#                          update_self_from_url, a maintainer's tool; LWP would drag
+#                          in HTTP::Message and its compression XS modules.
+#   URI, Net::IDN::Encode, Net::LibIDN
+#                          PublicSuffix's IDN backends, used only for host names
+#                          with non-ASCII characters -- Mojolicious hands
+#                          IO::Socket::SSL the punycode form, and wildcard checks
+#                          work without one. URI is no dependency of the hub, so
+#                          only a build host that happens to have it would pack it;
+#                          libidn is not a system library.
 my @LEFT_OUT;
 BEGIN {
   @LEFT_OUT = qw(
     EV EV:: Mojo::Reactor::EV
-    IO::Socket::SSL IO::Socket::SSL:: Net::SSLeay Net::SSLeay:: Mozilla::CA Mozilla::CA::
     IO::Socket::Socks IO::Socket::Socks:: Net::DNS::Native Cpanel::JSON::XS Cpanel::JSON::XS::
     Role::Tiny Role::Tiny:: Future::AsyncAwait Future::AsyncAwait::
     JSON JSON::XS JSON::XS:: JSON::backportPP JSON::backportPP::
+    LWP LWP:: URI URI:: Net::IDN::Encode Net::IDN:: Net::LibIDN Net::LibIDN::
   );
   if ( ( $ARGV[0] // '' ) eq '--left-out' ) {
     print "$_\n" for @LEFT_OUT;
@@ -79,8 +87,11 @@ BEGIN {
     return;
   };
 
-  # Never the maintainer's own configuration, never a live reactor choice.
-  delete @ENV{qw( MCP_HUB_CONFIG XDG_CONFIG_HOME CLAUDE_CONFIG_DIR MOJO_MODE MOJO_REACTOR MOJO_HOME )};
+  # Never the maintainer's own configuration, never a live reactor choice, never a
+  # trust store or proxy of this shell's.
+  delete @ENV{qw( MCP_HUB_CONFIG XDG_CONFIG_HOME CLAUDE_CONFIG_DIR MOJO_MODE MOJO_REACTOR MOJO_HOME
+    SSL_CERT_FILE SSL_CERT_DIR MOJO_CA_FILE MOJO_CERT_FILE MOJO_KEY_FILE MOJO_INSECURE
+    HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy )};
 }
 
 use File::Temp ();
@@ -101,12 +112,21 @@ path( $root, 'lib' )->list_tree->each( sub {
   $m =~ s/\.pm\z//;
   $mods{$m} = 1;
 } );
-# Loaded by name on some path only: the YAML reader and the reactor.
-$mods{$_} = 1 for qw( YAML::PP Mojo::Reactor::Poll );
 for my $m ( sort keys %mods ) {
   eval "require $m; 1" or warn "loaded-modules: not loadable: $m (" . ( split /\n/, $@ )[0] . ")\n";
 }
+# Loaded by name on some path only, and the binary needs each: the YAML reader, the
+# reactor, and the CA bundle IO::Socket::SSL falls back to on a host without a trust
+# store of its own (a missing one would show nowhere else, so it ends the run).
+for my $m (qw( YAML::PP Mojo::Reactor::Poll Mozilla::CA )) {
+  eval "require $m; 1" or die "loaded-modules: $m is not installed (" . ( split /\n/, $@ )[0] . ")\n";
+}
 require MCP::Hub;
+# The binary speaks TLS. Without IO::Socket::SSL 2.009+ (and Net::SSLeay) Mojolicious
+# switches TLS off without a word, and the set would come out without it.
+require Mojo::IOLoop::TLS;
+Mojo::IOLoop::TLS->can_tls
+  or die "loaded-modules: no TLS in this perl: IO::Socket::SSL 2.009+ and Net::SSLeay are needed\n";
 
 # --- fixtures ----------------------------------------------------------------
 
@@ -115,9 +135,16 @@ my $listen = "http://127.0.0.1:$port";
 my $echo   = "$root/t/upstream/echo.sh";
 my $claude = "$root/t/fixtures/claude";
 
+# The daemon also listens on https, with the test certificate of
+# t/fixtures/binary/tls/; whoever trusts its ca.crt verifies the connection.
+my $tls_dir    = "$root/t/fixtures/binary/tls";
+my $tls_port   = Mojo::IOLoop::Server->generate_port;
+my $tls        = "https://127.0.0.1:$tls_port";
+my $tls_listen = "$tls?cert=$tls_dir/server.crt&key=$tls_dir/server.key";
+
 # Every kind of entry: stdio, the three natives, a remote HTTP upstream (the hub's
-# own /history), a container and a compose service (their docker CLI does not
-# exist, so they fail fast without touching a container engine).
+# own /history, over https), a container and a compose service (their docker CLI
+# does not exist, so they fail fast without touching a container engine).
 my $yaml = <<"YAML";
 # the daemon's configuration, as YAML: YAML::PP loads in the daemon too
 mcpServers:
@@ -125,7 +152,7 @@ mcpServers:
   history:  {class: MCP::Hub::Native::ClaudeHistory, args: {root: '$claude'}}
   sessions: {class: MCP::Hub::Native::ClaudeSessions, args: {root: '$claude'}}
   hub:      {class: MCP::Hub::Native::Status}
-  remote:   {url: '$listen/history'}
+  remote:   {url: '$tls/history'}
   boxed:    {docker: 'example/mcp-server:1'}
   stack:    {compose: '$tmp', service: mcp}
 hub:
@@ -183,7 +210,9 @@ if ( !$pid ) {
   open STDOUT, '>', '/dev/null' or die $!;
   open STDERR, '>', "$tmp/daemon.log" or die $!;
   local $ENV{MCP_HUB_CONFIG} = "$tmp/daemon.yml";
-  eval { MCP::Hub->new( cli => 1 )->start('daemon'); 1 } or print STDERR "daemon died: $@";
+  local $ENV{SSL_CERT_FILE}  = "$tls_dir/ca.crt";    # the remote upstream verifies the hub
+  eval { MCP::Hub->new( cli => 1 )->start( 'daemon', '-l', $listen, '-l', $tls_listen ); 1 }
+    or print STDERR "daemon died: $@";
   open my $fh, '>', $inc_file or die $!;
   print {$fh} "$_\t" . ( ref $INC{$_} ? 'REF' : $INC{$_} // '' ) . "\n" for sort keys %INC;
   close $fh;
@@ -200,7 +229,7 @@ sub expect {
   return;
 }
 
-my $ua = Mojo::UserAgent->new( request_timeout => 30 );
+my $ua = Mojo::UserAgent->new( request_timeout => 30, ca => "$tls_dir/ca.crt" );
 my $up;
 for ( 1 .. 300 ) {
   last if $up = ( $ua->get("$listen/")->res->code // 0 ) == 200;
@@ -245,6 +274,7 @@ if ($up) {
     mcp( 'all', 'tools/call', { name => 'echo__echo', arguments => { msg => 'via all' } } ), qr/via all/ );
   expect( 'GET /',            request( GET => "$listen/", { Accept => 'text/html' } ), qr/<html/i );
   expect( 'GET /_hub/status', request( GET => "$listen/_hub/status" ), qr/"upstreams"/ );
+  expect( 'GET /_hub/status over https', request( GET => "$tls/_hub/status" ), qr/"upstreams"/ );
   expect( 'GET /no/such/route', request( GET => "$listen/no/such/route", { Accept => 'text/html' } ), qr/<html/i );
   $ua->post( "$listen/no-such-server", json => { jsonrpc => '2.0', id => 1, method => 'tools/list' } );
   $ua->post( "$listen/history", { 'Content-Type' => 'application/json' }, 'not json' );

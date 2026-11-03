@@ -24,10 +24,13 @@ else TMO=(perl -e 'alarm shift; exec @ARGV' "$tmo"); fi
 # cache: PAR_GLOBAL_TMPDIR is where PAR unpacks, so a fresh directory is a first start.
 bin() { env -i PATH=/usr/bin:/bin HOME="$work/home" PAR_GLOBAL_TMPDIR="$work/par" "${TMO[@]}" "$BIN" "$@" </dev/null; }
 # The reference: the same CLI from the checkout, same HOME, no configuration of the
-# maintainer's and no reactor choice. PERL5LIB stays: that is where the deps are.
+# maintainer's, no reactor choice, no trust store or proxy of this shell's. PERL5LIB
+# stays: that is where the deps are.
 ref() {
   env -u MCP_HUB_CONFIG -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u CLAUDE_CONFIG_DIR \
-      -u MOJO_MODE -u MOJO_REACTOR -u MOJO_HOME HOME="$work/home" \
+      -u MOJO_MODE -u MOJO_REACTOR -u MOJO_HOME -u MOJO_CA_FILE -u MOJO_INSECURE \
+      -u SSL_CERT_FILE -u SSL_CERT_DIR -u HTTPS_PROXY -u https_proxy -u ALL_PROXY -u all_proxy \
+      HOME="$work/home" \
       "${TMO[@]}" perl -I"$root/lib" "$root/bin/mcp-hub" "$@" </dev/null
 }
 
@@ -129,6 +132,37 @@ reactor=$(bin eval 'print ref Mojo::IOLoop->singleton->reactor' 2>"$work/r.err")
 [ "$reactor" = Mojo::Reactor::Poll ] || fail "the binary runs on '$reactor', want Mojo::Reactor::Poll (EV must not be packed)"
 echo "reactor: OK ($reactor)"
 
+# TLS is packed: IO::Socket::SSL on Net::SSLeay, with the OpenSSL 3 that Net::SSLeay
+# was built against. Its OPENSSLDIR is where IO::Socket::SSL looks for the host's trust
+# store (cert.pem and certs/ below it) before it falls back to Mozilla::CA.
+same_as_perl "TLS available" eval 'print Mojo::IOLoop::TLS->can_tls ? "tls\n" : "no tls\n"'
+grep -qx tls "$work/got" || fail "the binary has no TLS: IO::Socket::SSL is not packed or does not load"
+same_as_perl "OpenSSL" eval 'print Net::SSLeay::SSLeay_version(0), "\n", Net::SSLeay::SSLeay_version(4), "\n"'
+grep -q '^OpenSSL 3\.' "$work/got" || fail "the binary's OpenSSL is not a 3.x: $(head -n 1 "$work/got")"
+echo "TLS: OK ($(head -n 1 "$work/got"), $(sed -n 2p "$work/got"))"
+# The trust store of last resort: Mozilla::CA's bundle, read from the path the module
+# computes -- inside PAR's cache.
+same_as_perl "Mozilla::CA bundle" eval 'require Mozilla::CA; open my $fh, "<", Mozilla::CA::SSL_ca_file() or die "$!\n"; my $n = grep { /BEGIN CERTIFICATE/ } <$fh>; print $n > 100 ? "bundle: ok\n" : "bundle: $n certificates\n"'
+grep -qx 'bundle: ok' "$work/got" || fail "Mozilla::CA bundle: $(cat "$work/got")"
+echo "trust store of last resort: OK (Mozilla::CA $(bin eval 'require Mozilla::CA; print Mozilla::CA->VERSION' 2>/dev/null))"
+# A round trip inside the binary: the hub on https with the test certificate
+# (t/fixtures/binary/tls), a client that trusts the test CA, one that trusts only the
+# default store and must be refused, and one with verification off.
+same_as_perl "TLS round trip" eval '
+  use Mojo::Server::Daemon;
+  my $dir = "t/fixtures/binary/tls";
+  my $d   = Mojo::Server::Daemon->new(app => app, silent => 1,
+    listen => ["https://127.0.0.1?cert=$dir/server.crt&key=$dir/server.key"])->start;
+  my $url  = "https://127.0.0.1:" . $d->ports->[0] . "/_hub/status";
+  my $loop = Mojo::IOLoop->singleton;
+  print "test CA: ", Mojo::UserAgent->new(ioloop => $loop, ca => "$dir/ca.crt")->get($url)->result->code, "\n";
+  my $err = Mojo::UserAgent->new(ioloop => $loop)->get($url)->error // {};
+  print "default trust store: ", (($err->{message} // "") =~ /certificate verify failed/ ? "refused" : "not refused"), "\n";
+  print "insecure: ", Mojo::UserAgent->new(ioloop => $loop, insecure => 1)->get($url)->result->code, "\n";'
+printf 'test CA: 200\ndefault trust store: refused\ninsecure: 200\n' | cmp -s - "$work/got" \
+  || fail "TLS round trip: $(cat "$work/got")"
+echo "TLS round trip: OK (verified with the test CA, refused without it)"
+
 # Packed module set. Inside the binary @INC is the archive only -- no PERL5LIB, no
 # compiled-in path -- so a module the build missed dies at run time. The loaded set
 # (scripts/loaded-modules.pl, the same list build-binary.sh packs) must be in the archive.
@@ -161,9 +195,13 @@ done
 [ -z "$leaked" ] || fail "left-out modules packed:$leaked (build-binary.sh must -X them)"
 echo "left-out families absent: OK"
 
-# Mojolicious' templates, read from a path next to Mojolicious/Renderer.pm.
-for f in templates/mojo/debug.html.ep templates/mojo/exception.html.ep templates/mojo/not_found.html.ep; do
-  [ -f "$work/archive/lib/Mojolicious/resources/$f" ] || fail "Mojolicious/resources/$f not packed"
+# Files read from a path next to a module: Mojolicious' templates (next to
+# Mojolicious/Renderer.pm), the certificate an https listen without cert= uses (next to
+# Mojo/IOLoop/TLS.pm), Mozilla::CA's bundle (next to Mozilla/CA.pm).
+for f in Mojolicious/resources/templates/mojo/debug.html.ep Mojolicious/resources/templates/mojo/exception.html.ep \
+         Mojolicious/resources/templates/mojo/not_found.html.ep \
+         Mojo/IOLoop/resources/server.crt Mojo/IOLoop/resources/server.key Mozilla/CA/cacert.pem; do
+  [ -f "$work/archive/lib/$f" ] || fail "$f not packed"
 done
-echo "Mojolicious resources: OK"
+echo "resources: OK"
 echo "verify: OK"

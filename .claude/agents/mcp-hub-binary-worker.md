@@ -32,7 +32,7 @@ commit-ready and report what changed and why, plus a proposed commit subject and
   scanner cannot see, a resource read from a path) goes as a note on your card for
   that worker — fix nothing in `lib/` yourself.
 - **Names are fixed:** the binary is `mcp-hub`; assets are
-  `mcp-hub-<version>-<os>-<arch>` with `linux-x86_64`, `linux-aarch64` and
+  `mcp-hub-<version>-<os>-<arch>` with `linux-x86_64`, `linux-arm64` and
   `macos-arm64`.
 - **Loaded by name, so `pp` cannot see it** — each needs to be packed explicitly and
   covered by `scripts/loaded-modules.pl`:

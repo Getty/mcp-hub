@@ -19,6 +19,12 @@ command -v pp >/dev/null 2>&1 || { echo "ERROR: pp (PAR::Packer) is not installe
 # YAML::PP is loaded on demand only, so a missing one would not show anywhere else.
 perl -Ilib -MMCP::Hub -MYAML::PP -e1 \
   || { echo "ERROR: runtime dependencies missing (cpanm --installdeps .)" >&2; exit 1; }
+# TLS: IO::Socket::SSL on Net::SSLeay, and Mozilla::CA as the trust store of last
+# resort. Net::SSLeay carries whatever OpenSSL it was built against into the binary:
+# a portable build links OpenSSL statically (scripts/build-binary-openssl.sh), a
+# dev-box build links the host's libssl, which check-binary-libs.sh then rejects.
+perl -MIO::Socket::SSL=2.009 -MMozilla::CA -e1 \
+  || { echo "ERROR: TLS modules missing (scripts/build-binary-openssl.sh, or cpanm IO::Socket::SSL Mozilla::CA)" >&2; exit 1; }
 
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 
@@ -35,12 +41,12 @@ loaded=(); while IFS= read -r m; do loaded+=("$m"); done <"$work/loaded"
 mods=(); for m in "${loaded[@]}"; do mods+=(-M "$m"); done
 
 # Left out of every build (the list and the reasons: scripts/loaded-modules.pl
-# --left-out): EV, TLS, the optional Mojolicious extras, JSON.pm. `pp -X Name` drops
-# exactly Name.pm, has no wildcard, and the scanner still follows `require Name` into
-# the module's own dependencies -- Mojo::IOLoop::TLS's `eval { require IO::Socket::SSL }`
-# would drag in Net::SSLeay and the build image's libssl. So a "Name::" entry takes one
-# -X per module of that namespace found in @INC on this host. Every binary then has the
-# same features on every platform; verify-binary.sh rejects any of them in the archive.
+# --left-out): EV, the optional Mojolicious extras, JSON.pm, and what IO::Socket::SSL
+# would drag in -- LWP, URI and the IDN libraries. `pp -X Name` drops exactly Name.pm,
+# has no wildcard, and the scanner still follows `require Name` into the module's own
+# dependencies. So a "Name::" entry takes one -X per module of that namespace found in
+# @INC on this host. Every binary then has the same features on every platform;
+# verify-binary.sh rejects any of them in the archive.
 perl scripts/loaded-modules.pl --left-out >"$work/left-out"
 noopt=()
 while IFS= read -r m; do noopt+=(-X "$m"); done < <(perl -MFile::Find -e '
@@ -82,4 +88,5 @@ PAR_VERBATIM=1 pp -o "$OUT" \
   bin/mcp-hub
 
 chmod +x "$OUT"
-echo "Built $OUT ($(du -h "$OUT" | cut -f1), ${#loaded[@]} modules, ${#noopt[@]} left out)"
+echo "Built $OUT ($(du -h "$OUT" | cut -f1), ${#loaded[@]} modules, ${#noopt[@]} left out," \
+  "$(perl -MNet::SSLeay -e 'print Net::SSLeay::SSLeay_version(0)'))"

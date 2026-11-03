@@ -1,0 +1,49 @@
+TLS fixtures for the binary checks -- test material, never trust them.
+
+  ca.crt      a throw-away CA ("mcp-hub smoke-test CA (never trust)"); its key was
+              deleted after signing
+  server.crt  127.0.0.1, ::1 and localhost, signed by ca.crt
+  server.key  the key of server.crt (public on purpose: anyone can read it here)
+  le-r11.crt  Let's Encrypt's real intermediate R11, issued by ISRG Root X1, valid
+              2024-03-13 to 2027-03-12 (SHA-256 fingerprint 59:1E:9C:E6:C8:63:D3:A0:
+              79:E9:FA:BE:14:78:C7:33:9A:26:B2:12:69:DD:E7:95:21:13:61:02:4A:E3:1A:44),
+              from https://letsencrypt.org/certs/2024/r11.pem -- public, nothing secret
+
+ca.crt and server.crt are EC P-256 / SHA-256 and valid from 2026-01-01 to 2126-01-01,
+so no clock and no expiry breaks the checks. scripts/loaded-modules.pl and
+scripts/smoke-binary.sh run a hub that listens on https with server.crt/server.key
+and trust ca.crt through SSL_CERT_FILE; t/binary.t keeps the pair working.
+scripts/smoke-binary.sh verifies le-r11.crt against the trust store the binary finds
+on the host, at 2025-01-01: a real chain checked without network.
+
+ca.crt, server.crt and server.key were made with OpenSSL 3.5:
+
+  cat >ca.cnf <<'EOF'
+  [req]
+  distinguished_name = dn
+  prompt = no
+  x509_extensions = v3_ca
+  [dn]
+  CN = mcp-hub smoke-test CA (never trust)
+  [v3_ca]
+  basicConstraints = critical, CA:TRUE, pathlen:0
+  keyUsage = critical, keyCertSign, cRLSign
+  subjectKeyIdentifier = hash
+  EOF
+  cat >server.ext <<'EOF'
+  basicConstraints = critical, CA:FALSE
+  keyUsage = critical, digitalSignature
+  extendedKeyUsage = serverAuth
+  subjectAltName = IP:127.0.0.1, IP:::1, DNS:localhost
+  subjectKeyIdentifier = hash
+  authorityKeyIdentifier = keyid
+  EOF
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out ca.key
+  openssl req -new -x509 -config ca.cnf -key ca.key -sha256 \
+    -not_before 20260101000000Z -not_after 21260101000000Z -out ca.crt
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out server.key
+  openssl req -new -key server.key -subj '/CN=127.0.0.1' -out server.csr
+  openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -set_serial 0x4d43502d487562 \
+    -sha256 -not_before 20260101000000Z -not_after 21260101000000Z \
+    -extfile server.ext -out server.crt
+  rm ca.key server.csr

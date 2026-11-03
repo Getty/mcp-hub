@@ -150,8 +150,8 @@ systemctl --user enable --now mcp-hub
 ## Standalone binary
 
 No Perl and no container on the machine? Each GitHub release also carries
-`mcp-hub` as one executable per platform — `linux-x86_64`, `linux-aarch64` and
-`macos-arm64` — with Perl and every module packed inside:
+`mcp-hub` as one executable per platform — `linux-x86_64`, `linux-arm64` and
+`macos-arm64` — with Perl, OpenSSL and every module packed inside:
 
 ```bash
 curl -fsSL https://github.com/Getty/mcp-hub/releases/latest/download/install.sh | sh
@@ -179,13 +179,32 @@ page — with these differences:
 - **It replaces Perl, nothing else.** A stdio entry still runs its `command` —
   `npx`, `uvx`, `docker`, … — from the host's `PATH`, and `docker`/`compose`
   entries still need the Docker CLI, exactly as with the CPAN install.
-- **`url` upstreams speak `http://` only** — there is no TLS in the binary, and
-  `hub.listen` cannot be `https://` either. Reach an `https://` MCP server
-  through a stdio bridge such as
-  `{"command": "npx", "args": ["-y", "mcp-remote", "https://…"]}`.
+- **Its own OpenSSL.** TLS works as in the CPAN install — `https://` `url`
+  upstreams, and an `https://` `hub.listen` such as
+  `https://127.0.0.1:3443?cert=/path/server.crt&key=/path/server.key` (without
+  `cert` and `key`, Mojolicious' built-in self-signed test certificate) — but
+  with OpenSSL 3.5 linked into the binary: the system's OpenSSL and its
+  `openssl.cnf` are not used. With an `https` listen, give `mcp-hub config`,
+  `status`, `refresh` and `reload` the address as `--url https://127.0.0.1:3443`.
+- **The system's CA certificates where it finds them.** To verify a server's
+  certificate, the binary reads the hashed certificate directory `/etc/ssl/certs`
+  and the bundle `/etc/ssl/cert.pem` — whichever exist, both if both do — and
+  only when it finds neither, the Mozilla CA bundle packed into it.
+  `SSL_CERT_DIR` and `SSL_CERT_FILE` name another directory or bundle.
+  - Debian, Ubuntu: `/etc/ssl/certs` from `ca-certificates` — the system store,
+    with CAs added by `update-ca-certificates`.
+  - RHEL, Rocky, Alma 9 and later, Fedora: `/etc/ssl/cert.pem` — the system
+    store, with CAs added by `update-ca-trust`.
+  - RHEL, Rocky, Alma 8 have neither, so the packed bundle answers, which knows
+    no local CAs; `export SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt` uses
+    the system store instead.
+  - macOS: `/etc/ssl/cert.pem`, the system's root certificates. CAs added to the
+    Keychain are not in it: export them, together with the roots you still need,
+    into one PEM file and point `SSL_CERT_FILE` at it.
+  - A minimal container image without `ca-certificates`: the packed bundle.
 - It runs on Mojolicious' own event loop, never on `EV`, like the Docker image.
 
-The first start after installing or upgrading unpacks about 30 MB into
+The first start after installing or upgrading unpacks about 35 MB into
 `$TMPDIR/par-<user>/cache-<hash>` (set `PAR_GLOBAL_TMPDIR` to move it) and takes
 a few seconds; later starts reuse it. Let that first start finish before starting
 several `mcp-hub` at once, and remove the cache of an old version after an

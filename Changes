@@ -66,6 +66,9 @@ Revision history for MCP-Hub
     machines without Perl: `scripts/build-binary.sh` packs every module the
     hub loads by name, `scripts/verify-binary.sh` checks it against the Perl
     CLI, `scripts/smoke-binary.sh` runs a real daemon without Perl. The
-    binary has no TLS and no EV, and `class` entries are limited to the
-    bundled native servers (README, "Standalone binary"). No prebuilt
-    binaries are published yet.
+    binary speaks TLS with its own OpenSSL 3.5, linked statically by
+    `scripts/build-binary-openssl.sh`, and trusts the system's CA
+    certificates below /etc/ssl, else a packed Mozilla CA bundle
+    (`SSL_CERT_FILE`/`SSL_CERT_DIR` override). It has no EV, and `class`
+    entries are limited to the bundled native servers (README, "Standalone
+    binary"). No prebuilt binaries are published yet.
