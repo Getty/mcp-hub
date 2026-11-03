@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-11-03T21:06:57Z
+created: 2026-11-03T18:45:39Z
+id: 36
+priority: high
+started: 2026-11-03T18:45:54Z
+status: done
+tags:
+- binary
+- tls
+title: Pack TLS into the standalone binary; rename the ARM asset to linux-arm64
+updated: 2026-11-03T21:06:57Z
+---
+
+Maintainer decisions 2026-11-03: (1) the standalone binary gets TLS — https url upstreams and an https hub.listen must work packed, on every leg, without depending on the target's OpenSSL (the dependency gate stays system-libs-only); (2) the ARM Linux asset is linux-arm64, not linux-aarch64 (consistent with macos-arm64, Docker linux/arm64, the bundle design; locale-simple's released aarch64 assets stay as they are). Follows k28 (0a1bf69). Lane: mcp-hub-binary-worker.
+
+2026-11-03 18:55 binary-worker start. Plan: OpenSSL 3.5.9 (LTS, supported to 2030-04-08; 3.6 support ended 2026-11-01, 3.0 ended 2026-09) built no-shared/no-module/no-autoload-config with -fPIC, linked statically into Net::SSLeay 1.96. OPENSSLDIR=/etc/ssl so IO::Socket::SSL's own lookup finds the system store on Debian/Ubuntu (/etc/ssl/certs hashed), RHEL 9+/Fedora (/etc/ssl/cert.pem) and macOS (/etc/ssl/cert.pem); packed Mozilla::CA is IO::Socket::SSL's fallback where none is found (RHEL 8 family, images without ca-certificates); SSL_CERT_FILE/SSL_CERT_DIR override. no-autoload-config keeps the static OpenSSL from reading the host's openssl.cnf (written for another OpenSSL). Found (lib/, for mcp-hub-worker): _base_url keeps the listen URL's query, so hub.listen 'https://…?cert=…&key=…' makes 'mcp-hub config' print '…?cert=…&key=…/hub' and status/refresh/reload call a broken base (verified with perl -Ilib).
+
+2026-11-03 20:58 Done, staged (not committed). TLS packed: OpenSSL 3.5.9 (3.5 LTS, to 2030-04-08) built no-shared/no-module/no-autoload-config -fPIC, OPENSSLDIR=/etc/ssl, linked statically into Net::SSLeay 1.96 by new scripts/build-binary-openssl.sh PREFIX (LIBS override via PERL_MM_OPT drops Net::SSLeay's unconditional -lz); IO::Socket::SSL + Mozilla::CA packed. Trust store: /etc/ssl/certs (hashed) and/or /etc/ssl/cert.pem, else packed Mozilla::CA; SSL_CERT_FILE/SSL_CERT_DIR override; openssl.cnf never read (strace, OPENSSL_CONF set). Left out instead: LWP, URI, Net::IDN::Encode, Net::LibIDN (PublicSuffix's optional deps). Verified: dev build verify OK (lib gate fails as expected: host libssl/libcrypt, glibc 2.38); portable alma8 rehearsal (no-crypt perl 5.40.5 + static OpenSSL) verify OK + lib gate OK (glibc 2.28, system libs only); no-Perl smoke incl. TLS + offline real-chain check (Let's Encrypt R11 fixture at 2025-01-01) OK on rockylinux:9 (/etc/ssl/cert.pem), almalinux:8 + debian:bullseye-slim (Mozilla), Debian host (/etc/ssl/certs); prove -lr t/ 19 files/180 tests PASS. linux-aarch64 -> linux-arm64 in README + agent file. Unbuilt: linux-arm64, macos-arm64. 14.5 MB binary, unpacks ~34 MB, start cold 3.5 s / warm 1.5 s on a loaded host.
+
+2026-11-03 20:58 For other lanes. mcp-hub-worker: (1) _base_url keeps the listen query (noted above); README now tells https-listen users to pass --url to config/status/refresh/reload -- drop that sentence when fixed. (2) k32: the binary always has IO::Socket::SSL now, so k32 cannot hit it; CPAN installs still can. Recommend cpanfile 'requires IO::Socket::SSL 2.009' (Mojo's floor) -- binary_prepare installs it first, so the deps step finds it satisfied. Mozilla::CA stays binary-only. Docker image: the local raudssus/mcp-hub:latest has IO::Socket::SSL 2.099/Net::SSLeay 1.96 (not from the cpanfile); a cpanfile requires would need libssl-dev + zlib1g-dev in the build stage if the base lacks it -- unverified. Release-manager: Changes line 'binary has no TLS' needs replacing (proposal in report). Bundle k18: input diff in report (binary_prepare = scripts/build-binary-openssl.sh PREFIX; required += IO::Socket::SSL Net::SSLeay Mozilla::CA; -X += LWP URI Net::IDN::Encode Net::LibIDN; smoke needs port..port+3 and t/fixtures/binary/tls).
+
+2026-11-03 20:58 Ready for review: staged tree, commit belongs to mcp-hub-release-manager. Not staged by me: docs/superpowers/specs/2026-11-03-forked-class-workers-design.md (someone else's).
+
+2026-11-03 21:06 Committed in 49b66e5 (TLS in the binary, linux-arm64 rename, Changes entry).
