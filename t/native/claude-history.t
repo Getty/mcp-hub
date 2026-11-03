@@ -1,3 +1,4 @@
+#!/usr/bin/env perl
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use Mojo::File qw(curfile);
