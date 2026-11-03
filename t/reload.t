@@ -636,6 +636,46 @@ subtest 'SIGHUP reloads exactly once' => sub {
   is $calls, 1, 'three triggers, still one reload';
 };
 
+subtest 'no reload once the hub shuts down' => sub {
+  my $dir  = tempdir;
+  my $file = $dir->child('config.json');
+  write_config($file, {mcpServers => {history => history_entry()}, hub => {auto_reload => \1}});
+
+  my $app = MCP::Hub->new(hub_config_input => "$file");
+  $app->auto_reload_interval(0.05);
+  $app->watch_sighup;
+  $app->start_config_watch;
+  ok $app->watching_config, 'the config watcher runs';
+
+  my $applied = 0;
+  my $real    = \&MCP::Hub::_apply_config;
+  no warnings 'redefine';
+  local *MCP::Hub::_apply_config = sub { $applied++; return $real->(@_) };
+  use warnings;
+
+  my $down = 0;
+  $app->shutdown_p->then(sub { $down = 1 })->wait;
+  ok $down, 'shutdown_p resolves';
+  ok !$app->watching_config, 'and the watcher is stopped';
+
+  # What a reload would bring in now, the daemon would have to start while it
+  # waits for the old servers to go.
+  write_config($file, {
+    mcpServers => {history => history_entry(), hub => {class => 'MCP::Hub::Native::Status'}},
+    hub        => {auto_reload => \1},
+  });
+  kill HUP => $$;
+  $app->schedule_reload('test');
+  settle(0.4);
+  is $applied, 0, 'neither SIGHUP nor the changed file reloads';
+  ok !$app->upstreams_by_name->{hub}, 'the new server never appears';
+
+  my $summary = $app->reload;
+  ok !$summary->{ok}, 'an explicit reload is refused';
+  like $summary->{error}, qr/the hub is shutting down/, 'saying why';
+  is $applied, 0, 'and applies nothing';
+};
+
 subtest 'a hub configured from data has nothing to reload' => sub {
   my $app = MCP::Hub->new(hub_config_input => {mcpServers => {history => history_entry()}});
   is $app->hub_config_path, undef, 'no path was resolved';

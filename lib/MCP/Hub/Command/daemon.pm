@@ -2,7 +2,12 @@ package MCP::Hub::Command::daemon;
 our $VERSION = '0.001';
 use Mojo::Base 'Mojolicious::Command::daemon', -signatures;
 
+use Mojo::Promise;
+
 # ABSTRACT: Run the hub in the foreground as a single process
+
+# How long the daemon waits on its way out for its containers to be removed.
+use constant SHUTDOWN_WAIT => 20;
 
 has description => 'Run the MCP hub in the foreground';
 
@@ -24,7 +29,16 @@ sub run ($self, @args) {
   $self->app->watch_sighup;
   $self->app->start_config_watch;
 
-  return $self->SUPER::run(@args);
+  my @ret = $self->SUPER::run(@args);
+
+  # The server has stopped listening (SIGINT or SIGTERM ended its loop). Stop
+  # the upstreams and give the containers the hub started the time to go: a
+  # detached HTTP container would otherwise outlive the hub. Bounded, so a
+  # daemon that cannot be reached never keeps the hub from exiting -- and a
+  # second signal, back at its default now, ends it at once.
+  Mojo::Promise->race($self->app->shutdown_p, Mojo::Promise->timer(SHUTDOWN_WAIT))->wait;
+
+  return @ret;
 }
 
 sub default_listen ($self, @args) {
@@ -89,6 +103,14 @@ All three end in the same L<MCP::Hub/reload>, so they behave identically: only
 what actually changed in the file is touched, and a configuration that does not
 validate leaves the running one fully in effect. C<hub.listen> is the one thing
 a reload cannot apply -- that needs a restart, and the reload says so.
+
+=head2 Shutting down
+
+On C<SIGINT> or C<SIGTERM> the server stops listening, and then the daemon stops
+every upstream and waits -- up to twenty seconds -- until the containers the hub
+started are stopped and removed (see L<MCP::Hub/shutdown_p>). A second signal
+during that wait ends the process at once; a C<SIGHUP> or a changed
+configuration file reloads nothing any more.
 
 =head1 METHODS
 

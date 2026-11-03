@@ -7,9 +7,10 @@
 **A lot of MCP for very little RAM.**
 
 `mcp-hub` is a single HTTP MCP server that embeds any number of stdio MCP
-servers (context7, playwright, serper, …), in-process Perl MCP servers, and
-remote HTTP MCP servers (Streamable HTTP or HTTP+SSE), and hands each of them to
-every agent on the machine as its own endpoint. It runs each server **once per
+servers (context7, playwright, serper, …), MCP servers that ship as Docker
+images or compose services, in-process Perl MCP servers, and remote HTTP MCP
+servers (Streamable HTTP or HTTP+SSE), and hands each of them to every agent on
+the machine as its own endpoint. It runs each server **once per
 machine**, not once per agent session, starts them **lazily** on the first tool
 call, and stops them again when idle.
 
@@ -296,7 +297,8 @@ and changes exactly what the edit asks for — everything else keeps running:
 | nothing about a server | Nothing. Same process, same stats, same idle timer. |
 | a profile, a client, `tools.allow`/`deny`, `public_profile` | Swapped in place; in effect on the next request. A tool you deny disappears from `tools/list` and `tools/call`, and no server is restarted. |
 | only timeouts (`idle_timeout`, `request_timeout`, per server or global) | Applied in place, no restart. |
-| a server's `command`, `args`, `env`, `url`, … | That one server is stopped and rebuilt. |
+| a server's `command`, `args`, `env`, `url`, `docker`, … | That one server is stopped and rebuilt. |
+| `hub.docker_command` or `hub.docker_network` | The `docker` (and, for the command, `compose`) servers are rebuilt. |
 | remove a server | It is stopped and its path is `404` again. |
 | add a server | It is mounted; with a cached manifest nothing is spawned until its first call. |
 | `hub.listen` or `hub.cache_dir` | Cannot be applied live: the rest is applied and you get a warning to restart. |
@@ -412,6 +414,98 @@ sub new ($class, %args) {
 If your class has a `hub` attribute, the running `MCP::Hub` instance is injected
 into its constructor — that is how `MCP::Hub::Native::Status` reaches the hub.
 
+## MCP servers in Docker containers
+
+An MCP server that ships as a Docker image is mounted by its image name — no
+`docker run` line, no separately started container:
+
+```json
+{
+  "mcpServers": {
+    "time":     { "docker": "mcp/time" },
+    "github":   { "docker": "ghcr.io/github/github-mcp-server", "args": ["stdio"],
+                  "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" } },
+    "crawl4ai": { "docker": "unclecode/crawl4ai", "port": 11235, "path": "/mcp/sse", "type": "sse" },
+    "stack":    { "compose": "~/mcp/stack", "service": "mcp" }
+  }
+}
+```
+
+It behaves like a stdio server: `tools/list` is answered from the cached
+manifest with no container running; the first `tools/call` pulls the image if it
+is missing (with no timeout — a large pull never fails the handshake), starts
+the container and talks to it; after `idle_timeout` the container is stopped
+again. Crash loops, `refresh`, `always_on` and reload work as for stdio.
+
+**stdio or HTTP — the hub decides at start:**
+
+1. `"port": N` — HTTP on container port N.
+2. no `port`, and the image `EXPOSE`s exactly one port — HTTP on that one.
+3. no `port` and no `EXPOSE` — stdio (`docker run -i --rm …`).
+4. `"stdio": true` — stdio, whatever the image declares (for images that
+   `EXPOSE` a port but speak stdio by default).
+
+An image that `EXPOSE`s several ports needs `port`. An HTTP container's port is
+published on `127.0.0.1` only, on a port Docker picks; the hub waits until the
+server answers, so a slow start is no error. `path` (default `/mcp`), `type`
+(`http` or `sse`) and `headers` work as for a `url` server.
+
+**Compose.** `compose` names the directory of a compose project and `service`
+(required) the one service that is the MCP server. The hub reads the project
+with `docker compose config` and talks to the service this way: `url` — HTTP to
+exactly that address; `port` — HTTP on that published port; exactly one
+published port — HTTP on it; none — stdio, via `docker compose run --rm -T
+--no-deps`. `"stdio": true` forces stdio. The hub starts the service, plus any
+dependencies that are not running yet; it stops only that service; it never
+stops, recreates or restarts anything that already exists.
+
+For HTTP the hub first asks `docker compose ps` whether the service already
+runs. If it does, the hub uses it as it is — no `up` — and never stops it; if
+that check fails, so does the start, and nothing is started or stopped.
+Otherwise it runs `docker compose up -d --no-recreate <service>`: compose starts
+the service and what it `depends_on` that does not run, waits for each as
+`depends_on` says, and recreates nothing. (Compose's default would recreate a
+running dependency whose configuration has changed — the user's database, say,
+started from a shell with a variable the hub's environment lacks.) `docker
+compose stop <service>` stops it again. For stdio, the hub does first what
+`compose run` would otherwise do inside the handshake: it pulls or builds a
+missing image, runs `docker compose up -d --no-recreate` for the dependencies,
+and waits until each `service_healthy` one is healthy and each
+`service_completed_successfully` one has exited 0 — all without a timeout, so
+none of it counts against `request_timeout`. The dependencies are left running,
+as `compose run` leaves them; a one-shot dependency runs again on every start,
+as compose runs it. As nothing is recreated, a change in the compose file
+reaches a container that already exists — a dependency's, or an HTTP service's —
+only once you recreate it yourself (`docker compose up -d --force-recreate
+<service>`); the stdio server's `run` container is new on every start. A
+compose entry's `env` is
+the environment of the compose command, so `${VAR}` in the compose file sees it;
+it reaches the container only where the compose file passes it on. Compose
+entries need Docker Compose 2 or later (`docker compose version`);
+podman-compose is not supported.
+
+**Secrets stay off command lines.** For a `docker` entry each `env` key becomes a
+bare `-e KEY`; the value travels in the environment of the `docker` CLI, never in
+an argv. Error messages carry what a command wrote to stderr, never its stdout —
+which for `docker compose config` is the whole project.
+
+**What the hub stops and removes.** Every container it starts —
+from a `docker` entry, or by `docker compose run` — is named `mcp-hub-<name>` and
+labelled `mcp-hub.server=<name>`, `mcp-hub.owner=<id>` and `mcp-hub.run=<start>`.
+The owner id is kept in the cache directory; a hub that cannot keep it there
+starts no container at all. Leftovers of a crashed hub are removed by those
+labels only, and every match is checked again before it goes; a container of
+that name that is not the hub's makes the start fail with Docker's "already in
+use", and the hub leaves it alone. A compose service is stopped only when it was
+not running when the hub looked, just before its `up -d` (one that someone else
+starts in the moment between the two cannot be told apart); its dependencies
+and the rest of the stack are never stopped, recreated or restarted.
+
+**Podman** works: set `"hub": { "docker_command": "podman" }`, or point the
+`docker` CLI at Podman's socket. For compose entries `podman compose` must hand
+over to Docker Compose (its default provider when it is installed), not to
+podman-compose.
+
 ## Docker image
 
 The `raudssus/mcp-hub` image is **batteries-included**: the stdio upstreams the
@@ -459,19 +553,51 @@ Python versions come for free the same way via `uvx --python 3.11 …`.
 
 ### Docker-based upstreams
 
-Some servers are launched with `command: "docker"`. The Docker **CLI** is in the
-image; mount the daemon socket to let them run:
+[`docker` and `compose` entries](#mcp-servers-in-docker-containers) (and
+servers launched with `command: "docker"`) work inside the image: the Docker
+CLI and its compose plugin are in it. Mount the daemon's socket, and give the
+container user access to it:
 
 ```bash
-docker run … -v /var/run/docker.sock:/var/run/docker.sock raudssus/mcp-hub
+docker run … -v /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(stat -c %g /var/run/docker.sock)" raudssus/mcp-hub
 ```
+
+The containers the hub starts are then **siblings** of the hub's own container,
+created by the host's daemon. Three things follow:
+
+- **The hub must reach them over a network**, not over the host's `127.0.0.1`.
+  Put the hub on a named network and tell it to use it — the bundled
+  `docker-compose.yml` names its default network `mcp-hub`:
+
+  ```json
+  { "hub": { "docker_network": "mcp-hub" } }
+  ```
+
+  HTTP containers then join that network instead of publishing a port, and the
+  hub reaches them as `http://mcp-hub-<name>:<port><path>`.
+- **A compose HTTP service needs its `url`.** Without one the hub connects to
+  where `docker compose port` says the service is published — an address on the
+  host, which from inside the hub's container is not reachable as
+  `127.0.0.1`. `docker_network` applies to `docker` entries only. Give the entry
+  its `url`: with the hub on the project's network, say,
+  `"url": "http://mcp:8080/mcp"`.
+- **Host paths are host paths.** `volumes` and the bind mounts of a compose
+  project are resolved by the host's daemon, not inside the hub's container.
+- **Mount a compose directory at the same path** it has on the host
+  (`-v /srv/mcp/stack:/srv/mcp/stack:ro`), so that `compose` names one directory
+  for the hub and for the daemon alike.
+
+Rootless Podman: mount its socket instead
+(`-v "$XDG_RUNTIME_DIR/podman/podman.sock:/var/run/docker.sock"`).
 
 ### Building the image
 
 ```bash
 docker build -t raudssus/mcp-hub \
   --build-arg NODE_VERSION=20 \
-  --build-arg DOCKER_CLI_VERSION=27.3.1 .
+  --build-arg DOCKER_CLI_VERSION=27.3.1 \
+  --build-arg DOCKER_COMPOSE_VERSION=2.29.7 .
 ```
 
 Need a runtime the image doesn't ship? It's an ordinary Debian base — start a new
@@ -498,6 +624,15 @@ A plain `dzil test` never touches npm or the network; only an explicit
 `MCP_HUB_TEST_NPX=1` or a genuine release run (`RELEASE_TESTING`, i.e.
 `dzil release` / `dzil test --release`) exercises the live server.
 
+The `docker` and `compose` upstreams are tested against a fake Docker CLI
+(`t/upstream/fake-docker.pl`, selected with `hub.docker_command`) whose
+"containers" are `echo.pl` — no daemon, no image. The live counterpart runs a
+real `mcp/time` container and is opt-in the same way:
+
+```bash
+MCP_HUB_TEST_DOCKER=1 prove -l t/docker-live.t
+```
+
 ## How it works
 
 ```
@@ -507,6 +642,7 @@ POST /context7  ─ Bearer ─▶     │ Auth ─▶ Facade(context7) ─▶ Up
 POST /playwright ────────▶      │      ─▶ Facade(playwright) ─▶ Upstream::Stdio ─▶ npx @playwright/mcp
 POST /run  ──────────────▶      │      ─▶ Upstream::Perl ───────────────▶ MCP::Run (in-process)
 POST /crawl4ai ──────────▶      │      ─▶ Upstream::Http ───────────────▶ remote server (HTTP / SSE)
+POST /time ──────────────▶      │      ─▶ Upstream::Docker ─────────────▶ docker run -i mcp/time
 POST /all  ──────────────▶      │      ─▶ Aggregate ─▶ (all of the above, prefixed)
 GET  /_hub/status ───────▶      │      ─▶ admin API
                                 └────────────────────────────────────────┘
@@ -574,7 +710,7 @@ docker run … -v "$PWD/mcp.yml:/config/mcp.yml:ro" raudssus/mcp-hub
 
 ### `mcpServers` entries
 
-Exactly one of `command`, `class` or `url` is required.
+Exactly one of `command`, `class`, `url`, `docker` or `compose` is required.
 
 | Key | Meaning |
 |---|---|
@@ -584,7 +720,19 @@ Exactly one of `command`, `class` or `url` is required.
 | `url` | A remote HTTP MCP server. |
 | `type` (with `url`) | `http` (Streamable HTTP, the default) or `sse` (the older HTTP+SSE transport, e.g. a `…/sse` URL). |
 | `headers` (with `url`) | Extra request headers, such as `{ "Authorization": "Bearer …" }`. |
-| `hub.idle_timeout` | Seconds; `0` means never stop. Overrides the global default (stdio only). |
+| `docker` | An image: a [container](#mcp-servers-in-docker-containers) the hub starts and stops. |
+| `args` (with `docker`) | Container arguments, after the image. |
+| `env` (with `docker`) | Passed as bare `-e KEY`; the values never appear on a command line. |
+| `env` (with `compose`) | The environment of the compose command — what `${VAR}` in the compose file sees. |
+| `volumes` (with `docker`) | `-v` specs, `/host:/container[:ro]` or `name:/container`; a leading `~` is expanded. |
+| `docker_args` (with `docker`) | Extra `docker run` flags, before the image (`--memory`, `--gpus`, `--user`, …). |
+| `compose` | A compose project directory; `~` is expanded. |
+| `service` (with `compose`) | **Required.** The one service that is the MCP server. |
+| `url` (with `compose`) | Where the service answers; skips the port lookup. |
+| `port` (with `docker`, `compose`) | The container port the server listens on: HTTP on it. Optional when the image `EXPOSE`s (or the service publishes) exactly one. |
+| `stdio` (with `docker`, `compose`) | `true` forces stdio, even when a port would be detected. |
+| `path`, `type`, `headers` (with `docker`, `compose`) | For an HTTP container: the URL path (default `/mcp`), `http` or `sse`, extra headers. |
+| `hub.idle_timeout` | Seconds; `0` means never stop. Overrides the global default (stdio, docker and compose). |
 | `hub.always_on` | Start at daemon start and never stop. |
 | `hub.request_timeout` | Seconds per request. |
 
@@ -598,8 +746,9 @@ Exactly one of `command`, `class` or `url` is required.
 ```
 
 `${VAR}` and `${VAR:-default}` are expanded in `command`, `args`, `env`, `cwd`,
-`url` and `headers`, and in the `hub` block in `listen`, `cache_dir` and each
-client's `token`. An unset variable without a default is a config error at
+`url`, `headers`, `docker`, `volumes`, `docker_args` and `compose`, and in the
+`hub` block in `listen`, `cache_dir`, `docker_command`, `docker_network` and
+each client's `token`. An unset variable without a default is a config error at
 start.
 
 ### `hub` block
@@ -608,12 +757,14 @@ start.
 |---|---|---|
 | `listen` | `http://127.0.0.1:3080` | Listen address. |
 | `cache_dir` | `~/.cache/mcp-hub` | Where manifests are cached. |
-| `idle_timeout` | `300` | Seconds before an idle stdio upstream is stopped. |
+| `idle_timeout` | `300` | Seconds before an idle stdio, docker or compose upstream is stopped. |
 | `request_timeout` | `60` | Seconds to wait for an upstream response. |
 | `profiles` | `{}` | Named permission sets. |
 | `clients` | `{}` | `name → { token, profile }`. |
 | `public_profile` | `null` | Profile for tokenless requests in clients mode. |
 | `auto_reload` | `false` | Watch the config file and [reload](#changing-the-config-while-it-runs) when it changes. |
+| `docker_command` | `docker` | The CLI for `docker` and `compose` entries; `podman` works too. |
+| `docker_network` | unset | HTTP containers join this network instead of publishing a port, and are reached by name — for a hub [that runs in a container](#docker-based-upstreams) itself. |
 
 `listen` and `cache_dir` take effect at start only; everything else can be
 changed by a reload.

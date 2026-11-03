@@ -2,7 +2,9 @@
 # A tiny stdio MCP server used by the hub's test suite. It speaks the legacy
 # handshake (via MCP::Server::Legacy, server side) and offers just enough
 # behaviour to exercise every path in MCP::Hub::Upstream::Stdio -- without any
-# node, python or network. This is the ONLY upstream the test suite spawns.
+# node, python or network. This is the ONLY upstream the test suite spawns;
+# the fake docker CLI (fake-docker.pl) runs it as its "containers", over stdio
+# or, with --http, over HTTP on the loopback.
 use Mojo::Base -strict, -signatures;
 
 use MCP::Server;
@@ -99,7 +101,27 @@ $server->resource(
   code        => sub ($resource) { return $resource->text_resource('This is the echo server.') },
 );
 
+# --http=PORT serves the same server over Streamable HTTP at
+# http://127.0.0.1:PORT/mcp instead of stdio: what t/upstream/fake-docker.pl
+# runs for an HTTP container. --http-delay=SECONDS waits that long before it
+# listens, like a server that is slow to come up behind a published port.
+my ($HTTP) = map { /^--http=(\d+)$/ ? $1 : () } @ARGV;
+if (defined $HTTP) { _serve_http($server, $HTTP); exit 0 }
+
 $server->to_stdio;
+
+sub _serve_http ($server, $port) {
+  require Mojolicious;
+  require Mojo::Server::Daemon;
+  my ($delay) = map { /^--http-delay=([\d.]+)$/ ? $1 : () } @ARGV;
+  select undef, undef, undef, $delay if $delay;
+
+  my $app = Mojolicious->new;
+  $app->log->level('fatal');
+  $app->routes->post('/mcp' => $server->to_action({streaming => 1}));
+  Mojo::Server::Daemon->new(app => $app, listen => ["http://127.0.0.1:$port"], silent => 1)->run;
+  return;
+}
 
 # A hand-rolled peer: it speaks just enough of the legacy handshake to get the
 # hub to call a tool, and answers that call with an error that is not an object.

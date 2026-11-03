@@ -3,9 +3,9 @@
 # MCP::Hub as a container: mount a .mcp.json, expose the HTTP port, done.
 # Batteries included — the stdio upstreams the hub spawns run *inside* this
 # image, so it carries the runtimes they need: Node (+ npx), Python (uv/uvx),
-# Deno, Bun, and the Docker CLI (for "command: docker run ..." upstreams, when
-# the socket is mounted). Alternate Node versions are fetched on demand by
-# `with-node` into the /cache volume.
+# Deno, Bun, and the Docker CLI with its compose plugin (for "docker" and
+# "compose" upstreams, when the socket is mounted). Alternate Node versions are
+# fetched on demand by `with-node` into the /cache volume.
 
 ARG PERL_IMAGE=perl:5.40-slim
 
@@ -31,6 +31,7 @@ FROM ${PERL_IMAGE} AS runtime
 
 ARG NODE_VERSION=22
 ARG DOCKER_CLI_VERSION=27.3.1
+ARG DOCKER_COMPOSE_VERSION=2.29.7
 
 # Base tooling + a system Python (uv layers its own managed Pythons on top).
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -65,7 +66,7 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/deno; \
     rm -rf /tmp/bun.zip /tmp/bun /tmp/deno.zip
 
-# --- Docker CLI: client only; only useful when the socket is mounted ----------
+# --- Docker CLI + compose plugin: client only; useful when the socket is mounted
 RUN set -eux; \
     case "$(uname -m)" in \
       x86_64|amd64)  arch=x86_64 ;; \
@@ -73,7 +74,12 @@ RUN set -eux; \
       *) echo "unsupported arch $(uname -m)"; exit 1 ;; \
     esac; \
     curl -fsSL "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
-      | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
+      | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
+    mkdir -p /usr/local/lib/docker/cli-plugins; \
+    curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+      "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${arch}"; \
+    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose; \
+    docker compose version
 
 # --- uv / uvx: manages Python versions on demand ------------------------------
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh

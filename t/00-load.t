@@ -16,6 +16,12 @@ my @modules = qw(
   MCP::Hub::Upstream::Perl
   MCP::Hub::Upstream::Stdio
   MCP::Hub::Upstream::Http
+  MCP::Hub::Docker
+  MCP::Hub::Upstream::Docker
+  MCP::Hub::Upstream::Docker::Engine
+  MCP::Hub::Upstream::Docker::Stdio
+  MCP::Hub::Upstream::Docker::Http
+  MCP::Hub::Upstream::Compose
   MCP::Hub::Native::ClaudeHistory
   MCP::Hub::Native::ClaudeSessions
   MCP::Hub::Native::Status

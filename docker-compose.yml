@@ -24,9 +24,19 @@ services:
       # on-demand Node versions (with-node), and the npm / uv / deno / bun
       # package caches. You'll see files appear under ./cache as they're fetched.
       - ./cache:/cache
-      # Uncomment to allow "command: docker run ..." upstreams (the CLI is in
-      # the image; it only works with the daemon socket mounted):
+      # Uncomment to allow "docker" and "compose" upstreams (the CLI and its
+      # compose plugin are in the image; they only work with the daemon socket
+      # mounted -- and the group_add below, so the container user may use it).
+      # The hub's containers are then siblings of this one, on the host's
+      # daemon: add
+      #   "hub": { "docker_network": "mcp-hub" }
+      # to your config so they join the network below and the hub reaches them
+      # by name. Host paths are host paths: a "volumes" entry, or the directory
+      # of a "compose" project, is resolved on the host -- mount a compose
+      # directory here at the same path it has there.
       # - /var/run/docker.sock:/var/run/docker.sock
+    # group_add:
+    #   - "${DOCKER_GID:-999}"    # the group of /var/run/docker.sock: stat -c %g /var/run/docker.sock
     # Secrets are referenced as ${VAR} in your .mcp.json and read from the
     # container's environment, so they never sit in the config file. Keep them
     # in a .env next to this file and uncomment:
@@ -39,3 +49,9 @@ services:
       # YAML config just needs mounting under one of those names (no override).
       - MCP_HUB_CONFIG_DIR=/config
     restart: unless-stopped
+
+# A fixed name for the default network, so that "hub.docker_network" can name
+# it: the containers the hub starts join it, and the hub reaches them there.
+networks:
+  default:
+    name: mcp-hub

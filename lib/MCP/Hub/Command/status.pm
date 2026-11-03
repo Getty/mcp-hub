@@ -69,9 +69,9 @@ sub _admin_token ($app, $client) {
 
 sub _print_table ($report) {
   printf "mode: %s\n\n", $report->{mode} // 'open';
-  printf "%-16s %-6s %-9s %-8s %-10s %-6s %-6s %s\n", qw(NAME TYPE STATE PID RSS_KB CALLS ERRORS MESSAGE);
+  printf "%-16s %-7s %-9s %-8s %-10s %-6s %-6s %s\n", qw(NAME TYPE STATE PID RSS_KB CALLS ERRORS MESSAGE);
   for my $row (@{$report->{upstreams} // []}) {
-    printf "%-16s %-6s %-9s %-8s %-10s %-6s %-6s %s\n",
+    printf "%-16s %-7s %-9s %-8s %-10s %-6s %-6s %s\n",
       $row->{name}, $row->{type}, $row->{state},
       $row->{pid} // '-', $row->{rss_kb} // '-', $row->{calls} // 0, $row->{errors} // 0,
       $row->{error} // '';

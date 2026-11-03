@@ -8,6 +8,8 @@ use MCP::Hub::Config;
 use MCP::Hub::Facade::Server;
 use MCP::Hub::Help;
 use MCP::Hub::Upstream;
+use MCP::Hub::Upstream::Compose;
+use MCP::Hub::Upstream::Docker;
 use MCP::Hub::Upstream::Perl;
 use MCP::Hub::Upstream::Stdio;
 use MCP::Hub::Upstream::Http;
@@ -139,6 +141,7 @@ sub export_config ($self, %opts) {
 # --- live configuration reload ---------------------------------------------
 
 sub reload ($self) {
+  return $self->_refuse_reload('the hub is shutting down') if $self->{shutting_down};
   my $path = $self->hub_config_path;
   return $self->_refuse_reload('the configuration was not loaded from a file, so there is nothing to reload')
     unless defined $path;
@@ -253,6 +256,10 @@ sub schedule_reload ($self, $reason = 'a request') {
   # Triggers coalesce rather than race: a second signal, file event or request
   # arriving before the loop gets round to it joins the reload already queued.
   return $self if $self->{reload_scheduled};
+  if ($self->{shutting_down}) {
+    $self->log->info("not reloading the configuration ($reason): the hub is shutting down");
+    return $self;
+  }
   $self->{reload_scheduled} = 1;
   Mojo::IOLoop->next_tick(sub {
     delete $self->{reload_scheduled};
@@ -406,13 +413,18 @@ sub _build_upstream ($self, $entry, $config) {
   return $up;
 }
 
+# The upstreams that run something of their own -- a child, a container --
+# only while they are used: they have an idle timeout, and a warming fetch
+# stops them again.
+my %LAZY = map { $_ => 1 } qw(stdio docker compose);
+
 # What an entry ends up running with: its own hub block wins over the global
 # defaults, exactly as MCP::Hub::Upstream's constructors resolve it. A perl
 # upstream has neither.
 sub _effective_timeouts ($config, $entry) {
   return {} if $entry->{type} eq 'perl';
   my %timeouts = (request_timeout => $entry->{request_timeout} // $config->request_timeout);
-  $timeouts{idle_timeout} = $entry->{idle_timeout} // $config->idle_timeout if $entry->{type} eq 'stdio';
+  $timeouts{idle_timeout} = $entry->{idle_timeout} // $config->idle_timeout if $LAZY{$entry->{type}};
   return \%timeouts;
 }
 
@@ -492,6 +504,24 @@ sub start_background_fetches ($self) {
   return $self;
 }
 
+# Stop every upstream, and resolve once what the stops set in motion is over:
+# a container is stopped and removed by the docker CLI after stop returns. The
+# daemon waits for this on its way out, so that no container it started
+# outlives it.
+#
+# From here on the hub reloads no more: a reload while it waits would build
+# new upstreams -- and start new containers -- behind the ones being stopped.
+# SIGHUP keeps its handler, so that it cannot end the wait either.
+sub shutdown_p ($self) {
+  $self->{shutting_down} = 1;
+  delete $self->{watch_enabled};
+  $self->stop_config_watch;
+  my @ups = @{$self->upstreams};
+  $_->stop for @ups;
+  return Mojo::Promise->resolve unless @ups;
+  return Mojo::Promise->all_settled(map { $_->stopped_p } @ups);
+}
+
 sub _warm_upstream ($self, $up) {
   return $self if $up->type eq 'perl';    # perl upstreams need no warming
   if ($up->always_on) {
@@ -499,9 +529,9 @@ sub _warm_upstream ($self, $up) {
   }
   elsif (!$up->manifest_fetched_at) {
     # No cached manifest yet: fetch it once in the background, do not wait.
-    # A stdio child is stopped again afterwards (lazy); an http upstream holds
-    # no process, so it just stays ready.
-    $up->start_p->then(sub ($u) { $u->stop if $u->type eq 'stdio' && !$u->always_on })
+    # A stdio child or a container is stopped again afterwards (lazy); an
+    # http upstream holds no process, so it just stays ready.
+    $up->start_p->then(sub ($u) { $u->stop if $LAZY{$u->type} && !$u->always_on })
       ->catch(sub ($err) { $self->log->error("$err") });
   }
   return $self;
@@ -905,10 +935,20 @@ reload already queued, so signals and file events can never race.
   $hub->start_background_fetches;
 
 Start any C<always_on> upstreams and kick off a one-off background manifest
-fetch for every stdio and HTTP upstream without a cached manifest (a stdio child
-is stopped again right afterwards). Called by the C<daemon> command, so that
-C<config>, C<status>, C<token> and C<refresh> never spawn a child just by loading
-the application.
+fetch for every stdio, HTTP, C<docker> and C<compose> upstream without a cached
+manifest (a stdio child or a container is stopped again right afterwards).
+Called by the C<daemon> command, so that C<config>, C<status>, C<token> and
+C<refresh> never spawn a child just by loading the application.
+
+=method shutdown_p
+
+  $hub->shutdown_p->then(sub { ... });
+
+Stop every upstream and resolve once the stops are over -- once every container
+the hub started is stopped and removed. The C<daemon> command waits for it, for
+a bounded time, after the server has stopped listening. From then on the hub
+reloads no more: the config watcher stops, and a SIGHUP, a changed file or
+L</reload> is refused.
 
 =method start_config_watch
 

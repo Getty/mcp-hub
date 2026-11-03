@@ -12,6 +12,8 @@ use Mojo::Util qw(decode);
 has auto_reload    => 0;
 has cache_dir      => sub { _default_cache_dir() };
 has clients        => sub { {} };
+has docker_command => 'docker';
+has docker_network => undef;
 has idle_timeout   => 300;
 has listen         => 'http://127.0.0.1:3080';
 has mode           => 'open';
@@ -21,9 +23,19 @@ has request_timeout => 60;
 has servers        => sub { [] };
 has source         => 'config';
 
-my %ENTRY_KEYS      = map { $_ => 1 } qw(command args env cwd class url type headers hub);
+my %ENTRY_KEYS      = map { $_ => 1 } qw(command args env cwd class url type headers hub
+  docker compose service stdio port path volumes docker_args);
 my %ENTRY_HUB_KEYS  = map { $_ => 1 } qw(idle_timeout always_on request_timeout);
-my %HUB_KEYS        = map { $_ => 1 } qw(listen cache_dir idle_timeout request_timeout profiles clients public_profile auto_reload);
+my %HUB_KEYS        = map { $_ => 1 } qw(listen cache_dir idle_timeout request_timeout profiles clients public_profile
+  auto_reload docker_command docker_network);
+
+# The keys a container entry takes; every other key is misplaced there. The
+# container-only keys are misplaced everywhere else.
+my %CONTAINER_KEYS = (
+  docker  => {map { $_ => 1 } qw(docker args env port stdio path type headers volumes docker_args hub)},
+  compose => {map { $_ => 1 } qw(compose service url env port stdio path type headers hub)},
+);
+my %CONTAINER_ONLY = map { $_ => 1 } qw(docker compose service stdio port path volumes docker_args);
 my %PROFILE_KEYS    = map { $_ => 1 } qw(servers tools admin);
 my %TOOL_RULE_KEYS  = map { $_ => 1 } qw(allow deny);
 my %CLIENT_KEYS     = map { $_ => 1 } qw(token profile);
@@ -135,6 +147,13 @@ sub _parse ($self, $data) {
   _err('hub', 'must be a JSON object') unless ref $hub eq 'HASH';
   $self->_parse_hub($hub);
 
+  # The Docker settings are part of every container entry, so that a reload
+  # that changes them rebuilds exactly the upstreams they apply to.
+  for my $entry (grep { $_->{type} eq 'docker' || $_->{type} eq 'compose' } @parsed) {
+    $entry->{docker_command} = $self->docker_command;
+    $entry->{docker_network} = $self->docker_network if $entry->{type} eq 'docker' && defined $self->docker_network;
+  }
+
   return $self;
 }
 
@@ -149,14 +168,30 @@ sub _parse_entry ($self, $name, $entry) {
     _err("$path.$key", "unknown key '$key'") unless $ENTRY_KEYS{$key};
   }
 
-  my @kinds = grep { defined $entry->{$_} } qw(command class url);
-  _err($path, "exactly one of 'command', 'class' or 'url' is required") unless @kinds == 1;
+  # A compose entry may name its address with url, so url is a kind of its
+  # own only without compose.
+  my @kinds = grep { defined $entry->{$_} } qw(command class docker compose);
+  push @kinds, 'url' if defined $entry->{url} && !defined $entry->{compose};
+  _err($path, "exactly one of 'command', 'class', 'url', 'docker' or 'compose' is required") unless @kinds == 1;
   my $kind = $kinds[0];
+
+  for my $key (sort keys %$entry) {
+    if (my $allowed = $CONTAINER_KEYS{$kind}) {
+      _err("$path.$key", "'$key' does not apply to a '$kind' entry") unless $allowed->{$key};
+    }
+    elsif ($CONTAINER_ONLY{$key}) {
+      my @where = grep { $CONTAINER_KEYS{$_}{$key} } sort keys %CONTAINER_KEYS;
+      _err("$path.$key", "'$key' only applies to " . join(' or ', map {"a '$_'"} @where) . ' entry');
+    }
+  }
 
   my %hub = $self->_parse_entry_hub($path, $entry->{hub});
   my %out = (name => $name, %hub);
 
-  if ($kind eq 'command') {
+  if ($kind eq 'docker' || $kind eq 'compose') {
+    $self->_parse_container($kind, $path, $entry, \%out);
+  }
+  elsif ($kind eq 'command') {
     $out{type}    = 'stdio';
     $out{command} = $self->_expand($entry->{command}, "$path.command");
 
@@ -191,6 +226,76 @@ sub _parse_entry ($self, $name, $entry) {
   return \%out;
 }
 
+# A docker or compose entry, normalized: `type` is the kind (docker or
+# compose), `transport` the HTTP flavour a `type` key asked for -- undef when
+# none did, so that a start can tell an explicit one from the default.
+sub _parse_container ($self, $kind, $path, $entry, $out) {
+  $out->{type} = $kind;
+
+  if ($kind eq 'docker') {
+    $out->{image} = $self->_string($entry->{docker}, "$path.docker", 1);
+    $out->{args}  = $self->_strings($entry->{args}, "$path.args");
+    # A volume's host part may start with ~, as a cwd may.
+    $out->{volumes}     = [map { _tilde($_) } @{$self->_strings($entry->{volumes}, "$path.volumes")}];
+    $out->{docker_args} = $self->_strings($entry->{docker_args}, "$path.docker_args");
+  }
+  else {
+    $out->{compose} = _tilde($self->_string($entry->{compose}, "$path.compose", 1));
+    _err("$path.service", "'service' is required: the one service of the project that is the MCP server")
+      unless defined $entry->{service};
+    _err("$path.service", 'must be a non-empty string') if ref $entry->{service} || !length $entry->{service};
+    $out->{service} = $entry->{service};
+    $out->{url}     = $self->_string($entry->{url}, "$path.url", 1) if defined $entry->{url};
+  }
+
+  my $env = $entry->{env} // {};
+  _err("$path.env", 'must be a JSON object') unless ref $env eq 'HASH';
+  for my $key (sort keys %$env) {
+    _err("$path.env.$key", 'not a valid environment variable name') unless $key =~ /^[A-Za-z_][A-Za-z0-9_]*$/;
+  }
+  $out->{env} = {map { $_ => $self->_expand($env->{$_}, "$path.env.$_") } keys %$env};
+
+  if (defined $entry->{port}) {
+    my $port = _int("$path.port", $entry->{port});
+    _err("$path.port", 'must be a port number, 1-65535') unless $port >= 1 && $port <= 65535;
+    _err("$path.port", "'port' cannot be combined with 'url', which already says where the server is")
+      if defined $out->{url};
+    $out->{port} = $port;
+  }
+  if (defined $entry->{path}) {
+    _err("$path.path", "must be a string starting with '/'") if ref $entry->{path} || $entry->{path} !~ m{^/};
+    $out->{path} = $entry->{path};
+  }
+  $out->{transport} = _http_type($path, $entry->{type}) if defined $entry->{type};
+
+  my $headers = $entry->{headers} // {};
+  _err("$path.headers", 'must be a JSON object') unless ref $headers eq 'HASH';
+  $out->{headers} = {map { $_ => $self->_expand($headers->{$_}, "$path.headers.$_") } keys %$headers};
+
+  $out->{stdio} = $entry->{stdio} ? 1 : 0;
+  if ($out->{stdio}) {
+    for my $key (grep { defined $entry->{$_} } qw(port path type headers url)) {
+      _err("$path.$key", "'$key' cannot be combined with \"stdio\": true, it only applies to an HTTP server");
+    }
+  }
+
+  return $out;
+}
+
+sub _string ($self, $value, $path, $expand = 0) {
+  _err($path, 'must be a non-empty string') unless defined $value && !ref $value && length $value;
+  return $expand ? $self->_expand($value, $path) : $value;
+}
+
+sub _strings ($self, $list, $path) {
+  $list //= [];
+  _err($path, 'must be a JSON array') unless ref $list eq 'ARRAY';
+  return [map {
+    _err("$path\[$_]", 'must be a string') if !defined $list->[$_] || ref $list->[$_];
+    $self->_expand($list->[$_], "$path\[$_]");
+  } 0 .. $#$list];
+}
+
 sub _http_type ($path, $type) {
   return 'http' unless defined $type;
   return 'sse'  if $type eq 'sse';
@@ -222,6 +327,10 @@ sub _parse_hub ($self, $hub) {
   $self->idle_timeout(_int('hub.idle_timeout', $hub->{idle_timeout}))       if exists $hub->{idle_timeout};
   $self->request_timeout(_int('hub.request_timeout', $hub->{request_timeout})) if exists $hub->{request_timeout};
   $self->auto_reload($hub->{auto_reload} ? 1 : 0)                          if exists $hub->{auto_reload};
+  $self->docker_command(_tilde($self->_string($hub->{docker_command}, 'hub.docker_command', 1)))
+    if defined $hub->{docker_command};
+  $self->docker_network($self->_string($hub->{docker_network}, 'hub.docker_network', 1))
+    if defined $hub->{docker_network};
 
   my $profiles = $hub->{profiles} // {};
   _err('hub.profiles', 'must be a JSON object') unless ref $profiles eq 'HASH';
@@ -301,8 +410,9 @@ sub _default_cache_dir {
   return "$base/mcp-hub";
 }
 
+# A JSON true is no 1: it would read as one second, or as port 1.
 sub _int ($path, $value) {
-  _err($path, 'must be an integer') unless defined $value && $value =~ /^-?\d+$/;
+  _err($path, 'must be an integer') unless defined $value && !ref $value && $value =~ /^-?\d+$/;
   return $value + 0;
 }
 
@@ -393,8 +503,9 @@ the parser's line and column: C<invalid YAML in /etc/mcp-hub.yml: Line : 7
 Column : 3 Message : ...>.
 
 C<${VAR}> and C<${VAR:-default}> are expanded in a server entry's C<command>,
-C<args>, C<env>, C<cwd>, C<url> and C<headers>, and in the hub block's
-C<listen>, C<cache_dir> and each client's C<token> -- so a deployment can keep
+C<args>, C<env>, C<cwd>, C<url>, C<headers>, C<docker>, C<volumes>,
+C<docker_args> and C<compose>, and in the hub block's C<listen>, C<cache_dir>,
+C<docker_command>, C<docker_network> and each client's C<token> -- so a deployment can keep
 its tokens and secrets in the environment rather than in the file. A variable
 that is not set and has no default is a configuration error, named with its
 path.
@@ -428,9 +539,22 @@ or C<~/.cache/mcp-hub>. C<${VAR}> is expanded, then a leading C<~/>.
 Hash reference of C<< name => { name, token, profile } >>, the token with
 C<${VAR}> expanded. Empty in open mode.
 
+=attr docker_command
+
+The Docker CLI the C<docker> and C<compose> entries run, from
+C<hub.docker_command>. Defaults to C<docker>; C<podman> works too. C<${VAR}> is
+expanded, then a leading C<~/>.
+
+=attr docker_network
+
+The network HTTP containers join instead of publishing a port, from
+C<hub.docker_network>, or C<undef>. Needed when the hub itself runs in a
+container: see L<MCP::Hub::Upstream::Docker>.
+
 =attr idle_timeout
 
-Seconds of no requests before a stdio upstream is stopped. Defaults to C<300>.
+Seconds of no requests before a stdio upstream -- or a container -- is stopped.
+Defaults to C<300>.
 
 =attr listen
 
@@ -457,8 +581,8 @@ Seconds to wait for an upstream response. Defaults to C<60>.
 =attr servers
 
 Array reference of normalized server entries, in name order. Each entry is a
-hash reference with C<name>, a C<type> derived from which of C<command>, C<url>
-or C<class> it carries, and the type-specific keys:
+hash reference with C<name>, a C<type> derived from which of C<command>, C<url>,
+C<class>, C<docker> or C<compose> it carries, and the type-specific keys:
 
 =over 2
 
@@ -476,7 +600,28 @@ are accepted spellings of C<http>.
 
 C<class> and C<class_args> (the entry's C<args>, a JSON object here).
 
+=item C<docker> (from C<docker>)
+
+C<image> (the entry's C<docker>), C<args>, C<env>, C<volumes>, C<docker_args>,
+C<headers>, C<stdio> (C<1> or C<0>), and C<port>, C<path> and C<transport> (the
+entry's C<type>, C<http> or C<sse>) when given -- left out otherwise, so that a
+start can tell them from the defaults. Plus C<docker_command> and, when set,
+C<docker_network> from the hub block. C<cwd> does not apply; C<env> keys must
+be environment variable names, since each becomes a bare C<-e KEY>. C<"stdio":
+true> together with C<port>, C<path>, C<type> or C<headers> is an error.
+
+=item C<compose> (from C<compose>)
+
+C<compose> (the project directory, C<~> expanded), C<service> (required), C<env>,
+C<headers>, C<stdio>, and C<url>, C<port>, C<path> and C<transport> when given,
+plus C<docker_command>. C<url> and C<port> exclude each other, and C<"stdio":
+true> excludes both.
+
 =back
+
+How a C<docker> or C<compose> entry decides between stdio and HTTP, and what each
+key does there, is in L<MCP::Hub::Upstream::Docker> and
+L<MCP::Hub::Upstream::Compose>.
 
 Plus any per-entry C<idle_timeout>, C<request_timeout> and C<always_on> from its
 C<hub> block.

@@ -45,3 +45,20 @@ Revision history for MCP-Hub
     receives neither the request nor the configured headers.
   - An exit is counted once, whether the child died during the handshake or
     later: a stdio server that dies at startup gets three attempts, not two.
+  - Docker upstreams: a `docker` entry mounts an MCP server by image name,
+    a `compose` entry one service of a compose project, both started lazily
+    and stopped when idle. The mode is detected: a `port`, or one EXPOSEd or
+    published port, means HTTP; none means stdio; `"stdio": true` forces
+    stdio. Containers are named and labelled per hub; leftovers of a crashed
+    hub are removed by those labels only.
+  - A compose entry starts its service plus any dependencies that are not
+    running yet, stops only that service, and never stops, recreates or
+    restarts anything that already exists; what the service waits for in
+    `depends_on` is waited for before the handshake. Compose entries need
+    Docker Compose 2 or later; the Docker image ships the compose plugin.
+  - `hub.docker_command` picks the container CLI (Podman works) and
+    `hub.docker_network` the network HTTP containers join.
+  - `mcp-hub daemon` waits up to 20 seconds on shutdown until the containers
+    it started are gone.
+  - A JSON `true` is no longer accepted where an integer is expected, such as
+    `idle_timeout` or `port`.

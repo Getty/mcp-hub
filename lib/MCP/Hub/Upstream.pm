@@ -29,7 +29,8 @@ has protocol_version => '2025-06-18';
 has request_timeout  => 60;
 
 my %IMPL = (perl => 'MCP::Hub::Upstream::Perl', stdio => 'MCP::Hub::Upstream::Stdio',
-  http => 'MCP::Hub::Upstream::Http', sse => 'MCP::Hub::Upstream::Http');
+  http => 'MCP::Hub::Upstream::Http', sse => 'MCP::Hub::Upstream::Http',
+  docker => 'MCP::Hub::Upstream::Docker', compose => 'MCP::Hub::Upstream::Compose');
 
 sub build ($class, $entry, %opts) {
   my $impl = $IMPL{$entry->{type}} // 'MCP::Hub::Upstream::Stdio';
@@ -51,6 +52,10 @@ sub start_p ($self) {
 
 sub stop      ($self) { return $self }
 sub refresh_p ($self) { return Mojo::Promise->resolve($self) }
+
+# Resolves once what stop set in motion is over. Only an upstream whose stop
+# has to wait for something outside the process -- a container -- says so.
+sub stopped_p ($self) { return Mojo::Promise->resolve($self) }
 sub touch     ($self) { $self->last_used(time); return $self }
 
 # A configuration reload that only moved the timeouts must not restart anything:
@@ -240,10 +245,12 @@ sub _rss ($pid) {
 
 =head1 DESCRIPTION
 
-L<MCP::Hub::Upstream> is the common interface for the three kinds of upstream the
-hub mounts: a stdio child process (L<MCP::Hub::Upstream::Stdio>), a remote HTTP
-server (L<MCP::Hub::Upstream::Http>) and an in-process Perl server
-(L<MCP::Hub::Upstream::Perl>). Each presents its tools, prompts and resources
+L<MCP::Hub::Upstream> is the common interface for the kinds of upstream the hub
+mounts: a stdio child process (L<MCP::Hub::Upstream::Stdio>), a remote HTTP
+server (L<MCP::Hub::Upstream::Http>), an in-process Perl server
+(L<MCP::Hub::Upstream::Perl>), a Docker container started from its image
+(L<MCP::Hub::Upstream::Docker>) and one service of a Compose project
+(L<MCP::Hub::Upstream::Compose>). Each presents its tools, prompts and resources
 through an L<MCP::Server> stored in L</server>, which the hub mounts at
 C</< name >>.
 
@@ -393,17 +400,27 @@ C<error> when one is set.
 
 Terminate the upstream. A no-op for Perl upstreams.
 
+=method stopped_p
+
+  $up->stop;
+  $up->stopped_p->then(sub { ... });
+
+Resolves once what L</stop> set in motion is over. Immediately for every
+upstream but a Docker one, whose container is stopped and removed by the
+C<docker> CLI after L</stop> returns; the daemon waits for it on shutdown.
+
 =method touch
 
 Reset L</last_used> and the idle timer.
 
 =method type
 
-C<stdio>, C<http>, C<sse> or C<perl>.
+C<stdio>, C<http>, C<sse>, C<perl>, C<docker> or C<compose>.
 
 =head1 SEE ALSO
 
 L<MCP::Hub::Upstream::Stdio>, L<MCP::Hub::Upstream::Http>,
-L<MCP::Hub::Upstream::Perl>, L<MCP::Hub>.
+L<MCP::Hub::Upstream::Perl>, L<MCP::Hub::Upstream::Docker>,
+L<MCP::Hub::Upstream::Compose>, L<MCP::Hub>.
 
 =cut

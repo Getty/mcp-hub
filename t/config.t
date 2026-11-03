@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
-use Mojo::Base -strict;
+use Mojo::Base -strict, -signatures;
 use Test::More;
-use Mojo::JSON qw(false);
+use Mojo::JSON qw(false true);
 use MCP::Hub::Config;
 
 # --- defaults and mode derivation ------------------------------------------
@@ -199,6 +199,136 @@ subtest 'auto_reload' => sub {
   eval { MCP::Hub::Config->from_data({mcpServers => {}, hub => {auto_relod => \1}}) };
   like $@, qr/unknown key 'auto_relod'/, 'a typo is a configuration error, not a silent no-op';
   like $@, qr/hub\.auto_relod/,          'with its path';
+};
+
+# --- docker and compose entries --------------------------------------------
+
+sub config_error ($entry, $hub = {}) {
+  eval { MCP::Hub::Config->from_data({mcpServers => {x => $entry}, hub => $hub}) };
+  return $@;
+}
+
+subtest 'a docker entry, normalized' => sub {
+  local $ENV{HOME} = '/home/tester';
+  my $c = MCP::Hub::Config->from_data({
+    mcpServers => {
+      fetch => {
+        docker      => 'mcp/fetch:${FETCH_TAG:-latest}',
+        args        => ['--ignore-robots-txt'],
+        env         => {TZ => '${TZ:-UTC}'},
+        volumes     => ['~/data:/data:ro'],
+        docker_args => ['--read-only'],
+        port        => 8080,
+        path        => '/rpc',
+        type        => 'sse',
+        hub         => {idle_timeout => 60},
+      },
+      plain => {docker => 'mcp/time'},
+    },
+    hub => {docker_command => '~/bin/podman', docker_network => 'mcp-hub'},
+  });
+  is $c->docker_command, '/home/tester/bin/podman', 'hub.docker_command, with ~ expanded';
+  is $c->docker_network, 'mcp-hub',                 'hub.docker_network';
+
+  my $e = $c->server('fetch');
+  is $e->{type},  'docker',           'docker -> docker type';
+  is $e->{image}, 'mcp/fetch:latest', 'the image, ${VAR} expanded';
+  is_deeply $e->{args},        ['--ignore-robots-txt'],     'args go to the image';
+  is_deeply $e->{env},         {TZ => 'UTC'},               'env expanded';
+  is_deeply $e->{volumes},     ['/home/tester/data:/data:ro'], 'a volume host path may start with ~';
+  is_deeply $e->{docker_args}, ['--read-only'],             'docker_args kept';
+  is $e->{port},           8080,                       'port';
+  is $e->{path},           '/rpc',                     'path';
+  is $e->{transport},      'sse',                      'type is the HTTP transport';
+  is $e->{stdio},          0,                          'stdio off by default';
+  is $e->{idle_timeout},   60,                         'hub block applies';
+  is $e->{docker_command}, '/home/tester/bin/podman',  'the docker command rides on the entry';
+  is $e->{docker_network}, 'mcp-hub',                  'as does the network';
+
+  my $p = $c->server('plain');
+  is $p->{port},      undef, 'no port: the image decides at start';
+  is $p->{transport}, undef, 'no type: undef, not a default';
+  is_deeply $p->{args}, [], 'args default to empty';
+
+  is(MCP::Hub::Config->from_data({mcpServers => {}})->docker_command, 'docker', 'docker_command defaults to docker');
+};
+
+subtest 'docker entry errors name the key' => sub {
+  my $err = config_error({docker => 'mcp/time', cwd => '/tmp'});
+  like $err, qr/mcpServers\.x\.cwd: 'cwd' does not apply to a 'docker' entry/, 'cwd is not for docker';
+
+  $err = config_error({command => 'x', port => 8080});
+  like $err, qr/mcpServers\.x\.port: 'port' only applies to a 'compose' or a 'docker' entry/,
+    'port is not for a command';
+
+  $err = config_error({docker => 'mcp/time', stdio => \1, port => 8080});
+  like $err, qr/mcpServers\.x\.port: 'port' cannot be combined with "stdio": true/, 'stdio and port';
+  $err = config_error({docker => 'mcp/time', stdio => \1, path => '/mcp'});
+  like $err, qr/mcpServers\.x\.path: 'path' cannot be combined with "stdio": true/, 'stdio and path';
+  $err = config_error({docker => 'mcp/time', stdio => \1, type => 'sse'});
+  like $err, qr/mcpServers\.x\.type: 'type' cannot be combined/, 'stdio and type';
+
+  like config_error({docker => 'mcp/time', port => 70000}), qr/mcpServers\.x\.port: must be a port number/,
+    'port out of range';
+  like config_error({docker => 'mcp/time', port => 'http'}), qr/mcpServers\.x\.port: must be an integer/,
+    'port not a number';
+  like config_error({docker => 'mcp/time', port => true}), qr/mcpServers\.x\.port: must be an integer/,
+    'port: true is not port 1';
+  like config_error({command => 'a', hub => {idle_timeout => true}}),
+    qr/mcpServers\.x\.hub\.idle_timeout: must be an integer/, 'nor is idle_timeout: true one second';
+  like config_error({docker => 'mcp/time', path => 'mcp'}), qr/mcpServers\.x\.path: must be a string starting with '\/'/,
+    'path must be absolute';
+  like config_error({docker => 'mcp/time', env => {'BAD-NAME' => 1}}),
+    qr/mcpServers\.x\.env\.BAD-NAME: not a valid environment variable name/, 'env key is a variable name';
+  like config_error({docker => 'mcp/time', volumes => '/a:/b'}), qr/mcpServers\.x\.volumes: must be a JSON array/,
+    'volumes is a list';
+  like config_error({docker => 'mcp/time', docker_args => [['--rm']]}),
+    qr/mcpServers\.x\.docker_args\[0\]: must be a string/, 'docker_args are strings';
+  like config_error({docker => ''}), qr/mcpServers\.x\.docker: must be a non-empty string/, 'an image is needed';
+  like config_error({docker => 'mcp/time', command => 'x'}), qr/exactly one of/, 'docker and command';
+  like config_error({docker => 'mcp/time', url => 'http://x/mcp'}), qr/exactly one of/, 'docker and url';
+};
+
+subtest 'a compose entry, normalized' => sub {
+  local $ENV{HOME} = '/home/tester';
+  my $c = MCP::Hub::Config->from_data({
+    mcpServers => {
+      stack => {compose => '~/mcp/stack', service => 'mcp', env => {TOKEN => 't'}},
+      web   => {compose => '/srv/web', service => 'api', url => 'http://localhost:8080/mcp'},
+    },
+    hub => {docker_network => 'mcp-hub'},
+  });
+  my $e = $c->server('stack');
+  is $e->{type},    'compose',               'compose -> compose type';
+  is $e->{compose}, '/home/tester/mcp/stack', 'the project directory, with ~ expanded';
+  is $e->{service}, 'mcp',                   'the service';
+  is_deeply $e->{env}, {TOKEN => 't'},       'env kept';
+  is $e->{docker_command}, 'docker',         'the docker command rides on the entry';
+  ok !exists $e->{docker_network},           'the network is a docker-entry setting only';
+
+  my $w = $c->server('web');
+  is $w->{type}, 'compose',                   'a url does not make a compose entry an http one';
+  is $w->{url},  'http://localhost:8080/mcp', 'url kept';
+};
+
+subtest 'compose entry errors name the key' => sub {
+  my $err = config_error({compose => '/srv/stack'});
+  like $err, qr/mcpServers\.x\.service: 'service' is required/, 'service is required';
+
+  like config_error({compose => '/srv/stack', service => ''}), qr/mcpServers\.x\.service: must be a non-empty string/,
+    'service must be a name';
+  like config_error({compose => '/srv/stack', service => 'mcp', url => 'http://x/mcp', port => 80}),
+    qr/mcpServers\.x\.port: 'port' cannot be combined with 'url'/, 'port and url';
+  like config_error({compose => '/srv/stack', service => 'mcp', stdio => \1, url => 'http://x/mcp'}),
+    qr/mcpServers\.x\.url: 'url' cannot be combined with "stdio": true/, 'stdio and url';
+  like config_error({compose => '/srv/stack', service => 'mcp', volumes => []}),
+    qr/mcpServers\.x\.volumes: 'volumes' does not apply to a 'compose' entry/, 'volumes belong in the compose file';
+  like config_error({docker => 'mcp/time', service => 'mcp'}),
+    qr/mcpServers\.x\.service: 'service' does not apply to a 'docker' entry/, 'service is for compose';
+  like config_error({command => 'x', service => 'mcp'}),
+    qr/mcpServers\.x\.service: 'service' only applies to a 'compose' entry/, 'service is for compose only';
+  like config_error({compose => '/srv/stack', service => 'mcp', docker => 'mcp/time'}), qr/exactly one of/,
+    'compose and docker';
 };
 
 subtest 'public_profile must exist' => sub {
