@@ -1,0 +1,13 @@
+---
+class: standard
+created: 2026-11-03T18:39:39Z
+id: 33
+priority: low
+status: backlog
+tags:
+- cli
+title: mcp-hub status exits 0 when the hub is down
+updated: 2026-11-03T18:40:06Z
+---
+
+Found by mcp-hub-binary-worker during k28. Documented behaviour, but scripts and health checks cannot tell a running hub from a dead one. Decide whether a non-zero exit when the daemon is unreachable is the better contract.
