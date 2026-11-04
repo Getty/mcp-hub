@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-11-04T02:28:48Z
+claimed_by: mcp-hub-worker
+class: standard
+completed: 2026-11-04T02:28:53Z
+created: 2026-11-04T01:42:04Z
+id: 42
+priority: high
+started: 2026-11-04T01:43:00Z
+status: done
+tags:
+- upstream
+- fork
+- wiki
+- ram
+title: 'Forked class workers: Upstream::Fork, hub.fork, option (a), reworded one-process
+  hazard'
+updated: 2026-11-04T02:28:53Z
+---
+
+Implement the accepted design docs/superpowers/specs/2026-11-03-forked-class-workers-design.md (k37; decisions in its 'Decisions (maintainer, 2026-11-04)' section): hub.fork on class entries, Upstream::Fork as a subclass of Upstream::Stdio with the isolation recipe, option (a) (an instance whose ->server returns an MCP::Server, for fork and plain class entries, POD warning on stalls), the refusals and config errors with JSON paths, pss_kb on fork rows in status. Reword the one-process hazard in CLAUDE.md, .claude/rules/mcp-hub-rules.md, skill mcp-hub-core and the 'Process model' POD of MCP::Hub with the wording from the design. First consumer: mcp-wiki 0.002 (MCP::Wiki::Server).
+
+2026-11-04 01:51 Started. Finding vs design step 5 ('drop the instance'): a dropped MCP::Wiki::Server is NOT freed -- its tool closures capture $self, a cycle through server->tools. Checked with weaken(): leaked; freed once the throwaway server's tools/prompts/resources are emptied. Upstream::Fork therefore empties the throwaway server's lists before letting go, so no Git::Raw repo (or other handle) of the class stays in the hub. Will update the design's Mechanism section to match.
+
+Built. Deviations from the design (all written into the design doc, section 'As built'): (1) step 5 -- the throwaway instance's server lists are emptied before it is let go (cycle via tool closures); a class sharing one server object across instances would lose its lists (none known). (2) Fork also overrides _on_stderr/_on_close/_exit_hint (stderr tail as exit hint, drained before the exit is handled, as Docker::Stdio does) and status_row; Stdio::_spawn's parent half moved into Stdio::_attach. (3) Stdio::start_p leaves a refused spawn 'failed' when _spawn recorded the third exit (needed so the thread refusal counts toward the crash loop). (4) always_on is refused on an in-process class, with the timeouts (k38). (5) Design Tests said tools/list still answers during a crash loop: on the server's own endpoint a failed upstream answers 503 (as for stdio); via /all its tools stay listed. Also found (proposed cards for this board): (a) under Mojo::Reactor::EV, libev's default loop reaps every child at top priority, so Stdio::_on_close's waitpid gets ECHILD and logs 'exited (unknown)' -- exit codes and the exit-127 'is it installed and executable?' hint are lost at random, for stdio, docker CLI and fork alike (t/fork.t works around it with local $SIG{CHLD}='DEFAULT'); (b) command entries silently accept headers/type, url entries env/cwd/args -- the same drift as k38 on the other kinds; (c) _warm_upstream calls start_p on a failed placeholder of a non-perl type, so its build error is logged twice; (d) _drain_stderr is now duplicated in Fork and Docker::Stdio -- could move into Stdio. k39 is not made more urgent: an idle stop only fires with no call in flight.
+
+Ready for review. New: lib/MCP/Hub/Upstream/Fork.pm, t/fork.t, t/lib/{EchoServer,ForkProbe,ComposedEcho}.pm (all git-added). Changed: Hub.pm (use Fork, %LAZY fork, Process model POD), Upstream.pm (_load_class/_server_of, IMPL fork), Upstream/Perl.pm (option (a), stall warning), Upstream/Stdio.pm (_attach split, refused-spawn state), Config.pm (hub.fork), Command/status.pm (PSS_KB column), t/00-load.t, t/upstream/echo.pl (runs EchoServer), skills mcp-hub-core + mcp-hub-runtime, README, design doc ('As built'). prove -lr t/: Files=20, Tests=196, PASS (skipped: t/docker-live.t, t/npx.t opt-in). Real mcp-wiki check passed (forked, temp git wiki). CLAUDE.md/rules file/agent file NOT edited -- proposed wording goes to the main agent.
+
+2026-11-04 02:28 Committed in 9867f69 (Run class entries in forked workers with hub.fork).
