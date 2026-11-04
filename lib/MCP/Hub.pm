@@ -634,9 +634,12 @@ sub _summary_line ($summary) {
 }
 
 sub _base_url ($listen) {
+  # The query of a listen address holds the server's own options -- cert, key,
+  # reuse -- and is no part of the address a client calls; nor is a fragment.
+  (my $base = $listen) =~ s{[?#].*\z}{}s;
   # A wildcard or any-address listen address is not an address a client can
   # call: rewrite it to the matching loopback address.
-  (my $base = $listen) =~ s{//(?:\*|0\.0\.0\.0)(?=[:/?]|$)}{//127.0.0.1};
+  $base =~ s{//(?:\*|0\.0\.0\.0)(?=[:/?]|$)}{//127.0.0.1};
   $base =~ s{//\[::\](?=[:/?]|$)}{//[::1]};
   $base =~ s{/+$}{};
   return $base;

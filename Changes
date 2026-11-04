@@ -88,3 +88,6 @@ Revision history for MCP-Hub
   - An https `url` upstream on a perl without TLS (IO::Socket::SSL missing
     or older than 2.009, or MOJO_NO_TLS set) is now a failed upstream whose
     reason names the fix, instead of answering 503 "not ready yet" forever.
+  - `mcp-hub config`, `status`, `refresh` and `reload` no longer carry
+    `hub.listen`'s query (`?cert=…&key=…`) into the base URL, so an https
+    listen works without `--url`.

@@ -47,8 +47,33 @@ subtest 'the base URL a wildcard listen address is reachable at' => sub {
   is MCP::Hub::_base_url('http://*:3080'),          'http://127.0.0.1:3080', '* -> loopback';
   is MCP::Hub::_base_url('http://0.0.0.0:3080'),    'http://127.0.0.1:3080', '0.0.0.0 -> loopback';
   is MCP::Hub::_base_url('http://[::]:3080'),       'http://[::1]:3080',     '[::] -> loopback';
-  is MCP::Hub::_base_url('https://0.0.0.0:3080?reuse=1'), 'https://127.0.0.1:3080?reuse=1',
-    'listen options are kept';
+  # The query holds the server's listen options; a client calling
+  # '...?reuse=1/hub' reaches no endpoint at all.
+  is MCP::Hub::_base_url('https://0.0.0.0:3080?reuse=1'), 'https://127.0.0.1:3080',
+    'listen options are dropped';
+  is MCP::Hub::_base_url('https://127.0.0.1:3443?cert=/a/server.crt&key=/a/server.key'),
+    'https://127.0.0.1:3443', 'cert and key are dropped';
+  is MCP::Hub::_base_url('https://127.0.0.1:3443/?cert=/a/b.crt'), 'https://127.0.0.1:3443',
+    'a query after a trailing slash is dropped, and the slash too';
+  is MCP::Hub::_base_url('https://*:3443?cert=/a/b.crt'), 'https://127.0.0.1:3443',
+    'a wildcard with a query -> loopback, without the query';
+  is MCP::Hub::_base_url('http://127.0.0.1:3080#x'), 'http://127.0.0.1:3080', 'a fragment is dropped';
+};
+
+subtest 'an https listen with cert and key: config and status/refresh/reload call the bare base' => sub {
+  my $app = MCP::Hub->new(cli => 1, hub_config_input => {
+    mcpServers => {run => {class => 'MCP::Hub::Native::Status'}},
+    hub        => {listen => 'https://127.0.0.1:3443?cert=/a/server.crt&key=/a/server.key'},
+  });
+
+  is $app->export_config->{mcpServers}{run}{url}, 'https://127.0.0.1:3443/run',
+    'mcp-hub config prints the endpoint without the listen options';
+  is $app->export_config(all => 1)->{mcpServers}{hub}{url}, 'https://127.0.0.1:3443/all',
+    'and so does mcp-hub config --all';
+
+  # status, refresh and reload all take their base from this one helper.
+  my ($base) = MCP::Hub::Command::status::_endpoint($app, undef, undef, undef);
+  is $base, 'https://127.0.0.1:3443', 'status/refresh/reload talk to the bare base';
 };
 
 subtest 'the status table names a failure and when a client was last seen' => sub {

@@ -117,7 +117,8 @@ It reports "not running" on a refused connection. In clients mode it uses the
 token of the first admin client, or the one named with C<--client>.
 
 The daemon is looked for at the configured C<listen> address, with a wildcard
-(C<*>, C<0.0.0.0> or C<[::]>) rewritten to loopback. C<--url> points the command
+(C<*>, C<0.0.0.0> or C<[::]>) rewritten to loopback and the listen options in
+its query (C<cert>, C<key>, ...) left out. C<--url> points the command
 at another base URL, for a hub in a container or on another host.
 
 C<--token> (or C<$MCP_HUB_TOKEN>) authenticates with a token given on the spot

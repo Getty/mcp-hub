@@ -184,8 +184,7 @@ page — with these differences:
   `https://127.0.0.1:3443?cert=/path/server.crt&key=/path/server.key` (without
   `cert` and `key`, Mojolicious' built-in self-signed test certificate) — but
   with OpenSSL 3.5 linked into the binary: the system's OpenSSL and its
-  `openssl.cnf` are not used. With an `https` listen, give `mcp-hub config`,
-  `status`, `refresh` and `reload` the address as `--url https://127.0.0.1:3443`.
+  `openssl.cnf` are not used.
 - **The system's CA certificates where it finds them.** To verify a server's
   certificate, the binary reads the hashed certificate directory `/etc/ssl/certs`
   and the bundle `/etc/ssl/cert.pem` — whichever exist, both if both do — and
@@ -343,7 +342,8 @@ A global `--config PATH` (or `-c PATH`, or `$MCP_HUB_CONFIG`) selects the config
 file for every command.
 
 `status`, `refresh` and `reload` talk to the running daemon at the config's `listen`
-address (a wildcard such as `0.0.0.0` or `[::]` is reached over loopback). If the
+address (a wildcard such as `0.0.0.0` or `[::]` is reached over loopback, and
+listen options such as `?cert=…&key=…` are left out). If the
 daemon listens somewhere else — `daemon -l …`, a remapped Docker port, another
 machine — point them at it with `--url http://host:port`. In clients mode they
 authenticate as the first `admin` client, or the one named with `--client`, or a
@@ -909,7 +909,9 @@ the image. For the CPAN install: Perl 5.20+,
 compiles against the OpenSSL and zlib development files, e.g. Debian's
 `libssl-dev` and `zlib1g-dev`), and the pure-Perl
 [`YAML::PP`](https://metacpan.org/pod/YAML::PP) (loaded only when a YAML config
-is read). No process-management dependencies; everything else is core.
+is read). No process-management dependencies; everything else is core. On a perl
+without TLS, an `https://` `url` upstream shows up as `failed`, with the fix in
+its reason.
 
 ## License
 
