@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-11-04T03:06:13Z
+claimed_by: mcp-hub-worker
+class: standard
+completed: 2026-11-04T03:06:13Z
+created: 2026-11-03T21:03:53Z
+id: 41
+priority: medium
+started: 2026-11-04T02:30:46Z
+status: done
+tags:
+- cli
+- tls
+- bug
+title: 'An https hub.listen with ?cert=…&key=… breaks config/status/refresh/reload:
+  _base_url keeps the query'
+updated: 2026-11-04T03:06:13Z
+---
+
+Found by mcp-hub-binary-worker during k36, verified with perl -Ilib. _base_url keeps the listen URL's query, so with hub.listen 'https://127.0.0.1:3443?cert=…&key=…' 'mcp-hub config' prints '…?cert=…&key=…/hub' and status/refresh/reload call a broken base. The README 'Standalone binary' section currently tells users to pass --url; remove that sentence once fixed. Affects CPAN installs too.
+
+2026-11-04 02:40 Reproduced with perl -Ilib: export_config gives 'https://127.0.0.1:3443?cert=/a/server.crt&key=/a/server.key/run', and status::_endpoint (shared by status/refresh/reload) the same base. Fix: MCP::Hub::_base_url strips query and fragment before the wildcard/trailing-slash rewrites. The existing t/command.t assertion 'listen options are kept' (https://0.0.0.0:3080?reuse=1 -> ...?reuse=1) encoded the wrong claim and is replaced by 'listen options are dropped'. New tests cover export_config (per server and --all) and _endpoint. README: dropped the 'Standalone binary' sentence telling https-listen users to pass --url, and noted in the CLI paragraph that listen options are left out.
+
+2026-11-04 02:54 Done in worktree agent-aa4ff9df077c4dd94, uncommitted. MCP::Hub::_base_url strips query and fragment first, so 'https://127.0.0.1:3443?cert=…&key=…' gives 'https://127.0.0.1:3443' for mcp-hub config (per server and --all) and for status/refresh/reload (status::_endpoint). The t/command.t claim 'listen options are kept' was wrong and is replaced by 'listen options are dropped'; new assertions cover cert/key, '/?query', wildcard+query, a fragment, export_config and _endpoint. All of them fail with the old _base_url and give exactly the card's '…?cert=…&key=…/run'. Status POD and README CLI paragraph say listen options are left out. Removed only the README 'Standalone binary' sentence 'With an https listen, give mcp-hub config, status, refresh and reload the address as --url https://127.0.0.1:3443.' prove -lr t/ PASS (Files=20, Tests=198).
+
+2026-11-04 03:06 Committed in eef830a
