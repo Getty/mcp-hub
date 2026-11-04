@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-11-04T03:05:52Z
+claimed_by: mcp-hub-test-writer
+class: standard
+completed: 2026-11-04T03:05:52Z
+created: 2026-11-04T01:42:08Z
+id: 43
+priority: high
+started: 2026-11-04T02:30:37Z
+status: done
+tags:
+- tests
+- fork
+title: Tests for forked class workers (isolation, lifecycle, option (a), refusals)
+updated: 2026-11-04T03:05:52Z
+---
+
+The test suite from the 'Tests' section of docs/superpowers/specs/2026-11-03-forked-class-workers-design.md: echo.pl's server as a t/lib class with probe tools, option (a) and refusal fixtures, t/fork.t (no inherited fds/signals/END blocks, port rebindable while a worker is busy, idle stop, crash loop, reload keeps an unchanged worker, SIGTERM reaps), and the opt-in t/wiki-live.t. Lane: mcp-hub-test-writer, after the implementation card.
+
+2026-11-04 02:49 Tests added: t/fork-lifecycle.t (queue, crash loop+503 / /all, stop<1s, no stall, file offset, reload keep/replace/reap), t/wiki-live.t (opt-in MCP_HUB_TEST_WIKI=1, ran green 16/16), ForkProbe tools crash/block/readfd/seq, whoami.server. t/fork.t: SigCgt hub-control now EV-only (failed under Poll at baseline). No lib bugs found. Probe fds/signals tools not added: /proc read directly is clearer.
+
+2026-11-04 02:53 Tests done: prove -lr t/ green (22 files, 202 tests); fork.t + fork-lifecycle.t 3x green under EV and Poll; wiki-live ran 16/16 with MCP_HUB_TEST_WIKI=1. Mutation-checked each test.
+
+2026-11-04 03:05 Committed in 82cf3f2
