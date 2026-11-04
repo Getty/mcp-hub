@@ -1,0 +1,35 @@
+---
+claimed_at: 2026-11-04T02:29:07Z
+claimed_by: mcp-hub-worker
+class: standard
+completed: 2026-11-04T02:29:12Z
+created: 2026-11-03T18:45:44Z
+id: 37
+priority: medium
+started: 2026-11-03T18:45:59Z
+status: done
+tags:
+- design
+- upstream
+- wiki
+- ram
+title: 'Design: run Perl class upstreams in a forked worker (RAM-cheap mcp-wiki without
+  blocking the loop)'
+updated: 2026-11-04T02:29:12Z
+---
+
+Maintainer asked for a design 2026-11-03, following the k29 research (option c): the hub loads the class itself so tools/list needs no process; calls go to a worker forked from the hub (no exec), spoken to through the existing stdio client, idle-stopped. Measured in k29: ~6 MB own memory per running wiki vs ~55 MB for a stdio mcp-wiki, ready in 11 ms, and no loop stall (in-process history call stalled an unrelated upstream 5.1 s). Bends the 'one daemon process' hazard — the design must lay that out for the maintainer's decision. Deliverable: a design draft under docs/superpowers/specs/, no implementation.
+
+
+2026-11-03 Design draft written and staged (not committed): docs/superpowers/specs/2026-11-03-forked-class-workers-design.md. It covers the mechanism (Upstream::Fork as a 4-override Upstream::Stdio subclass, hub.fork knob, in-process manifest with no cache or hash), the fork-safety recipe with prototype evidence, the hazards one by one, memory measured as ΔPSS/USS, the binary, tests, and 6 open questions for the maintainer. Q1 is whether forked workers are acceptable under a reworded one-process rule; the draft assumes no answer.
+Measured (scratchpad prototype in a real hub under EV and Poll, plus a recipe-off control): a running forked mcp-wiki costs ΔPSS +16–18 MB over hub+worker, plus +5.9 MB for the class loaded in the hub; stdio mcp-wiki costs ~52 MB PSS. Ready in 21–35 ms vs 1.5–3.6 s. Fork stall 2–6 ms. No loop stall: lag ≤41 ms vs 1.6–2.2 s for an in-process history call. This corrects k29's "~6 MB per wiki", which was Private_Dirty of the worker only.
+Drift, for the p5-mcp-hub board: a `class` entry silently accepts and ignores env, cwd, headers, type and hub.idle_timeout/request_timeout/always_on. Also: Upstream::Stdio::stop sends TERM together with EOF, which can kill a child mid git commit (index.lock left behind); this applies to stdio too.
+Proposed cards are listed in the draft (6 for p5-mcp-hub, 1 plus a k62/k63 priority note for p5-mcp-wiki). None were created.
+
+2026-11-03 19:26 Ready for review: the design draft is staged (git add, not committed). Verified: the mechanism was prototyped in the session scratchpad against a running MCP::Hub app, in three EV runs, one Poll run and one recipe-off control. No edits in lib/, bin/ or t/; no pp build. prove was not run, since only docs changed. The maintainer's decision on Q1 (bending the one-process rule) gates any implementation.
+
+2026-11-03 21:06 Design draft committed in 5672299 (docs only, no Changes entry). Stays in review: waiting for the maintainer's answers to the six open questions.
+
+Maintainer accepted the design 2026-11-04, all six questions as recommended; recorded in the draft's new 'Decisions' section (staged, not yet committed). Implementation k42, tests k43, packed smoke k44.
+
+2026-11-04 02:29 Committed in 9867f69 (Run class entries in forked workers with hub.fork).
