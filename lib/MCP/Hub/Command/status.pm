@@ -69,11 +69,12 @@ sub _admin_token ($app, $client) {
 
 sub _print_table ($report) {
   printf "mode: %s\n\n", $report->{mode} // 'open';
-  printf "%-16s %-7s %-9s %-8s %-10s %-6s %-6s %s\n", qw(NAME TYPE STATE PID RSS_KB CALLS ERRORS MESSAGE);
+  printf "%-16s %-7s %-9s %-8s %-10s %-10s %-6s %-6s %s\n",
+    qw(NAME TYPE STATE PID RSS_KB PSS_KB CALLS ERRORS MESSAGE);
   for my $row (@{$report->{upstreams} // []}) {
-    printf "%-16s %-7s %-9s %-8s %-10s %-6s %-6s %s\n",
+    printf "%-16s %-7s %-9s %-8s %-10s %-10s %-6s %-6s %s\n",
       $row->{name}, $row->{type}, $row->{state},
-      $row->{pid} // '-', $row->{rss_kb} // '-', $row->{calls} // 0, $row->{errors} // 0,
+      $row->{pid} // '-', $row->{rss_kb} // '-', $row->{pss_kb} // '-', $row->{calls} // 0, $row->{errors} // 0,
       $row->{error} // '';
   }
   if (my @clients = @{$report->{clients} // []}) {
@@ -109,6 +110,9 @@ sub _ago ($epoch) {
 L<MCP::Hub::Command::status> calls C<GET /_hub/status> on the running daemon and
 prints a table of every upstream's state, pid, memory, call counts and, for a
 failed one, why it failed -- plus the known clients and when each was last seen.
+C<PSS_KB> is filled for a forked class worker only
+(L<MCP::Hub::Upstream::Fork/pss_kb>): its C<RSS_KB> counts every page it shares
+with the hub.
 It reports "not running" on a refused connection. In clients mode it uses the
 token of the first admin client, or the one named with C<--client>.
 

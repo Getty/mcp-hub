@@ -442,8 +442,11 @@ node process per session:
   `claude` processes on the machine and what each is working on (Linux).
 - **`MCP::Hub::Native::Status`** — `hub_status` and `hub_refresh` as tools.
 
-Any `MCP::Server` subclass can be mounted in-process with a `class` entry —
-`MCP::Run`, `MCP::K8s`, or your own — with no subprocess at all:
+Any `MCP::Server` subclass — or a class with a `server` method that returns
+one — can be mounted in-process with a `class` entry: `MCP::Run`, `MCP::K8s`, or
+your own, with no subprocess at all. Its tools run inside the hub's event loop,
+so a slow one holds up every other server while it runs; for a class like that,
+see [forked class workers](#forked-class-workers).
 
 ```json
 { "run": { "class": "MCP::Run", "args": { "allowed_commands": ["ls", "cat", "grep"] } } }
@@ -477,6 +480,49 @@ sub new ($class, %args) {
 
 If your class has a `hub` attribute, the running `MCP::Hub` instance is injected
 into its constructor — that is how `MCP::Hub::Native::Status` reaches the hub.
+
+A `class` entry takes its settings through `args` alone: `env`, `cwd`, `headers`
+and `type` are configuration errors on it, and so are the `hub` timeouts and
+`always_on` — an in-process class has no process to time out or keep running.
+
+### Forked class workers
+
+A tool that takes seconds — a git history walk, say — stalls the whole hub when
+its class runs in-process. `"hub": {"fork": true}` keeps the memory cost close to
+in-process without the stall:
+
+```json
+{
+  "wiki": {
+    "class": "MCP::Wiki::Server",
+    "args":  { "wiki_root": "/home/me/wiki", "use_git": true },
+    "hub":   { "fork": true, "idle_timeout": 600 }
+  }
+}
+```
+
+- **Listing needs no process.** The class is loaded in the hub, and its tools,
+  prompts and resources are read from it when the entry is built — nothing is
+  cached on disk.
+- **Calls run in a worker.** The first `tools/call` forks a worker from the hub,
+  with no exec: it shares the hub's memory pages and is ready in a few tens of
+  milliseconds. It builds its own instance from `args` and serves one call at a
+  time, and it is stopped after `idle_timeout` like a stdio child. `always_on`
+  and `request_timeout` work as for one too.
+- **A worker holds nothing of the hub's.** Before it starts it lets go of the
+  listening socket and every other inherited fd, the signal handlers and the
+  event loop. It shows up as `mcp-hub-worker NAME` in `ps`. Because its RSS
+  counts every page it shares with the hub, `mcp-hub status` also gives it a
+  `PSS_KB`.
+- **Limits.** Linux only. The class must not need the running hub (a class with
+  a `hub` attribute is refused) nor the HTTP request: its tools see no
+  request and no profile. `args` is passed as it is — no `${VAR}`, no `~` — so
+  write absolute paths, and `env`/`cwd` do not apply. A newer version of the
+  class installed on disk takes effect after a daemon restart.
+
+Measured with `MCP::Wiki::Server` (15 tools, git on): `tools/list` answers in
+about 10 ms with no worker, the first write forks and commits in about 40 ms,
+and a running worker adds about 13 MB to the PSS of hub and worker together.
 
 ## MCP servers in Docker containers
 
@@ -674,7 +720,8 @@ dzil test          # or: prove -l -r t/
 ```
 
 The suite spawns only one upstream, a tiny Perl stdio server
-(`t/upstream/echo.pl`) — no node, no network. A separate **live** integration
+(`t/upstream/echo.pl`) — no node, no network. Its server is a class,
+`t/lib/EchoServer.pm`, which `t/fork.t` also mounts as a forked class (Linux). A separate **live** integration
 test exercises the hub against a real classic npx MCP server
 (`@modelcontextprotocol/server-everything`); it is off by default and only runs
 when you opt in or during a release, and `npx` with a recent enough node is on
@@ -705,6 +752,7 @@ agent (Claude Code, …)          mcp-hub daemon (one Mojo::IOLoop process)     
 POST /context7  ─ Bearer ─▶     │ Auth ─▶ Facade(context7) ─▶ Upstream::Stdio ─▶ npx context7-mcp
 POST /playwright ────────▶      │      ─▶ Facade(playwright) ─▶ Upstream::Stdio ─▶ npx @playwright/mcp
 POST /run  ──────────────▶      │      ─▶ Upstream::Perl ───────────────▶ MCP::Run (in-process)
+POST /wiki ──────────────▶      │      ─▶ Upstream::Fork ───────────────▶ MCP::Wiki::Server (forked worker)
 POST /crawl4ai ──────────▶      │      ─▶ Upstream::Http ───────────────▶ remote server (HTTP / SSE)
 POST /time ──────────────▶      │      ─▶ Upstream::Docker ─────────────▶ docker run -i mcp/time
 POST /all  ──────────────▶      │      ─▶ Aggregate ─▶ (all of the above, prefixed)
@@ -719,11 +767,15 @@ can talk to the npm and Python servers in the wild) and the glue in between.
 A stdio upstream is spawned on the first `tools/call`, its handshake and tool
 list cached as a manifest, and it is terminated again after an idle timeout.
 
-The hub runs as **one process** (never hypnotoad or a pre-forking server):
-every worker would spawn its own children and hold its own state, which defeats
-the purpose. Child processes, idle timers, manifests and in-process servers all
-live in one event loop, and tool calls are non-blocking, so one slow upstream
-never blocks the others.
+The hub runs as **one process** that serves HTTP and owns all state (never
+hypnotoad or a pre-forking server: every worker would spawn its own children
+and hold its own state, which defeats the purpose). Its child processes are
+exec'd upstreams or [forked class workers](#forked-class-workers); a worker
+never runs the hub's event loop, holds none of its fds or signal handlers, and
+ends with `_exit`. Child processes, idle timers, manifests and in-process
+servers all live in that one event loop, and tool calls are non-blocking, so one
+slow upstream never blocks the others — except a tool of an in-process `class`,
+which runs inside the loop.
 
 ## Configuration reference
 
@@ -779,8 +831,9 @@ Exactly one of `command`, `class`, `url`, `docker` or `compose` is required.
 | Key | Meaning |
 |---|---|
 | `command`, `args`, `env`, `cwd` | A stdio child, as in `.mcp.json`. `env` is merged over the hub's environment. |
-| `class` | A Perl `MCP::Server` subclass, loaded and mounted in-process. |
-| `args` (with `class`) | Hash passed to the class's `new`. |
+| `class` | A Perl `MCP::Server` subclass, or a class whose instances have a `server` method returning one; loaded and mounted in-process. `env`, `cwd`, `headers` and `type` are errors on it. |
+| `args` (with `class`) | Hash passed to the class's `new` as it is — no `${VAR}`, no `~`. |
+| `hub.fork` (with `class`) | `true` runs the class's calls in a [forked worker](#forked-class-workers) (Linux). An error on any other entry. |
 | `url` | A remote HTTP MCP server. |
 | `type` (with `url`) | `http` (Streamable HTTP, the default) or `sse` (the older HTTP+SSE transport, e.g. a `…/sse` URL). |
 | `headers` (with `url`) | Extra request headers, such as `{ "Authorization": "Bearer …" }`. |
@@ -796,9 +849,12 @@ Exactly one of `command`, `class`, `url`, `docker` or `compose` is required.
 | `port` (with `docker`, `compose`) | The container port the server listens on: HTTP on it. Optional when the image `EXPOSE`s (or the service publishes) exactly one. |
 | `stdio` (with `docker`, `compose`) | `true` forces stdio, even when a port would be detected. |
 | `path`, `type`, `headers` (with `docker`, `compose`) | For an HTTP container: the URL path (default `/mcp`), `http` or `sse`, extra headers. |
-| `hub.idle_timeout` | Seconds; `0` means never stop. Overrides the global default (stdio, docker and compose). |
+| `hub.idle_timeout` | Seconds; `0` means never stop. Overrides the global default (stdio, docker, compose and forked class). |
 | `hub.always_on` | Start at daemon start and never stop. |
 | `hub.request_timeout` | Seconds per request. |
+
+On a `class` entry without `hub.fork` the three are an error: it has no process
+of its own.
 
 ```json
 {
@@ -821,7 +877,7 @@ start.
 |---|---|---|
 | `listen` | `http://127.0.0.1:3080` | Listen address. |
 | `cache_dir` | `~/.cache/mcp-hub` | Where manifests are cached. |
-| `idle_timeout` | `300` | Seconds before an idle stdio, docker or compose upstream is stopped. |
+| `idle_timeout` | `300` | Seconds before an idle stdio, docker or compose upstream, or a forked class worker, is stopped. |
 | `request_timeout` | `60` | Seconds to wait for an upstream response. |
 | `profiles` | `{}` | Named permission sets. |
 | `clients` | `{}` | `name → { token, profile }`. |

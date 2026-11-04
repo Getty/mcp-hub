@@ -72,3 +72,14 @@ Revision history for MCP-Hub
     (`SSL_CERT_FILE`/`SSL_CERT_DIR` override). It has no EV, and `class`
     entries are limited to the bundled native servers (README, "Standalone
     binary"). No prebuilt binaries are published yet.
+  - Forked class workers: `"hub": {"fork": true}` on a `class` entry lists
+    the class's tools from the hub with no process running and runs its
+    calls in a worker forked from the hub (Linux), with lazy start, idle
+    stop and the crash-loop rules of a stdio child. `mcp-hub status` shows
+    such a worker's PSS. The hub stays one daemon; its only children are
+    the upstreams and these workers.
+  - A `class` entry may name a class whose instances hold their MCP::Server
+    and return it from a `server` method.
+  - A `class` entry refuses `env`, `cwd`, `headers` and `type`, and, unless
+    forked, the `hub` timeouts and `always_on`, naming the JSON path,
+    instead of silently ignoring them.

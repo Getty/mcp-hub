@@ -39,9 +39,11 @@ code, the code wins — and fix the spec or file a ticket, don't propagate the s
 Invariants that a change most easily breaks (the reasons are in `mcp-hub-core`, don't
 re-derive them here):
 
-- **One `Mojo::Server::Daemon` process — never add a `prefork` path.** Everything shares
-  one IOLoop; a second worker would spawn duplicate children and split the state that the
-  whole design exists to unify.
+- **One `Mojo::Server::Daemon` process serves HTTP and owns all state — never add a
+  `prefork` path.** Everything shares one IOLoop; a second worker would spawn duplicate
+  children and split the state that the whole design exists to unify. Its child processes
+  are exec'd upstreams or forked class workers (`Upstream::Fork`); a worker never runs the
+  hub's loop, holds none of its fds or signal handlers, and ends with `_exit`.
 - **Lazy start / idle stop is a promise, not an optimisation.** `tools/list` is answered
   from the cached manifest with no process; only `tools/call` (and `prompts/get` /
   `resources/read`) spawns. Don't move a spawn into `startup`/config load.

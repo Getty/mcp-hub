@@ -61,7 +61,9 @@ sub start_p ($self) {
   my $pid;
   unless (eval { $pid = $self->_spawn; 1 }) {
     my $err = $@ =~ s/\n\z//r;
-    $self->state('stopped');
+    # A start refused before there is a child counts only if _spawn recorded
+    # it (a forked worker refused for threads); then it may end a crash loop.
+    $self->state($self->{failed} ? 'failed' : 'stopped');
     delete $self->{start_promise};
     $done->reject("upstream @{[$self->name]}: cannot start ($err)");
     return $done;
@@ -321,12 +323,18 @@ sub _spawn ($self) {
 
   close $child;
   close $err_w;
+  $self->log->info("[@{[$self->name]}] started $c->{command} (pid $pid)");
+  return $self->_attach($pid, $parent, $err_r);
+}
+
+# The hub's side of a child that was just started: its pid, and the hub's ends
+# of its stdin/stdout socket and its stderr pipe, wired into the event loop.
+sub _attach ($self, $pid, $parent, $err_r) {
   $self->{pid}               = $pid;
   $self->{socket}            = $parent;
   delete $self->{exited_pid};    # a new attempt, a new child
   $self->stats->{pid}        = $pid;
   $self->stats->{started_at} = time;
-  $self->log->info("[@{[$self->name]}] started $c->{command} (pid $pid)");
 
   my $stream = Mojo::IOLoop::Stream->new($parent);
   $stream->timeout(0);

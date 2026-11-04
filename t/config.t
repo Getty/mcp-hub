@@ -331,6 +331,72 @@ subtest 'compose entry errors name the key' => sub {
     'compose and docker';
 };
 
+# --- class entries: in process and forked ---------------------------------
+
+subtest 'a forked class entry, normalized' => sub {
+  my $c = MCP::Hub::Config->from_data({
+    mcpServers => {
+      wiki => {
+        class => 'MCP::Wiki::Server',
+        args  => {wiki_root => '/srv/wiki', use_git => true},
+        hub   => {fork => true, idle_timeout => 600, request_timeout => 30, always_on => true},
+      },
+      plain => {class => 'MCP::Run', hub => {fork => false}},
+    },
+  });
+  my $e = $c->server('wiki');
+  is $e->{type},  'fork',              'hub.fork makes it the fork type';
+  is $e->{class}, 'MCP::Wiki::Server', 'class kept';
+  is_deeply $e->{class_args}, {wiki_root => '/srv/wiki', use_git => true}, 'args kept as they are';
+  is $e->{idle_timeout},    600, 'idle_timeout applies to a forked class';
+  is $e->{request_timeout}, 30,  'request_timeout applies to a forked class';
+  is $e->{always_on},       1,   'always_on applies to a forked class';
+  ok !exists $e->{fork}, 'hub.fork itself is not kept, the type says it';
+
+  is $c->server('plain')->{type}, 'perl', '"fork": false is an in-process class';
+};
+
+subtest 'hub.fork only applies to a class entry' => sub {
+  for my $entry (
+    {command => 'x'},
+    {url     => 'http://127.0.0.1:1/mcp'},
+    {docker  => 'mcp/time'},
+    {compose => '/srv/stack', service => 'mcp'},
+  ) {
+    my ($kind) = grep { $_ ne 'service' } keys %$entry;
+    like config_error({%$entry, hub => {fork => true}}),
+      qr/mcpServers\.x\.hub\.fork: 'fork' only applies to a 'class' entry/, "not on a '$kind' entry";
+  }
+};
+
+subtest 'a class entry refuses what it would ignore' => sub {
+  for my $fork (0, 1) {
+    my $what = $fork ? "a forked 'class' entry" : "a 'class' entry";
+    my %hub  = $fork ? (hub => {fork => true}) : ();
+    like config_error({class => 'X', env => {A => 1}, %hub}),
+      qr/mcpServers\.x\.env: 'env' does not apply to \Q$what\E, which takes its settings through 'args'/,
+      "env on $what";
+    like config_error({class => 'X', cwd => '/tmp', %hub}),
+      qr/mcpServers\.x\.cwd: 'cwd' does not apply to \Q$what\E/, "cwd on $what";
+    like config_error({class => 'X', headers => {A => 1}, %hub}),
+      qr/mcpServers\.x\.headers: 'headers' does not apply to \Q$what\E/, "headers on $what";
+    like config_error({class => 'X', type => 'http', %hub}),
+      qr/mcpServers\.x\.type: 'type' does not apply to \Q$what\E/, "type on $what";
+  }
+
+  for my $key (qw(idle_timeout request_timeout always_on)) {
+    my $value = $key eq 'always_on' ? true : 60;
+    like config_error({class => 'X', hub => {$key => $value}}),
+      qr/mcpServers\.x\.hub\.$key: '$key' does not apply to an in-process 'class' entry, only with "fork": true/,
+      "hub.$key on an in-process class";
+  }
+
+  like config_error({class => 'X', hub => {fork => true, bogus => 1}}), qr/mcpServers\.x\.hub\.bogus: unknown key/,
+    'an unknown hub key is still named first';
+  like config_error({class => 'X', args => ['a'], hub => {fork => true}}),
+    qr/mcpServers\.x\.args: must be a JSON object for a 'class' upstream/, 'args stays an object when forked';
+};
+
 subtest 'public_profile must exist' => sub {
   eval {
     MCP::Hub::Config->from_data({

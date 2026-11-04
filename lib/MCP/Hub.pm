@@ -10,6 +10,7 @@ use MCP::Hub::Help;
 use MCP::Hub::Upstream;
 use MCP::Hub::Upstream::Compose;
 use MCP::Hub::Upstream::Docker;
+use MCP::Hub::Upstream::Fork;
 use MCP::Hub::Upstream::Perl;
 use MCP::Hub::Upstream::Stdio;
 use MCP::Hub::Upstream::Http;
@@ -413,10 +414,10 @@ sub _build_upstream ($self, $entry, $config) {
   return $up;
 }
 
-# The upstreams that run something of their own -- a child, a container --
-# only while they are used: they have an idle timeout, and a warming fetch
-# stops them again.
-my %LAZY = map { $_ => 1 } qw(stdio docker compose);
+# The upstreams that run something of their own -- a child, a container, a
+# forked worker -- only while they are used: they have an idle timeout, and a
+# warming fetch stops them again.
+my %LAZY = map { $_ => 1 } qw(stdio docker compose fork);
 
 # What an entry ends up running with: its own hub block wins over the global
 # defaults, exactly as MCP::Hub::Upstream's constructors resolve it. A perl
@@ -744,11 +745,15 @@ stays fully in effect and the error, with its JSON path, is logged and returned.
 
 =head2 Process model
 
-The daemon must run as a single L<Mojo::Server::Daemon> process, never under
-hypnotoad or a pre-forking server: every worker would spawn its own children and
-hold its own state. Everything -- child processes, idle timers, manifests,
-in-process servers -- lives in one event loop, and tool calls are non-blocking
-promises, so one slow upstream does not block the others.
+One process serves HTTP and owns all state -- a single L<Mojo::Server::Daemon>,
+never hypnotoad or a pre-forking server, whose every worker would spawn its own
+children and hold its own state. Its child processes are exec'd upstreams or
+forked class workers (L<MCP::Hub::Upstream::Fork>). A worker never runs the hub's
+loop, holds none of its fds or signal handlers, and ends with C<_exit>.
+Everything else -- child processes, idle timers, manifests, in-process servers --
+lives in the one event loop, and tool calls are non-blocking promises, so one
+slow upstream does not block the others. An in-process C<class> entry is the
+exception: its tools run inside that loop, and a slow one stalls the hub.
 
 =head1 ATTRIBUTES
 

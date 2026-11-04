@@ -1,7 +1,9 @@
 # Forked class workers — Design
 
-**Status:** Draft for k37, written by mcp-hub-worker on 2026-11-03. Nothing here is
-implemented. The maintainer asked for this design after the k29 research pointed at
+**Status:** Accepted 2026-11-04 (see **Decisions**) and implemented the same day for
+k42 and k38; written for k37 by mcp-hub-worker on 2026-11-03. Where the build differs
+from the draft, the section says so and **As built** at the end lists it. The
+maintainer asked for this design after the k29 research pointed at
 its option (c). Any decision that is not a quote of that request is Claude's call,
 and each one is listed under **Calls made by Claude, not by the maintainer** at the
 end.
@@ -161,9 +163,13 @@ as truthy, like `always_on`. The normalized entry is `type: 'fork'`, with `class
 
 - `hub.fork` on a `command`, `url`, `docker` or `compose` entry:
   `mcpServers.wiki.hub.fork: 'fork' only applies to a 'class' entry`.
-- `env` or `cwd` together with `hub.fork`:
-  `mcpServers.wiki.env: 'env' does not apply to a forked 'class' entry`. (Today a
-  `class` entry ignores these keys silently; see the drift card.)
+- `env`, `cwd`, `headers` or `type` on any `class` entry, forked or not (k38):
+  `mcpServers.wiki.env: 'env' does not apply to a forked 'class' entry, which takes
+  its settings through 'args'` (the `, which …` part only for `env` and `cwd`; "a
+  'class' entry" when it is not forked).
+- `hub.idle_timeout`, `hub.request_timeout` or `hub.always_on` on a `class` entry
+  without `hub.fork` (k38): `mcpServers.run.hub.idle_timeout: 'idle_timeout' does
+  not apply to an in-process 'class' entry, only with "fork": true`.
 
 **Build errors.** The entry becomes a failed placeholder, just as a class that fails
 to load does today (`_broken_upstream`). It is listed, it reports the error, and a
@@ -205,6 +211,13 @@ start does:
 5. **Drop the instance.** The hub keeps the loaded modules (shared with every
    worker), the façade and the instructions, but not the object. So no repository
    handle and no open file of the class's sits in the hub when it forks.
+   - *As built:* letting go is not enough. A tool closure that captures the
+     instance — mcp-wiki's do, and so does any `$self->tool(code => sub { $self … })`
+     — is a cycle through the server, and the instance would never be freed. The
+     hub therefore empties the throwaway server's `tools`, `prompts` and
+     `resources` before it lets go. A class whose instances share one server object
+     (a class-level singleton) would lose its lists with that; none is known, and
+     the POD names the throwaway instance.
 
 **Cost:** 13–43 ms per entry, at daemon start and whenever a reload rebuilds the
 entry (measured for mcp-wiki with its 15 tools; it covers construction plus the four
@@ -287,7 +300,11 @@ buffered hub output is written twice. The stdio transport autoflushes STDOUT.
 
 **Module.** `MCP::Hub::Upstream::Fork` (the name is Claude's call) is a subclass of
 `Upstream::Stdio`. It overrides four methods: `_build_server`, `_hash`,
-`_apply_manifest` and `_spawn`. Everything else is reused unchanged:
+`_apply_manifest` and `_spawn`. *As built*, it also overrides `_on_stderr`,
+`_on_close` and `_exit_hint` (the stderr tail as exit hint, drained before the exit
+is handled, as `Docker::Stdio` does) and `status_row` (`pss_kb`); `Stdio::_spawn`'s
+parent side moved into `Stdio::_attach`, which both share. Everything else is
+reused unchanged:
 
 - the JSON-RPC client, timeouts and `notifications/cancelled`;
 - answers to server requests (`ping`, `roots/list`);
@@ -635,8 +652,10 @@ class.
   - the first call forks, and the worker's pid differs from the hub's;
   - two concurrent calls queue;
   - idle stop with `idle_timeout` 1, then a re-fork on the next call;
-  - a crash loop (3 × `crash`) leads to `failed`, `tools/call` returns `isError`
-    with the hint, `tools/list` still answers, and `refresh` brings the worker back;
+  - a crash loop (3 × `crash`) leads to `failed`, and `refresh` brings the worker
+    back. *As built:* the server's own endpoint then answers 503 with the reason,
+    like any `failed` upstream; through `/all` its tools are still listed and a call
+    returns `isError` naming the refresh command;
   - a stop during `sleep 5` leaves the worker gone in under 1 s.
 - **Isolation** (Linux; the whole file skips elsewhere):
   - the worker's fds hold no socket inode that the hub holds, except its own
@@ -646,7 +665,11 @@ class.
   - a regular file the hub had open is readable in the worker without moving the
     hub's offset.
 - **END guard:** an END block in the test writes a marker file. `exit 7` in the
-  worker leaves no marker, and the recorded exit status is 7.
+  worker leaves no marker, and the recorded exit status is 7. *As built:* under
+  `Mojo::Reactor::EV`, libev's default loop reaps every child itself at top
+  priority, and the hub's `waitpid` then finds nothing: the exit reads "unknown".
+  That race exists for every child (stdio and docker too, noted on k42); a test
+  that looks at an exit status sets `local $SIG{CHLD} = 'DEFAULT'` for it.
 - **No stall:** while a worker blocks in `sleep 2`, a recurring timer in the test
   shows a maximum lag under 0.5 s, and a call to the stdio echo upstream answers.
 - **Reload:**
@@ -698,6 +721,21 @@ The native tests in `t/native/` stay as they are, against
 6. **`always_on` with fork:** allowed (proposed), even though copy-on-write erosion
    over hours was not measured?
 
+## Decisions (maintainer, 2026-11-04)
+
+All six questions were answered with the recommendation:
+
+1. **Yes**: the hub may fork class workers, under the reworded one-process rule in
+   **The decision for the maintainer**.
+2. **Knob**: `hub.fork: true` on a `class` entry.
+3. **Option (a)** applies to plain in-process `class` entries too, with a POD
+   warning that a slow tool stalls the hub.
+4. **mcp-wiki is not packed** into the hub binary.
+5. **The drift is closed now**: a `class` entry refuses `env`, `cwd`, `headers`,
+   `type` and the `hub` timeouts that do not apply, each with its JSON path. Nothing
+   breaks for users, because the hub has not been released yet.
+6. **`always_on` is allowed** together with `hub.fork`.
+
 ## Follow-up cards (proposed — the dispatching agent files them)
 
 **p5-mcp-hub**
@@ -741,6 +779,37 @@ The native tests in `t/native/` stay as they are, against
 - **Process details:** the worker's exit codes, how its last stderr line becomes the
   exit hint, and how `pss_kb` is shown.
 - **Error wording:** the exact texts, within the JSON-path convention.
+
+## As built (k42, k38)
+
+What the builder decided, and where the build differs from the draft above:
+
+- **Names:** `MCP::Hub::Upstream::Fork`, status `TYPE` `fork`; the isolation recipe
+  lives in the upstream (`_worker`, `_reset_signals`, `_isolate_fds`, `_reopen_file`).
+- **Type gates:** `%LAZY` in `MCP::Hub` learns `fork` (idle timeout, warming stop);
+  `_build_upstream`, `_warm_upstream` and `_route_server` needed no change, because a
+  fork upstream has `manifest_fetched_at` from its build and so is never warmed and
+  never 503 "not ready yet".
+- **Exit codes:** `0` after EOF, `3` when the instance could not be built or its
+  server died (the message on stderr); an `exit` in class code keeps its own code.
+  The last five non-blank stderr lines become the exit hint, after
+  ` while starting CLASS` when the worker died during the handshake.
+- **The thread refusal** goes through `_record_exit` in `_spawn`; for it to count
+  toward the crash loop, `Stdio::start_p` now leaves a refused spawn in `failed`
+  when `_spawn` recorded the third exit (it used to be `stopped` regardless).
+- **Option (a)** is shared by `Upstream::Perl` and `Upstream::Fork` through
+  `Upstream::_load_class` and `Upstream::_server_of`; an in-process class keeps its
+  instance alive in `$up->{instance}`.
+- **`always_on` and the timeouts on an in-process class** are refused (k38), since
+  there is no process for them; with `hub.fork` they apply.
+- **`pss_kb`:** on fork rows only, shown as a `PSS_KB` column by `mcp-hub status`
+  (`-` for every other row). Stdio rows do not get it.
+- **Fixtures:** `echo.pl`'s server moved into `t/lib/EchoServer.pm` here already
+  (its `exit` tool takes an optional `code`), with `t/lib/ForkProbe.pm` (`whoami`, and
+  `title`/`_meta` on `echo`) and the option-(a) `t/lib/ComposedEcho.pm`; `t/fork.t`
+  covers part of **Tests**.
+- **Not built here:** the remaining probe tools and tests of **Tests** (k43), the
+  live `t/wiki-live.t` (k43), the packed-binary smoke (k44), EOF-first stop (k39).
 
 ## Calls made by Claude, not by the maintainer
 

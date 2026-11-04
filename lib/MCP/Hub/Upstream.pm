@@ -4,9 +4,11 @@ use Mojo::Base 'Mojo::EventEmitter', -signatures;
 
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
-use Mojo::JSON qw(encode_json);
+use Mojo::JSON   qw(encode_json);
+use Mojo::Loader qw(load_class);
 use Mojo::Log;
 use Mojo::Promise;
+use Scalar::Util qw(blessed);
 
 # ABSTRACT: Base class for an upstream MCP server mounted in the hub
 
@@ -30,7 +32,8 @@ has request_timeout  => 60;
 
 my %IMPL = (perl => 'MCP::Hub::Upstream::Perl', stdio => 'MCP::Hub::Upstream::Stdio',
   http => 'MCP::Hub::Upstream::Http', sse => 'MCP::Hub::Upstream::Http',
-  docker => 'MCP::Hub::Upstream::Docker', compose => 'MCP::Hub::Upstream::Compose');
+  docker => 'MCP::Hub::Upstream::Docker', compose => 'MCP::Hub::Upstream::Compose',
+  fork => 'MCP::Hub::Upstream::Fork');
 
 sub build ($class, $entry, %opts) {
   my $impl = $IMPL{$entry->{type}} // 'MCP::Hub::Upstream::Stdio';
@@ -177,6 +180,30 @@ sub _paginate_p ($self, $method, $key, $cursor = undef, $acc = undef) {
   });
 }
 
+# --- class entries (shared by Upstream::Perl and Upstream::Fork) -----------
+
+# Load the entry's class. It must be an MCP::Server, or have a `server` method
+# that hands one out (option (a): a class that holds its server rather than
+# being one).
+sub _load_class ($self) {
+  my $class = $self->config->{class};
+  if (my $err = load_class($class)) {
+    die "cannot load class $class: " . (ref $err ? "$err" : 'class not found') . "\n";
+  }
+  die "$class is neither an MCP::Server subclass nor has a 'server' method returning one\n"
+    unless $class->isa('MCP::Server') || $class->can('server');
+  return $class;
+}
+
+# The MCP::Server of an instance of that class: the instance itself, or what
+# its `server` method returns.
+sub _server_of ($self, $instance) {
+  return $instance if blessed $instance && $instance->isa('MCP::Server');
+  my $server = blessed $instance && $instance->can('server') ? $instance->server : undef;
+  return $server if blessed $server && $server->isa('MCP::Server');
+  die $self->config->{class} . " is neither an MCP::Server subclass nor has a 'server' method returning one\n";
+}
+
 # Subclasses must provide these.
 sub _request_p ($self, @) { return Mojo::Promise->reject('_request_p not implemented') }
 sub _notify    ($self, @) { return undef }
@@ -248,9 +275,10 @@ sub _rss ($pid) {
 L<MCP::Hub::Upstream> is the common interface for the kinds of upstream the hub
 mounts: a stdio child process (L<MCP::Hub::Upstream::Stdio>), a remote HTTP
 server (L<MCP::Hub::Upstream::Http>), an in-process Perl server
-(L<MCP::Hub::Upstream::Perl>), a Docker container started from its image
-(L<MCP::Hub::Upstream::Docker>) and one service of a Compose project
-(L<MCP::Hub::Upstream::Compose>). Each presents its tools, prompts and resources
+(L<MCP::Hub::Upstream::Perl>), a Perl server class whose calls run in a worker
+forked from the hub (L<MCP::Hub::Upstream::Fork>), a Docker container started
+from its image (L<MCP::Hub::Upstream::Docker>) and one service of a Compose
+project (L<MCP::Hub::Upstream::Compose>). Each presents its tools, prompts and resources
 through an L<MCP::Server> stored in L</server>, which the hub mounts at
 C</< name >>.
 
@@ -394,7 +422,8 @@ L</refresh_p> leaves the C<failed> state.
 
 The per-upstream row of C<GET /_hub/status>: C<name>, C<type>, C<state>, C<pid>,
 C<rss_kb>, C<manifest_fetched_at>, C<last_used>, C<calls>, C<errors>, and
-C<error> when one is set.
+C<error> when one is set. A C<fork> row adds C<pss_kb> (see
+L<MCP::Hub::Upstream::Fork/pss_kb>).
 
 =method stop
 
@@ -415,12 +444,12 @@ Reset L</last_used> and the idle timer.
 
 =method type
 
-C<stdio>, C<http>, C<sse>, C<perl>, C<docker> or C<compose>.
+C<stdio>, C<http>, C<sse>, C<perl>, C<fork>, C<docker> or C<compose>.
 
 =head1 SEE ALSO
 
 L<MCP::Hub::Upstream::Stdio>, L<MCP::Hub::Upstream::Http>,
-L<MCP::Hub::Upstream::Perl>, L<MCP::Hub::Upstream::Docker>,
-L<MCP::Hub::Upstream::Compose>, L<MCP::Hub>.
+L<MCP::Hub::Upstream::Perl>, L<MCP::Hub::Upstream::Fork>,
+L<MCP::Hub::Upstream::Docker>, L<MCP::Hub::Upstream::Compose>, L<MCP::Hub>.
 
 =cut

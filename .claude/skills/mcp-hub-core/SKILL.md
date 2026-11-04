@@ -23,13 +23,14 @@ ausgeliefert; der Hub liefert nur den Upstream-Client und den Klebstoff.
 
 | Begriff | Bedeutung |
 |---|---|
-| **upstream** | Ein eingebetteter Server: `Upstream::Stdio`, `Upstream::Http`, `Upstream::Perl`. Basisklasse `MCP::Hub::Upstream` |
+| **upstream** | Ein eingebetteter Server: `Upstream::Stdio`, `Upstream::Http`, `Upstream::Perl`, `Upstream::Fork` (plus Docker/Compose). Basisklasse `MCP::Hub::Upstream` |
 | **façade** | Die `MCP::Server`-Instanz, die einen Upstream agentenseitig repräsentiert; `MCP::Hub::Facade->build($upstream, $manifest)` |
 | **manifest** | Gecachte `tools`/`prompts`/`resources`-Liste eines Upstreams; erlaubt `tools/list` ohne laufenden Prozess |
 | **mode** | *open* (keine Tokens, jeder sieht alles) oder *clients* (Bearer → Profil). **Abgeleitet**, nicht deklariert |
 | **profile** | Benannter Permission-Satz: `servers`, `tools` allow/deny, `admin` |
 | **aggregate** | Der `/all`-Endpunkt: Union aller Tools mit `<name>__`-Präfix |
 | **native** | In-process `MCP::Server`-Subklasse ohne Subprozess (`Native::ClaudeHistory/ClaudeSessions/Status`) |
+| **worker** | Ein aus dem Hub ge`fork`ter Kindprozess **ohne exec**, der eine `class` mit `"hub": {"fork": true}` bedient (`Upstream::Fork`) |
 
 ## Module map
 
@@ -42,7 +43,8 @@ lib/MCP/Hub/Manifest.pm         # Manifest-Cache lesen/schreiben, Hash, Freshnes
 lib/MCP/Hub/Upstream.pm         # Basisklasse: state, server, start_p, stop, refresh_p, touch, stats
 lib/MCP/Hub/Upstream/Stdio.pm   # Kindprozess (fork/exec, Socket-Pair + stderr-Pipe) + Legacy-JSON-RPC-Client
 lib/MCP/Hub/Upstream/Http.pm    # Remote-HTTP-Upstream: Streamable HTTP oder HTTP+SSE
-lib/MCP/Hub/Upstream/Perl.pm    # `class` einmal instanziieren; die Instanz IST der server
+lib/MCP/Hub/Upstream/Perl.pm    # `class` einmal instanziieren; die Instanz IST der server oder hat `->server` (Option (a))
+lib/MCP/Hub/Upstream/Fork.pm    # `class` + hub.fork: Manifest in-process, Calls in einem geforkten Worker (Stdio-Subklasse)
 lib/MCP/Hub/Facade.pm           # baut die MCP::Server-Façade aus einem Manifest
 lib/MCP/Hub/Facade/Tool.pm      # MCP::Tool-Subklasse: validate_input aus, `extra`-Hash für Rendering
 lib/MCP/Hub/Facade/Server.pm    # MCP::Server-Subklasse: rendert die `extra`-Felder in tools/list mit
@@ -54,19 +56,26 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
 
 ## Core invariants
 
-- **Ein Prozess, niemals prefork/hypnotoad.** `mcp-hub daemon` ist ein einzelner
-  `Mojo::Server::Daemon`; es gibt bewusst **kein** `prefork`-Command. Alles (Kinder,
-  Idle-Timer, Manifeste, In-process-Server) lebt in dieser einen IOLoop; Tool-Calls sind
-  non-blocking Promises, damit ein langsamer Upstream die anderen nicht blockiert.
+- **Ein Prozess bedient HTTP und hält allen State — niemals prefork/hypnotoad.**
+  `mcp-hub daemon` ist ein einzelner `Mojo::Server::Daemon`; es gibt bewusst **kein**
+  `prefork`-Command. Seine Kindprozesse sind exec'te Upstreams oder geforkte
+  Class-Worker. Ein Worker fährt nie die IOLoop des Hubs, hält keinen seiner fds oder
+  Signal-Handler und endet mit `_exit` (das Rezept steht in `Upstream::Fork`; `t/fork.t`
+  bewacht es). Alles andere (Kinder, Idle-Timer, Manifeste, In-process-Server) lebt in
+  der einen IOLoop; Tool-Calls sind non-blocking Promises, damit ein langsamer Upstream
+  die anderen nicht blockiert — außer einem In-process-`class`-Eintrag: dessen Tools
+  laufen in der Loop, ein langsames hält den ganzen Hub an.
 - **Lazy start, idle stop — das ist eine Zusage.** Ein stdio-Upstream mit frischem
   Cache-Manifest startet **nicht** bei Daemon-Start; die Façade kommt aus dem Cache.
   Erst der erste `tools/call`/`prompts/get`/`resources/read` ruft `start_p`; weitere Calls
   während `starting` queuen auf derselben Promise. Jeder Request ruft `touch`; der
   Idle-Timer schließt stdin, `SIGTERM`, nach 5 s `SIGKILL`. `always_on` startet eager
-  ohne Idle-Timer.
+  ohne Idle-Timer. Ein `fork`-Upstream liest sein Manifest beim Build in-process aus
+  einer Wegwerf-Instanz (kein Cache, kein Warming) und forkt erst beim ersten Call.
 - **Manifest-Hash geht über `[command, args, cwd]` — nie über `env`.** `env` kann
   Secrets halten, ein geänderter Command nutzt nie ein stale Manifest; ein veraltetes
-  Manifest kostet nur eine falsche Tool-Beschreibung bis zum Refresh (kein TTL).
+  Manifest kostet nur eine falsche Tool-Beschreibung bis zum Refresh (kein TTL). Ein
+  `fork`-Upstream schreibt kein Manifest und hasht nichts (`args` kann Secrets halten).
 - **Die Façade darf `extra` nicht verlieren.** `MCP::Server` rendert in `tools/list` nur
   name/description/inputSchema/outputSchema/annotations. `title`, `icons` und `_meta` (z. B.
   `anthropic/maxResultSizeChars`) sind keine Spezifikations-Felder und hängen an
@@ -100,6 +109,8 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   Elicitation weiterzuleiten ist ein Non-goal; die Antworten stehen in `mcp-hub-runtime`.
 - **Native Module sind `MCP::Server`-Subklassen und laufen auch standalone** (Tools in
   `new`); `Upstream::Perl` injiziert die Hub-Instanz nur bei `$class->can('hub')`.
+  `Upstream::Fork` verweigert genau solche Klassen — ein Worker hätte nur eine tote
+  Kopie des Hubs.
 
 ## Config
 
@@ -113,7 +124,9 @@ YAML ausdrückbar sein.
 
 `mcpServers` ist ein Superset von `.mcp.json` (Einträge 1:1). Genau eines von `command`,
 `class` oder `url` je Eintrag — bei `class` ist `args` ein Objekt (`class_args`), sonst
-eine Liste. Ein Profil hat `servers` (Array, Default `['*']`), `tools`
+eine Liste. Ein `class`-Eintrag verweigert `env`, `cwd`, `headers` und `type` (er nimmt
+alles über `args`); `hub.idle_timeout`/`request_timeout`/`always_on` gelten nur mit
+`"hub": {"fork": true}` (→ `type: 'fork'`), und `hub.fork` nur auf einem `class`-Eintrag. Ein Profil hat `servers` (Array, Default `['*']`), `tools`
 (`{server: {allow: [...], deny: [...]}}`) und `admin`; ein Client hat `token` und
 `profile` (beide Pflicht). Die Schlüsselliste des `hub`-Blocks steht in `mcp-hub-runtime`.
 

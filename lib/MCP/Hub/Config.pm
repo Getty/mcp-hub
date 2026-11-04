@@ -25,7 +25,13 @@ has source         => 'config';
 
 my %ENTRY_KEYS      = map { $_ => 1 } qw(command args env cwd class url type headers hub
   docker compose service stdio port path volumes docker_args);
-my %ENTRY_HUB_KEYS  = map { $_ => 1 } qw(idle_timeout always_on request_timeout);
+my %ENTRY_HUB_KEYS  = map { $_ => 1 } qw(idle_timeout always_on request_timeout fork);
+
+# A class takes its settings through args alone: nothing applies an
+# environment, a working directory, headers or a transport to it. The hub keys
+# are about a process of its own, which only a forked class has.
+my @CLASS_REFUSED   = qw(env cwd headers type);
+my @CLASS_PROCESS   = qw(idle_timeout request_timeout always_on);
 my %HUB_KEYS        = map { $_ => 1 } qw(listen cache_dir idle_timeout request_timeout profiles clients public_profile
   auto_reload docker_command docker_network);
 
@@ -185,8 +191,10 @@ sub _parse_entry ($self, $name, $entry) {
     }
   }
 
-  my %hub = $self->_parse_entry_hub($path, $entry->{hub});
-  my %out = (name => $name, %hub);
+  my %hub  = $self->_parse_entry_hub($path, $entry->{hub});
+  _err("$path.hub.fork", "'fork' only applies to a 'class' entry") if exists $hub{fork} && $kind ne 'class';
+  my $fork = delete $hub{fork};
+  my %out  = (name => $name, %hub);
 
   if ($kind eq 'docker' || $kind eq 'compose') {
     $self->_parse_container($kind, $path, $entry, \%out);
@@ -208,7 +216,8 @@ sub _parse_entry ($self, $name, $entry) {
     }
   }
   elsif ($kind eq 'class') {
-    $out{type}  = 'perl';
+    $self->_check_class_entry($path, $entry, \%hub, $fork);
+    $out{type}  = $fork ? 'fork' : 'perl';
     $out{class} = $entry->{class};
     my $args = $entry->{args} // {};
     _err("$path.args", "must be a JSON object for a 'class' upstream") unless ref $args eq 'HASH';
@@ -224,6 +233,22 @@ sub _parse_entry ($self, $name, $entry) {
   }
 
   return \%out;
+}
+
+# The keys a class entry would otherwise carry and silently ignore. A forked
+# class has a worker, so the timeouts and always_on apply to it; an in-process
+# one runs no process of its own, so none of them can.
+sub _check_class_entry ($self, $path, $entry, $hub, $fork) {
+  my $what = $fork ? "a forked 'class' entry" : "a 'class' entry";
+  for my $key (grep { exists $entry->{$_} } @CLASS_REFUSED) {
+    _err("$path.$key", "'$key' does not apply to $what"
+        . ($key eq 'env' || $key eq 'cwd' ? ", which takes its settings through 'args'" : ''));
+  }
+  return if $fork;
+  for my $key (grep { exists $hub->{$_} } @CLASS_PROCESS) {
+    _err("$path.hub.$key", "'$key' does not apply to an in-process 'class' entry, only with \"fork\": true");
+  }
+  return;
 }
 
 # A docker or compose entry, normalized: `type` is the kind (docker or
@@ -313,6 +338,7 @@ sub _parse_entry_hub ($self, $path, $hub) {
   $out{idle_timeout}    = _int("$path.hub.idle_timeout",    $hub->{idle_timeout})    if exists $hub->{idle_timeout};
   $out{request_timeout} = _int("$path.hub.request_timeout", $hub->{request_timeout}) if exists $hub->{request_timeout};
   $out{always_on}       = $hub->{always_on} ? 1 : 0                                  if exists $hub->{always_on};
+  $out{fork}            = $hub->{fork} ? 1 : 0                                       if exists $hub->{fork};
   return %out;
 }
 
@@ -598,7 +624,18 @@ are accepted spellings of C<http>.
 
 =item C<perl> (from C<class>)
 
-C<class> and C<class_args> (the entry's C<args>, a JSON object here).
+C<class> and C<class_args> (the entry's C<args>, a JSON object here, passed to
+C<new> as it is -- no C<${VAR}> and no C<~>). An in-process class runs no process
+of its own, so C<env>, C<cwd>, C<headers> and C<type>, and C<idle_timeout>,
+C<request_timeout> and C<always_on> in its C<hub> block, are errors on it
+rather than silently ignored.
+
+=item C<fork> (from C<class> with C<"hub": {"fork": true}>)
+
+The same C<class> and C<class_args>, run in a worker the hub forks from itself
+(see L<MCP::Hub::Upstream::Fork>). C<idle_timeout>, C<request_timeout> and
+C<always_on> apply as for a stdio child; C<env>, C<cwd>, C<headers> and C<type>
+are errors. C<hub.fork> on any entry but a C<class> one is an error too.
 
 =item C<docker> (from C<docker>)
 
@@ -624,7 +661,7 @@ key does there, is in L<MCP::Hub::Upstream::Docker> and
 L<MCP::Hub::Upstream::Compose>.
 
 Plus any per-entry C<idle_timeout>, C<request_timeout> and C<always_on> from its
-C<hub> block.
+C<hub> block. C<hub.fork> itself is not kept: it becomes the C<fork> type.
 
 =attr source
 

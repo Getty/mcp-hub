@@ -38,8 +38,10 @@ release.
 
 ## Hazards — mechanism and background in skill `mcp-hub-core`
 
-- **One daemon process — never introduce a `prefork`/hypnotoad path.** Everything lives in one
-  `Mojo::IOLoop`.
+- **One process serves HTTP and owns all state — never a `prefork`/hypnotoad path.** Everything
+  lives in one `Mojo::IOLoop`. Its child processes are exec'd upstreams or forked class workers
+  (`Upstream::Fork`); a worker never runs the hub's loop, holds none of its fds or signal
+  handlers, and ends with `_exit`.
 - **Lazy start is a promise.** `tools/list` is served from the cached manifest with no process;
   only `tools/call`/`prompts/get`/`resources/read` spawns.
 - **The façade must not drop `extra`.** `title`/`icons`/`_meta` ride on `Facade::Tool` and are

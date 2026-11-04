@@ -14,6 +14,7 @@ my @modules = qw(
   MCP::Hub::Aggregate
   MCP::Hub::Upstream
   MCP::Hub::Upstream::Perl
+  MCP::Hub::Upstream::Fork
   MCP::Hub::Upstream::Stdio
   MCP::Hub::Upstream::Http
   MCP::Hub::Docker
