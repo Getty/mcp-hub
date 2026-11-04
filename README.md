@@ -135,6 +135,10 @@ ExecStart=%h/perl5/bin/mcp-hub daemon
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 Environment=MCP_HUB_CONFIG=%h/.config/mcp-hub/config.json
+# A local::lib install in ~/perl5: the user manager sets neither PERL5LIB nor a
+# PATH with ~/perl5/bin, which stdio upstreams installed there need.
+Environment=PERL5LIB=%h/perl5/lib/perl5
+Environment=PATH=%h/perl5/bin:/usr/local/bin:/usr/bin:/bin
 # Secrets the config references as ${VAR} (API keys, client tokens); optional.
 EnvironmentFile=-%h/.config/mcp-hub/env
 
