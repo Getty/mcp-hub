@@ -1,0 +1,46 @@
+---
+claimed_at: 2026-11-04T03:09:06Z
+claimed_by: mcp-hub-worker
+class: standard
+completed: 2026-11-04T03:09:06Z
+created: 2026-11-03T18:02:36Z
+id: 29
+priority: medium
+started: 2026-11-03T18:02:50Z
+status: done
+tags:
+- wiki
+- upstream
+- binary
+title: Mount mcp-wiki in the hub as cheaply as possible (in-process vs stdio, and
+  the binary)
+updated: 2026-11-04T03:09:06Z
+---
+
+The maintainer wants mcp-wiki (~/dev/p5-mcp-wiki, MCP::Wiki on CPAN) to run in the hub as effectively as possible, and afterwards to set it up as a shared knowledge store for Claude sessions and agents via the hub (2026-11-03).
+
+Today: MCP::Wiki::Server is a Moo class that *holds* an MCP::Server (`has server`, built in _build_server) but is not one, so `type: perl, class: MCP::Wiki::Server` dies in Upstream::Perl ('is not an MCP::Server subclass'). It can only be mounted as stdio (`mcp-wiki --wiki-root …`) or via the Docker image raudssus/mcp-wiki. The packed hub binary (k28) cannot load a `class` from outside.
+
+Step 1: read-only research with options and a recommendation. Changes in p5-mcp-wiki become a card on its board, not an edit here.
+Step 2: implementation per the maintainer's choice.
+Step 3: knowledge-store setup (hub config, wiki location, git mode, how agents learn about it).
+
+2026-11-03 18:17 Research (read-only) done. Measured on this box under load from a parallel pp build; scripts in session scratchpad bench/.
+RAM: MCP::Hub loaded = 66 MB RSS. In-process MCP::Wiki::Server+Git::Raw adds +6.1 MB (each further wiki +0.1 MB). stdio mcp-wiki (CPAN perl, --git) = 59-62 MB RSS / 52-54 MB PSS while running, 0 when idle-stopped, cold first call through the hub 1.0-1.4 s. Docker via rootless podman stdio = ~125 MB (podman CLI 66 + conmon 2 + perl 57), cold start 2.1 s. A child forked from a loaded hub process: ready in 11 ms, Private_Dirty 6.3 MB after 200 commits + 5 full searches + a history walk.
+Blocking: with 500 pages / 1001 commits, get_section_history takes 5-8 s, search miss 1.7 s, list_pages 0.3 s, update+commit 25 ms. Live hub test: an in-process wiki history call held up an unrelated echo call by 5.1 s; the same call via stdio left echo at 25 ms.
+Packed hub: the PAR loader unsets PERL5LIB/PERLLIB/PERL5OPT (strings in parl; PERL5LIB=/x parl shows it unset), and a packed run never calls init_inc (par.pl:461/552), so a packed hub cannot load a host-installed MCP::Wiki, and host-built Git::Raw XS even less. In-process needs MCP::Wiki+Git::Raw packed into the hub. The local Raw.so is 7.8 MB and links libssh2 + libcrypto.so.3, which fails the hub's library allowlist (check-binary-libs.sh:21), so it would need the spike's no-SSL build.
+Recommendation: stdio now (no code, works with the CPAN mcp-wiki and later with the mcp-wiki binary). For in-process RAM without blocking, a fork-isolated class upstream is a design decision for the maintainer. Plain in-process (a)/(b) is not recommended for a shared store.
+
+2026-11-03 18:17 Also found (outside this card, for p5-mcp-hub): /all drops tool extras. Aggregate::_wrap_tool (Aggregate.pm:37-45) builds Facade::Tool without `extra`, and Aggregate is a plain MCP::Server, not Facade::Server. Verified with a façade that has title + _meta: its own endpoint renders both, /all renders neither. This contradicts the hazard that the façade keeps extra. Present since v1 (f9d6713) and untested. It does not affect mcp-wiki, which declares no extras.
+Also found (for p5-mcp-wiki): (1) wiki_root "~/x" serves pages but git silently degrades, because History.pm calls Git::Raw::Repository->discover with the raw string. The hub expands neither ~ in stdio args nor anything in class args. (2) A nonexistent wiki_root starts fine and every call fails with "Invalid wiki_root: .", so in the hub the upstream looks healthy.
+
+2026-11-03 18:18 Verified with the k28 worker's packed binary (scratchpad build/mcp-hub, 13.2 MB, run only, no build):
+(1) Even with PERL5LIB set, @INC holds only the PAR cache, and MCP::Wiki::Server and Git::Raw do not load.
+(2) The loader strips PERL5LIB from the hub's own environment, so stdio children inherit none. A local::lib `mcp-wiki` run by the host perl fails with "Can't locate MCP/Wiki/Server.pm" under a packed hub. That applies to every local::lib Perl stdio upstream, and PERL5OPT/PERLLIB/PERLIO are stripped as well. Workaround: set the entry's `env: {"PERL5LIB": "${HOME}/perl5/lib/perl5"}`. Writing `${PERL5LIB}` does not work, because it is already unset at config load, which makes it a config error. Belongs in k28's README binary section.
+Packing Git::Raw into the hub: Raw.so is 7.8 MB, 3.5 MB deflated, and the MCP::Wiki + Git::Raw .pm files add 0.3 MB, so roughly +3.8 MB on 13.2 MB.
+
+2026-11-04 from the p5-mcp-wiki session, for step 3 (packed hub running the mcp-wiki binary as stdio upstream): verified with PAR::Packer 1.064 on Linux that a pp binary started by another pp binary works -- the child inherits PAR_INITIALIZED=2/PAR_TEMP/PAR_0/PAR_PROGNAME from the parent but resets them and unpacks into its own cache-<sha1>, also with a cold cache. The packed hub's PERL5LIB stripping does not affect the mcp-wiki binary (it needs no host perl). The mcp-wiki binary is planned as p5-mcp-wiki k64 (linux-x86_64, linux-arm64, macos-arm64, macos-x86_64, windows-x86_64); several wikis started at once on a cold cache can hit bundle k19 -- install.sh warms the cache. The two wiki_root defects from step 1 are p5-mcp-wiki k62 and k63.
+
+2026-11-04 step 1 done by the main agent, maintainer's go: ~/.config/mcp-hub/config.json with a stdio 'wiki' entry (mcp-wiki --wiki-root ${HOME}/wiki --git --commit-reason-required, idle 3600), ~/wiki as a fresh git repo. Verified with perl -Ilib bin/mcp-hub daemon: tools/list 15 tools from cache with no process, create_page spawned mcp-wiki and committed 713566b 'Start the wiki' on an unborn HEAD, a write without reason refused, get_section_history works. Step 2 = k42 (then switch the entry to class + hub.fork). Step 3 = knowledge-store setup: the maintainer chose a Perl install (cpanm . from the checkout), then systemd unit + Claude Code registration.
+
+2026-11-04 03:09 Done in 51a5260 (README systemd unit sets PERL5LIB and PATH for a local::lib install); forked class workers in 9867f69, tests in 82cf3f2. Hub serves the wiki on this machine.
