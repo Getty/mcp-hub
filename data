@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-11-04T02:28:58Z
+claimed_by: mcp-hub-worker
+class: standard
+completed: 2026-11-04T02:29:02Z
+created: 2026-11-03T19:27:27Z
+id: 38
+priority: medium
+started: 2026-11-04T01:43:05Z
+status: done
+tags:
+- config
+- drift
+title: A class entry silently ignores env, cwd, headers, type and the hub timeouts
+updated: 2026-11-04T02:29:02Z
+---
+
+Found in the k37 design. The config accepts these keys on a 'class' entry and nothing applies them. Either refuse them with a JSON path ('mcpServers.X.env: ...') or document them as ignored. Refusing breaks configs that carry them today (they do nothing) — maintainer question 5 in docs/superpowers/specs/2026-11-03-forked-class-workers-design.md.
+
+Maintainer decision 2026-11-04: refuse the keys that do not apply on a class entry, each with its JSON path. Nothing breaks for users: the hub is unreleased. Done together with k42 (same Config.pm code).
+
+Built in Config.pm (_check_class_entry): a class entry, forked or not, refuses env, cwd, headers and type at mcpServers.X.<key> ('does not apply to a [forked] 'class' entry', plus ', which takes its settings through 'args'' for env/cwd); without hub.fork it also refuses hub.idle_timeout, hub.request_timeout and hub.always_on at mcpServers.X.hub.<key> ('... only with "fork": true'). hub.fork on any non-class entry is refused at mcpServers.X.hub.fork. Tests in t/config.t ('a class entry refuses what it would ignore', 'hub.fork only applies to a class entry', 'a forked class entry, normalized'). No example config in README/docker/t/fixtures carried such keys. Same drift on command (headers/type) and url (env/cwd/args) entries noted on k42 as a proposed card.
+
+Ready for review together with k42: same Config.pm change (_check_class_entry), tests in t/config.t. prove -lr t/ PASS (Files=20, Tests=196).
+
+2026-11-04 02:28 Committed in 9867f69 (Run class entries in forked workers with hub.fork).
