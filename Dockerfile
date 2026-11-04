@@ -19,7 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Resolve the hub's CPAN deps into a relocatable local::lib we copy into the
-# runtime image. Only the cpanfile is needed for this.
+# runtime image. Only the cpanfile is needed for this. The cpanfile's TLS
+# requirement is already met by the official perl image, which ships
+# IO::Socket::SSL and Net::SSLeay (and libssl-dev, zlib1g-dev) in both stages.
 WORKDIR /src
 COPY cpanfile ./
 RUN cpanm --notest --local-lib=/opt/perl5 --installdeps .

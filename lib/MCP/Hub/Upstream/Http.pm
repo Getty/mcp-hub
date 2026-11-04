@@ -4,6 +4,7 @@ use Mojo::Base 'MCP::Hub::Upstream', -signatures;
 
 use MCP::Hub::Manifest;
 use Mojo::IOLoop;
+use Mojo::IOLoop::TLS;
 use Mojo::JSON qw(from_json);
 use Mojo::Promise;
 use Mojo::SSE qw(parse_event);
@@ -40,6 +41,8 @@ sub new ($class, %args) {
   my $self = $class->SUPER::new(%args);
   my $c    = $self->config;
 
+  if (my $reason = $self->_tls_missing) { die "$reason\n" }
+
   $self->{request_timeout} = $c->{request_timeout} if defined $c->{request_timeout};
   $self->{manifest}        = MCP::Hub::Manifest->new(cache_dir => $self->cache_dir);
   $self->{transport}       = ($c->{type} // '') eq 'sse' ? 'sse' : 'http';
@@ -54,6 +57,21 @@ sub new ($class, %args) {
 }
 
 sub transport ($self) { return $self->{transport} }
+
+# An https remote needs TLS in this perl: IO::Socket::SSL 2.009+, unless
+# MOJO_NO_TLS turns it off. Mojo::IOLoop::TLS settles that once, when it is
+# compiled, so no retry, refresh or reload can cure it -- every connect would
+# fail the same way, and the warming fetch's one failure would leave the
+# upstream answering "not ready yet" for good. Returns the reason, with the fix,
+# when TLS is missing; the constructor dies with it, and the hub keeps the entry
+# as a failed upstream that says so.
+sub _tls_missing ($self) {
+  my $url = $self->config->{url};
+  return undef unless defined $url && (Mojo::URL->new($url)->protocol // '') eq 'https';
+  return undef if Mojo::IOLoop::TLS->can_tls;
+  return 'an https url needs TLS, which this perl does not have: install IO::Socket::SSL 2.009 or newer'
+    . ' (cpanm IO::Socket::SSL), leave MOJO_NO_TLS unset, and restart the daemon';
+}
 
 # --- lifecycle -------------------------------------------------------------
 
@@ -476,6 +494,14 @@ in C<mcp-hub status> -- so a permanently dead remote is reported instead of
 reconnected on every call. L<MCP::Hub::Upstream/refresh_p> (C<mcp-hub refresh
 NAME>) clears the failure and tries once more, mirroring the crash-loop handling
 of L<MCP::Hub::Upstream::Stdio>.
+
+An C<https> C<url> needs TLS in the perl the hub runs on: L<IO::Socket::SSL>
+2.009 or newer, which L<Mojolicious> speaks TLS with, and C<MOJO_NO_TLS> unset.
+Without it the constructor dies with a reason that says so, and the hub keeps
+the entry as a C<failed> upstream carrying that reason -- the C<503> from its
+endpoint and the row in C<mcp-hub status> name the fix. A retry or a refresh
+cannot help, because Mojolicious decides about TLS once, at load time: install
+the module and restart the daemon.
 
 =head1 ATTRIBUTES
 

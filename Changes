@@ -83,3 +83,8 @@ Revision history for MCP-Hub
   - A `class` entry refuses `env`, `cwd`, `headers` and `type`, and, unless
     forked, the `hub` timeouts and `always_on`, naming the JSON path,
     instead of silently ignoring them.
+  - IO::Socket::SSL 2.009 is now a hard requirement, for https `url`
+    upstreams and an https `hub.listen`.
+  - An https `url` upstream on a perl without TLS (IO::Socket::SSL missing
+    or older than 2.009, or MOJO_NO_TLS set) is now a failed upstream whose
+    reason names the fix, instead of answering 503 "not ready yet" forever.

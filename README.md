@@ -903,7 +903,11 @@ changed by a reload.
 To run the Docker image you need only Docker (or Podman) — everything else is in
 the image. For the CPAN install: Perl 5.20+,
 [`Mojolicious`](https://metacpan.org/pod/Mojolicious) 9.49+,
-[`MCP`](https://metacpan.org/pod/MCP) ≥ 0.15, `CryptX`, and the pure-Perl
+[`MCP`](https://metacpan.org/pod/MCP) ≥ 0.15, `CryptX`,
+[`IO::Socket::SSL`](https://metacpan.org/pod/IO::Socket::SSL) 2.009+ for TLS —
+`https://` `url` upstreams and an `https://` `hub.listen` (its `Net::SSLeay`
+compiles against the OpenSSL and zlib development files, e.g. Debian's
+`libssl-dev` and `zlib1g-dev`), and the pure-Perl
 [`YAML::PP`](https://metacpan.org/pod/YAML::PP) (loaded only when a YAML config
 is read). No process-management dependencies; everything else is core.
 

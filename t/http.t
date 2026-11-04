@@ -286,4 +286,65 @@ subtest 'sse upstream: an endpoint on another origin is refused' => sub {
   $foreign->{daemon}->stop;
 };
 
+subtest 'an https url without TLS is a failed upstream that names the fix' => sub {
+  # A perl without IO::Socket::SSL 2.009+ (or with MOJO_NO_TLS) cannot speak
+  # https. Before the fix the warming fetch failed once, the upstream went back
+  # to `stopped`, and its endpoint answered 503 "not ready yet" for good -- the
+  # still-fetching meaning, for an upstream that could never fetch anything.
+  # Nothing is contacted here: an upstream that cannot be built never connects.
+  no warnings 'redefine';
+  local *Mojo::IOLoop::TLS::can_tls = sub { 0 };
+
+  my $https = 'https://127.0.0.1:9/mcp';
+  my $built = eval {
+    MCP::Hub::Upstream::Http->new(name => 'remote', config => {type => 'http', url => $https},
+      cache_dir => tempdir->to_string);
+  };
+  is $built, undef, 'the upstream is not built';
+  like $@, qr/^an https url needs TLS\b.*IO::Socket::SSL 2\.009.*cpanm IO::Socket::SSL.*restart the daemon\n\z/,
+    'the reason says what is missing and how to fix it';
+
+  ok eval {
+    MCP::Hub::Upstream::Http->new(name => 'plain', config => {type => 'http', url => $url},
+      cache_dir => tempdir->to_string);
+  }, 'an http url needs no TLS and is built as before' or diag $@;
+
+  my $hub = MCP::Hub->new(hub_config_input => {
+    mcpServers => {remote => {url => $https}, sse => {type => 'sse', url => $https}},
+    hub        => {cache_dir => tempdir->to_string},
+  });
+  $hub->log->level('fatal');
+  $hub->start_background_fetches;
+
+  for my $name (qw(remote sse)) {
+    my $up = $hub->upstreams_by_name->{$name};
+    is $up->state, 'failed', "$name: failed, not stopped";
+    my $row = $up->status_row;
+    is $row->{type}, $name eq 'sse' ? 'sse' : 'http', "$name: the status row keeps its type";
+    like $row->{error}, qr/IO::Socket::SSL 2\.009/, "$name: the status row names the missing module";
+  }
+
+  my $t = Test::Mojo->new($hub);
+  for my $n (1 .. 2) {
+    $t->post_ok('/remote' => json => {jsonrpc => '2.0', id => $n, method => 'tools/list', params => {}})
+      ->status_is(503, "request $n: 503")
+      ->json_like('/error', qr/^upstream 'remote' failed: an https url needs TLS\b.*restart the daemon$/,
+        "request $n: the failed meaning, with the reason")
+      ->json_unlike('/error', qr/not ready yet/, "request $n: not the still-fetching meaning");
+  }
+
+  my $refreshed = _await($hub->refresh_p('remote'));
+  is $refreshed->{remote}{state}, 'failed', 'a refresh cannot cure it: still failed';
+  like $refreshed->{remote}{error}, qr/IO::Socket::SSL/, 'and the refresh result says why';
+
+  # The check keys on TLS, not on the scheme alone: with TLS present the same
+  # https entry is an ordinary upstream that waits for its first call.
+  no warnings 'redefine';
+  local *Mojo::IOLoop::TLS::can_tls = sub { 1 };
+  my $up = MCP::Hub::Upstream::Http->new(name => 'remote', config => {type => 'http', url => $https},
+    cache_dir => tempdir->to_string);
+  is $up->state, 'stopped', 'with TLS an https url is built and nothing is connected yet';
+  ok !$up->placeholder, 'and it is no placeholder';
+};
+
 done_testing;
