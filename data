@@ -1,0 +1,33 @@
+---
+claimed_at: 2026-11-04T03:06:02Z
+claimed_by: mcp-hub-worker
+class: standard
+completed: 2026-11-04T03:06:02Z
+created: 2026-11-03T18:39:34Z
+id: 32
+priority: high
+started: 2026-11-04T02:30:42Z
+status: done
+tags:
+- upstream
+- http
+- tls
+- bug
+title: An https url upstream without IO::Socket::SSL answers 'not ready yet' (503)
+  forever instead of failing
+updated: 2026-11-04T03:06:02Z
+---
+
+Found by mcp-hub-binary-worker during k28. The handshake logs 'IO::Socket::SSL 2.009+ required', but agents keep getting the 503 still-fetching meaning instead of a failed upstream — against the hazard '404/401/503 carry meaning'. Happens in a minimal CPAN install and in the Docker image too: neither cpanfile nor Dockerfile carries IO::Socket::SSL. Related: the open maintainer question whether the standalone binary packs TLS (k28).
+
+From k36 (2026-11-03): the packed binary now always carries IO::Socket::SSL 2.009+, Net::SSLeay with static OpenSSL 3.5.9 and Mozilla::CA, so k32 cannot occur there — CPAN installs still can. Binary worker recommends 'requires IO::Socket::SSL, 2.009' in the cpanfile (Mozilla::CA stays binary-only); then the Docker build stage may need libssl-dev/zlib1g-dev (the local raudssus/mcp-hub:latest already has IO::Socket::SSL 2.099, not from the cpanfile; a fresh build is unchecked). The README 'Requirements' section does not mention IO::Socket::SSL for https.
+
+Maintainer decision 2026-11-04: IO::Socket::SSL becomes a hard requirement ('requires IO::Socket::SSL, 2.009' in the cpanfile); the Docker build stage gets whatever it needs to build Net::SSLeay (check a fresh build). k32 is still fixed so that an https upstream without TLS fails loudly with a clear reason instead of answering 503 forever.
+
+2026-11-04 02:40 Reproduced (MOJO_NO_TLS=1, https url at a local plain TCP listener): state stopped, every tools/list 503 'not ready yet'. Cause: the warming fetch fails once, the upstream goes back to stopped, and _route_server answers 'not ready yet' while no manifest exists; nothing ever retries. Fix: Upstream::Http->new dies when the url is https and Mojo::IOLoop::TLS->can_tls is false, so _build_upstream keeps the entry as a failed placeholder whose reason names the fix (install IO::Socket::SSL 2.009+, leave MOJO_NO_TLS unset, restart). Placeholder rather than an in-object failed state: TLS is a compile-time constant of Mojo::IOLoop::TLS, so no refresh or reload can cure it, and placeholders are the hub's existing 'unbuildable entry' path. Docker: perl:5.40-slim (trixie) already ships IO::Socket::SSL 2.099, Net::SSLeay 1.96, libssl-dev and zlib1g-dev (apt-mark showmanual), as do 5.38-slim, 5.40-slim-bullseye and 5.42.3-slim-trixie, so no apt change, only a comment. Fresh --no-cache build running.
+
+2026-11-04 02:54 Also found (for this board, not fixed): (1) any upstream whose single warming fetch fails stays 'stopped' with no error and answers 503 'not ready yet' indefinitely, because nothing retries until a refresh. Verified with a stdio {command: false} and an http url at a dead local port. k32 fixes only the TLS case, where retrying cannot help anyway. (2) A compose entry with an explicit https url builds its Docker::Http engine with url undef and sets it at start, so the build-time TLS check does not cover it; without TLS it fails at start with Mojo's 'IO::Socket::SSL 2.009+ required' through compose's own failure path. (3) The mcp-hub-runtime skill's Http section does not mention the TLS precondition, which an optional skill update could add.
+
+2026-11-04 02:54 Done in worktree agent-aa4ff9df077c4dd94, uncommitted. cpanfile: requires 'IO::Socket::SSL' => '2.009' (sorted, after CryptX). Upstream::Http->new dies via _tls_missing when the url is https and Mojo::IOLoop::TLS->can_tls is false, so the hub keeps a failed placeholder; the 503 reads "upstream 'X' failed: an https url needs TLS, which this perl does not have: install IO::Socket::SSL 2.009 or newer (cpanm IO::Socket::SSL), leave MOJO_NO_TLS unset, and restart the daemon", and the status row and refresh result carry the same reason. POD on Upstream::Http. README Requirements lists IO::Socket::SSL. Dockerfile: comment only, because the official perl slim images (5.38/5.40/5.40-bullseye/5.42) already ship IO::Socket::SSL, Net::SSLeay, libssl-dev and zlib1g-dev. Verified: t/http.t subtest (can_tls mocked, no network) fails without the fix, passes with it. prove -lr t/ gives Files=20, Tests=198, PASS; skipped: docker-live.t, npx.t (opt-in). DOCKER_BUILDKIT=0 docker build --no-cache exited 0, cpanm found deps Mojolicious, MCP, CryptX, YAML::PP (TLS already satisfied), and in the image IO::Socket::SSL 2.099, can_tls=1, Net::SSLeay 1.96 / OpenSSL 3.5.7. Check image and its layers removed.
+
+2026-11-04 03:05 Committed in 7c2d5db
