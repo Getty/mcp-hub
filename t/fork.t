@@ -170,7 +170,9 @@ subtest 'the worker holds nothing of the hub' => sub {
 
   like proc_status($pid, 'SigCgt'), qr/^0+$/, 'the worker catches no signal';
   ok hex(substr(proc_status($pid, 'SigIgn'), -1)) & 1, 'and ignores HUP';
-  like proc_status($$, 'SigCgt'), qr/[1-9a-f]/, 'while the hub still has its handlers';
+  # The control for the line above: only libev installs signal handlers of its own.
+  like proc_status($$, 'SigCgt'), qr/[1-9a-f]/, 'while the hub still has its handlers'
+    if Mojo::IOLoop->singleton->reactor->isa('Mojo::Reactor::EV');
 };
 
 # libev's default loop reaps every child itself, at top priority, as soon as
