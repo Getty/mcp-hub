@@ -56,6 +56,22 @@ sub start_p ($self) {
 sub stop      ($self) { return $self }
 sub refresh_p ($self) { return Mojo::Promise->resolve($self) }
 
+# A failure the hub decided on from outside: a fetch that left the upstream
+# with no manifest. It goes into the flag the lifecycle subclasses keep their
+# own crash-loop verdict in, so their later state changes -- the exit of a child
+# that was killed after its start gave up, say -- keep it failed, and their
+# refresh_p clears it like any other failure. The reason loses the
+# "upstream NAME: " every rejection starts with: the 503 names it already.
+sub fail ($self, $reason) {
+  my $name = $self->name;
+  ($reason = "$reason") =~ s/\s+\z//;
+  $reason =~ s/^upstream \Q$name\E: //;
+  $self->{failed} = 1;
+  $self->error($reason);
+  $self->state('failed');
+  return $self;
+}
+
 # Resolves once what stop set in motion is over. Only an upstream whose stop
 # has to wait for something outside the process -- a container -- says so.
 sub stopped_p ($self) { return Mojo::Promise->resolve($self) }
@@ -305,7 +321,8 @@ The normalized configuration entry from L<MCP::Hub::Config>.
 
 Why the upstream is C<failed>, as a string, or C<undef>. Set when an entry
 cannot be built at all (an unloadable C<class>, say), when a stdio child
-crash-loops, and when a remote HTTP upstream repeatedly fails to connect;
+crash-loops, when a remote HTTP upstream repeatedly fails to connect, and when
+the hub's fetch of a manifest the upstream never had fails (see L</fail>);
 reported in L</status_row> and in the C<503> body of its endpoint.
 
 =attr hub
@@ -383,6 +400,17 @@ Construct the right subclass for a configuration entry.
 Forward a C<tools/call>, starting the upstream if needed. Always resolves to a
 result hash: the upstream's own result unchanged, or an error result on a
 JSON-RPC error, timeout, crash or failed start.
+
+=method fail
+
+  $up->fail('upstream context7: exited (code 127)');
+
+Mark the upstream C<failed> with the reason, which becomes L</error> without
+the leading C<upstream NAME:>. Stops nothing. L<MCP::Hub> calls it when its
+warming fetch, an C<always_on> start or a refresh of an upstream that has no
+manifest yet fails (see L<MCP::Hub/start_background_fetches>): nothing would
+try again, and the upstream would sit there with nothing to list. As with a
+crash loop, L</start_p> then rejects and only L</refresh_p> clears it.
 
 =method get_prompt
 

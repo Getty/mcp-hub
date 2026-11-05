@@ -347,4 +347,59 @@ subtest 'an https url without TLS is a failed upstream that names the fix' => su
   ok !$up->placeholder, 'and it is no placeholder';
 };
 
+subtest 'a warming fetch that cannot connect is failed, with the reason, until a refresh' => sub {
+  # One failed warming fetch used to leave the upstream `stopped` with no
+  # error, its endpoint answering 503 "not ready yet" -- still fetching -- for
+  # good, though nothing was fetching any more.
+  my $probe = IO::Socket::INET->new(Listen => 5, LocalAddr => '127.0.0.1', LocalPort => 0, ReuseAddr => 1)
+    or plan skip_all => "cannot bind a probe socket: $!";
+  my $dead_port = $probe->sockport;
+  close $probe;
+
+  my $cache = tempdir;
+  my $hub   = MCP::Hub->new(hub_config_input => {
+    mcpServers => {
+      remote => {url => "http://127.0.0.1:$dead_port/mcp"},
+      sse    => {type => 'sse', url => "http://127.0.0.1:$dead_port/sse"},
+    },
+    hub => {cache_dir => "$cache"},
+  });
+  $hub->log->level('fatal');
+  my %up = %{$hub->upstreams_by_name};
+
+  $hub->start_background_fetches;
+  my $deadline = time + 10;
+  Mojo::Promise->timer(0.05)->wait until !(grep { $_->state ne 'failed' } values %up) || time > $deadline;
+  is $up{$_}->state, 'failed', "$_: failed, not stopped" for qw(remote sse);
+  like $up{remote}->error, qr/^Connection refused/, 'http: with the reason';
+  like $up{sse}->error, qr/^connect failed: Connection refused/, 'sse: with the reason';
+
+  my $t = Test::Mojo->new($hub);
+  for my $name (qw(remote sse)) {
+    $t->post_ok("/$name" => json => {jsonrpc => '2.0', id => 1, method => 'tools/list', params => {}})
+      ->status_is(503, "$name: 503")
+      ->json_like('/error', qr/^upstream '$name' failed: \Q@{[$up{$name}->error]}\E$/, "$name: the failed meaning")
+      ->json_unlike('/error', qr/not ready yet/, "$name: not the still-fetching one");
+  }
+
+  my $again = _await($hub->refresh_p('sse'));
+  is $again->{sse}{state}, 'failed', 'a refresh that cannot connect either leaves it failed';
+  like $again->{sse}{error}, qr/Connection refused/, 'and says why';
+
+  # A server on that port: a refresh clears the failure and lists the tools.
+  my $mojo2 = Mojolicious->new;
+  $mojo2->log->level('warn');
+  $mojo2->routes->post('/mcp' => $mcp->to_action({streaming => 1}));
+  my $daemon2 = Mojo::Server::Daemon->new(app => $mojo2, listen => ["http://127.0.0.1:$dead_port"], silent => 1);
+  $daemon2->start;
+
+  my $back = _await($hub->refresh_p('remote'));
+  is $back->{remote}{state}, 'ready', 'a refresh brings it back' or diag explain $back;
+  is $back->{remote}{count}, 2, 'with its tools';
+  is $up{remote}->error, undef, 'and no reason any more';
+  $t->post_ok('/remote' => json => {jsonrpc => '2.0', id => 1, method => 'tools/list', params => {}})->status_is(200);
+
+  $daemon2->stop;
+};
+
 done_testing;

@@ -725,6 +725,48 @@ subtest 'compose: the service must be in the project' => sub {
   is scalar @{calls($fake)}, 1, 'and nothing else was run';
 };
 
+subtest 'in the hub: a warming fetch that fails is failed, with the reason, until a refresh' => sub {
+  # One failed warming fetch used to leave the upstream `stopped` with no
+  # error, its endpoint answering 503 "not ready yet" -- still fetching -- for
+  # good, though nothing was fetching any more.
+  my $fake  = fake_docker(images => \%IMAGES);
+  my $dir   = compose_project(%SERVICES);
+  my $cache = tempdir;
+  push @KEEP, $cache;
+  my $app = MCP::Hub->new(log => $LOG, hub_config_input => hub_config($fake, $cache,
+    later => {docker  => 't/later'},
+    svc   => {compose => $dir, service => 'nope'},
+  ));
+  my $t   = Test::Mojo->new($app);
+  my %up  = %{$app->upstreams_by_name};
+  my $rpc = {jsonrpc => '2.0', id => 1, method => 'tools/list', params => {}};
+
+  $app->start_background_fetches;
+  ok wait_until(sub { !grep { $_->state ne 'failed' } values %up }), 'both warming fetches end in failed'
+    or diag explain {map { $_ => $up{$_}->state } keys %up};
+  like $up{later}->error, qr/^cannot pull t\/later: .*pull access denied/, 'docker: with the reason';
+  like $up{svc}->error, qr/^service 'nope' is not in the compose project/, 'compose: with the reason';
+  for my $name (qw(later svc)) {
+    $t->post_ok("/$name" => json => $rpc)->status_is(503, "$name: 503")
+      ->json_like('/error', qr/^upstream '$name' failed: \Q@{[$up{$name}->error]}\E$/, "$name: the failed meaning")
+      ->json_unlike('/error', qr/not ready yet/, "$name: not the still-fetching one");
+  }
+
+  my ($ok, $res) = await($app->refresh_p('svc'));
+  is $res->{svc}{state}, 'failed', 'compose: a refresh that fails again leaves it failed';
+  like $res->{svc}{error}, qr/^service 'nope'/, 'and says why';
+
+  # The image can be pulled now: a refresh clears the failure and starts it.
+  $fake->{state}->child('registry.json')->spew(encode_json({'t/later' => {kind => 'stdio'}}));
+  ($ok, $res) = await($app->refresh_p('later'));
+  is $res->{later}{state}, 'ready', 'docker: a refresh brings it back' or diag explain $res;
+  is $up{later}->error, undef, 'with no reason left';
+  $t->post_ok('/later' => json => $rpc)->status_is(200);
+
+  await($app->shutdown_p);
+  is_deeply records($fake), [], 'nothing left';
+};
+
 subtest 'compose: what compose config printed never goes into an error' => sub {
   my $fake = fake_docker;
   my $dir  = compose_project(%SERVICES);

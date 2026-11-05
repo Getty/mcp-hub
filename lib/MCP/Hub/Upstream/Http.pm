@@ -61,10 +61,9 @@ sub transport ($self) { return $self->{transport} }
 # An https remote needs TLS in this perl: IO::Socket::SSL 2.009+, unless
 # MOJO_NO_TLS turns it off. Mojo::IOLoop::TLS settles that once, when it is
 # compiled, so no retry, refresh or reload can cure it -- every connect would
-# fail the same way, and the warming fetch's one failure would leave the
-# upstream answering "not ready yet" for good. Returns the reason, with the fix,
-# when TLS is missing; the constructor dies with it, and the hub keeps the entry
-# as a failed upstream that says so.
+# fail the same way. Returns the reason, with the fix, when TLS is missing; the
+# constructor dies with it, and the hub keeps the entry as a failed upstream
+# that says so.
 sub _tls_missing ($self) {
   my $url = $self->config->{url};
   return undef unless defined $url && (Mojo::URL->new($url)->protocol // '') eq 'https';

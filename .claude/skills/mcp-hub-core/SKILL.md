@@ -93,12 +93,17 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
 - **404 vs 401 vs 503 tragen Bedeutung.** Server nicht im Profil → **404** (der Client
   soll nicht erfahren, dass es ihn gibt). Fehlendes/falsches Token in clients mode →
   **401** + `WWW-Authenticate: Bearer`. Upstream ohne erstes Manifest oder `failed` →
-  **503** mit Grund. Admin-API ohne `admin`-Profil → **403**.
+  **503** mit Grund — `not ready yet` nur, solange der Fetch läuft (`starting`).
+  Admin-API ohne `admin`-Profil → **403**.
 - **`failed` ist sichtbar und klebt bis zum expliziten `refresh`.** Ein nicht baubarer
   Eintrag (z. B. `class` nicht ladbar) wird nicht verworfen, sondern durch einen
   Placeholder (`state => 'failed'`, `error`) ersetzt — er bleibt in Status, Setup-Seite,
   `mcp-hub config` und `/all`. Ein stdio-Upstream wird nach 3 Exits in 5 s `failed`;
-  `start_p` lehnt dann ab, nur `refresh_p` räumt Flag und Exit-Historie.
+  `start_p` lehnt dann ab, nur `refresh_p` räumt Flag und Exit-Historie. Scheitert der
+  Warming-Fetch, der `always_on`-Start oder ein `refresh` eines Upstreams **ohne**
+  Manifest, ist er sofort `failed` (`Hub::_fetch_failed` → `Upstream->fail`, dasselbe
+  Flag) — kein Retry, nichts versucht es von selbst wieder; mit Manifest gilt weiter die
+  Crash-Loop-Regel. Der Warm-up überspringt `failed`.
 - **Die Setup-Seite liest das Token ausschließlich aus `Authorization: Bearer`.** Kein
   `?token=`, kein Form-POST, keine `POST /`-Route; das Login-Formular ist Inline-JS.
   Ohne gültiges Token rendert clients mode nur das Formular — nie Servernamen.
@@ -164,7 +169,7 @@ Pfad-`stat`, Intervall = Hub-Attribut `auto_reload_interval`), `POST /_hub/reloa
 - **profiles/clients/public_profile werden in place getauscht** (`auth->config($new)`);
   `Auth::last_seen` lebt auf `Auth`, nicht auf der Config, dann `notify_list_changed`.
 - **Broken Placeholder wird bei jedem Reload neu versucht**; ein crash-gelooptes stdio-
-  `failed` nicht — dort bleibt `refresh` der Weg zurück.
+  `failed` oder ein gescheiterter erster Fetch nicht — dort bleibt `refresh` der Weg zurück.
 - `hub.listen`/`hub.cache_dir` sind nicht live anwendbar → Warnung in der Summary; der
   Config-Pfad wird beim Start festgehalten, der Default-Lookup läuft nur einmal.
 

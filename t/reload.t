@@ -469,6 +469,36 @@ PERL
   shift @INC;
 };
 
+subtest 'a failed warming fetch is left alone by a reload, like a crash loop' => sub {
+  my $dir  = tempdir;
+  my $flag = $dir->child('up');
+  my $file = $dir->child('config.json');
+  # Exits 1 until the flag file exists, and is echo.pl from then on.
+  write_config($file, {
+    mcpServers => {gated => {command => $^X, args => ['-e', 'exit 1 unless -e $ARGV[0]; exec $^X, "-Ilib", $ARGV[1]', "$flag", $ECHO]}},
+    hub        => {cache_dir => $dir->child('cache')->to_string},
+  });
+  my $app = MCP::Hub->new(hub_config_input => "$file");
+  $app->log->level('fatal');
+  my $up = $app->upstreams_by_name->{gated};
+  $app->start_background_fetches;
+  my $deadline = time + 10;
+  settle(0.05) until $up->state eq 'failed' || time > $deadline;
+  is $up->state, 'failed', 'its warming fetch failed';
+  ok !$up->placeholder, 'a genuine upstream, not a placeholder';
+
+  # The cause is gone, but the entry is unchanged: a reload must not restart
+  # it -- that is what a refresh is for.
+  $flag->spurt('');
+  my $started = $up->stats->{started_at};
+  my $summary = $app->reload;
+  is_deeply $summary->{unchanged}, ['gated'], 'the reload leaves it unchanged';
+  is refaddr($app->upstreams_by_name->{gated}), refaddr($up), 'the very same upstream';
+  settle(0.3);
+  is $up->state, 'failed', 'still failed';
+  is $up->stats->{started_at}, $started, 'and nothing was started';
+};
+
 subtest 'the reload endpoint is admin-only' => sub {
   my $dir  = tempdir;
   my $file = $dir->child('config.json');

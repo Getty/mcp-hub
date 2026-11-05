@@ -415,13 +415,15 @@ the reason.
 
 - **A server answers `503`.** It is either still fetching its first manifest
   (just retry) or it has `failed`. A server fails when its entry cannot be built
-  — a `class` that does not load, for instance — or when its process exits three
-  times within five seconds. A broken entry never takes the hub down and never
+  (a `class` that does not load, for instance), when the fetch of its first
+  manifest fails (a `command` that does not run, a `url` nothing answers on), or
+  when its process exits three times within five seconds. Nothing retries a
+  failed server on its own. A broken entry never takes the hub down and never
   silently disappears: it stays in `status`, on the setup page and in
   `mcp-hub config`, and says why.
 - **Bringing a `failed` server back.** Fix the cause, then `mcp-hub refresh NAME`
   (or the `hub_refresh` tool). An ordinary tool call deliberately does *not*
-  restart a crash-looping server; it returns an error that names the refresh
+  restart a `failed` server; it returns an error that names the refresh
   command.
 - **Seeing what a child process prints.** A stdio server's stderr is logged at
   `debug`, prefixed with `[name]`; unexpected exits are logged at `warn` and name

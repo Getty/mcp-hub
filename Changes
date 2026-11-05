@@ -94,3 +94,7 @@ Revision history for MCP-Hub
   - A `command` entry refuses `headers` and any `type` but `stdio`, and a
     `url` entry refuses `env`, `cwd`, `args` and `hub.idle_timeout`, naming the
     JSON path, instead of silently ignoring them.
+  - An upstream whose first manifest fetch fails (at daemon start, as an
+    always_on start, or on a refresh) is now `failed` with the reason, shown in
+    status and in its 503, instead of answering "not ready yet" for good;
+    `mcp-hub refresh` brings it back.

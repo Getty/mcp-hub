@@ -81,7 +81,7 @@ sub refresh_p ($self, $name = undef) {
   my @promises = map {
     my $up   = $_;
     my $done = sub { +{name => $up->name, result => _refresh_result($up)} };
-    $up->refresh_p->then($done)->catch($done);
+    $up->refresh_p->then($done)->catch(sub ($err) { $self->_fetch_failed($up, $err); $done->() });
   } @targets;
 
   return Mojo::Promise->all(@promises)->then(sub (@results) {
@@ -91,9 +91,9 @@ sub refresh_p ($self, $name = undef) {
 }
 
 # What a refresh reports for one upstream: the new tool count, its state, and --
-# when it is failed (an unbuildable placeholder, or a crash-looping child a
-# refresh could not revive) -- the reason, so `mcp-hub refresh` and hub_refresh
-# show it as failed instead of "0 tools".
+# when it is failed (an unbuildable placeholder, a crash-looping child a refresh
+# could not revive, or one whose manifest it could not fetch) -- the reason, so
+# `mcp-hub refresh` and hub_refresh show it as failed instead of "0 tools".
 sub _refresh_result ($up) {
   return {
     count => scalar @{$up->server->tools},
@@ -526,15 +526,30 @@ sub shutdown_p ($self) {
 sub _warm_upstream ($self, $up) {
   return $self if $up->type eq 'perl';    # perl upstreams need no warming
   if ($up->always_on) {
-    $up->start_p->catch(sub ($err) { $self->log->error("$err") });
+    $up->start_p->catch(sub ($err) { $self->log->error("$err"); $self->_fetch_failed($up, $err) });
   }
   elsif (!$up->manifest_fetched_at) {
     # No cached manifest yet: fetch it once in the background, do not wait.
     # A stdio child or a container is stopped again afterwards (lazy); an
-    # http upstream holds no process, so it just stays ready.
+    # http upstream holds no process, so it just stays ready. A fetch that
+    # fails leaves it failed (see _fetch_failed).
     $up->start_p->then(sub ($u) { $u->stop if $LAZY{$u->type} && !$u->always_on })
-      ->catch(sub ($err) { $self->log->error("$err") });
+      ->catch(sub ($err) { $self->log->error("$err"); $self->_fetch_failed($up, $err) });
   }
+  return $self;
+}
+
+# A fetch the hub ran for an upstream that has no manifest yet -- its warming
+# fetch, an always_on start, a refresh -- failed. Nothing would try again: with
+# no tools listed no call ever reaches it, and left `stopped` its endpoint
+# would answer "not ready yet" for good, though nothing is fetching. So the
+# failure is recorded as `failed`, with its reason, and a refresh is the way
+# back, as from a crash loop. An upstream that has a manifest keeps serving it
+# and its next call starts it again, under its own crash-loop rule; one that
+# rule already failed keeps the reason it gave.
+sub _fetch_failed ($self, $up, $err) {
+  return $self if $up->manifest_fetched_at || $up->state eq 'failed';
+  $up->fail($err);
   return $self;
 }
 
@@ -554,8 +569,16 @@ sub _route_server ($self, $c, $name) {
     status => 503)
     if $up->state eq 'failed';
 
-  return $c->render(json => {error => "upstream '$name' is not ready yet"}, status => 503)
-    if $up->type ne 'perl' && !@{$up->server->tools} && !$up->manifest_fetched_at;
+  # No manifest yet: "not ready yet" means its fetch is under way. A fetch that
+  # failed made the upstream failed, above; with none started at all -- a hub
+  # whose background fetches were never kicked off -- the answer says so
+  # instead of claiming one is coming.
+  if ($up->type ne 'perl' && !@{$up->server->tools} && !$up->manifest_fetched_at) {
+    return $c->render(json => {error => "upstream '$name' is not ready yet"}, status => 503)
+      if $up->state eq 'starting';
+    return $c->render(json => {error => "upstream '$name' has no tool list yet, run 'mcp-hub refresh $name' to fetch it"},
+      status => 503);
+  }
 
   return $up->action->($c);
 }
@@ -867,6 +890,9 @@ Re-fetch upstream manifests (all, or one by name) and resolve to a
 C<< { name => { count, state, error } } >> hash reference: the new tool count
 and state of each refreshed upstream, plus C<error> with the reason when it is
 C<failed> -- so a failed upstream reports its failure rather than C<0> tools.
+The refresh of an upstream that has no manifest yet and cannot fetch one leaves
+it C<failed> with the reason (L<MCP::Hub::Upstream/fail>); one that has a
+manifest keeps it.
 
 =method rebuild_aggregate
 
@@ -915,8 +941,8 @@ reload keeps too.
 
 =item B<a broken placeholder> -- always built again, even when its entry did not
 change, because it holds no process (L<MCP::Hub::Upstream/placeholder>). A
-genuinely failed upstream, a crash-looping child say, is left alone; L</refresh_p>
-is the way back from that.
+genuinely failed upstream -- a crash-looping child, or one whose first manifest
+fetch failed -- is left alone; L</refresh_p> is the way back from that.
 
 =back
 
@@ -945,7 +971,11 @@ reload already queued, so signals and file events can never race.
 Start any C<always_on> upstreams and kick off a one-off background manifest
 fetch for every stdio, HTTP, C<docker> and C<compose> upstream without a cached
 manifest (a stdio child or a container is stopped again right afterwards).
-Called by the C<daemon> command, so that C<config>, C<status>, C<token> and
+Nothing tries again on its own: a fetch, or an C<always_on> start, that fails
+while the upstream has no manifest leaves it C<failed> with the reason
+(L<MCP::Hub::Upstream/fail>), its path answers C<503> with it, and
+L</refresh_p> is the way back. A failed placeholder is skipped. Called by the
+C<daemon> command, so that C<config>, C<status>, C<token> and
 C<refresh> never spawn a child just by loading the application.
 
 =method shutdown_p
