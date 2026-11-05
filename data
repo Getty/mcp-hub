@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-11-05T23:57:58Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-05T23:57:58Z
+created: 2026-11-04T01:42:12Z
+id: 44
+priority: low
+started: 2026-11-05T23:15:36Z
+status: done
+tags:
+- binary
+- fork
+title: 'Packed hub: smoke a forked worker of a native class'
+updated: 2026-11-05T23:57:58Z
+---
+
+After the forked-class-workers implementation: fork a native class from the packed binary, check that a lazy require in the worker reads the PAR archive through its reopened fds and that the hub's archive fd offset is unmoved (design, 'The packed binary'). Lane: mcp-hub-binary-worker.
+
+From k42: lib/MCP/Hub/Upstream/Fork.pm is a new upstream class dispatched through %IMPL — it must be in the packed module set (scripts/loaded-modules.pl) and verify's required list, not only in this smoke.
+
+2026-11-05 23:29 Fork already in the packed set: lib/MCP/Hub.pm:13 'use MCP::Hub::Upstream::Fork' (pp scanner sees it) and scripts/loaded-modules.pl requires every lib/ module (verify requires that list in the archive). Built a dev-box binary (PAR::Packer 1.064, PAR 1.021) from HEAD in the scratchpad. Findings: (1) the packed hub holds 2 fds on its binary: fd 3 (no CLOEXEC, loader) and fd 5 (par.pl's _FH, CLOEXEC). (2) A lazy require does NOT read through them: PAR 1.021 unpacks the whole archive into PAR_TEMP/inc at first start and @INC is inc/lib first; a fallback member read opens the binary by name per read (Archive::Zip FileMember::fh). In the worker 'require YAML::PP' came from PAR_TEMP/inc/lib/YAML/PP.pm with the archive fds' offsets unchanged. (3) The hub's first fork() of any kind moves fd 5 once (14282066 -> 6027650): perl flushes all handles before fork and _FH still holds read-ahead, so PerlIO seeks back. Hub's own doing, not the worker's. Plan: smoke asserts reopened fds at the hub's offsets in the daemon, plus an eval probe whose worker does a lazy require and a seek+read on every archive fd, hub offsets unmoved.
+
+2026-11-05 23:43 Smoke extended (scripts/smoke-binary.sh): daemon run 2 mounts 'forked' = ClaudeHistory on t/fixtures/claude with hub.fork; asserts tools/list without a worker, tools/call through mcp-hub-worker forked (child of the hub), the worker holds the hub's archive fds (same numbers, on the binary, same offsets), a second call goes to the same worker and leaves the hub's offsets, status shows PSS_KB, worker gone after SIGTERM; off Linux it asserts the 'hub.fork needs Linux' refusal. Then an eval probe (Linux): Probe class via Upstream::Fork, the worker requires YAML::PP (not loaded in the hub) -> from PAR_TEMP/inc; then lseek+read on every archive fd: worker offsets move, hub's stay (compared with the offsets at the fork). Negative check: with _reopen_file stubbed to share descriptions, the probe FAILs (hub offsets 3:4 5:4). loaded-modules.pl: forked entry added to the daemon round trip on Linux (set unchanged, 291 modules, diff vs HEAD output empty). README binary section: one sentence on hub.fork with the natives. Results on a dev-box build: verify: OK; smoke: OK on host and in debian:trixie-slim with perl removed and --network none; check-binary-libs FAILs as expected for a dev-box build (host libcrypt/libssl/libz/libzstd, glibc 2.38).
+
+2026-11-05 23:44 Also found (out of scope, for the dispatcher): (A) exec'd stdio children inherit the hub's LISTENING socket -- Mojo::IOLoop::Server creates it under 'local $^F = 1023' (no CLOEXEC, for hot deployment) and Upstream::Stdio's child does not close fds >2 before exec; seen with perl -Ilib and packed (echo.sh fd 4 = listen inode of :28733). A child outliving a crashed hub keeps the port. Packed only, the child also inherits fd 3 on the mcp-hub binary (loader fd without CLOEXEC). lib/ -> mcp-hub-worker. (B) The forked-class-workers design, 'The packed binary' / Archive fds, says a lazy require in a worker reads through the archive fds -- not with PAR 1.021 (requires read PAR_TEMP/inc; member reads open the binary afresh); the reopen rule still holds and is now smoke-checked. (C) The binary-worker agent text says $^X under PAR is the binary -- in this build $^X is the literal 'perl' and /proc/self/exe is PAR_TEMP/mcp-hub; no $^X in lib/ or bin/ today. (D) t/fixtures/binary/config.* (verify's 'every kind of entry' config) has no hub.fork entry.
+
+2026-11-05 23:44 Done, commit-ready, not committed. Changed: scripts/smoke-binary.sh (forked native in daemon run 2 + Linux eval probe: lazy require in the worker, own archive-fd descriptions, hub offsets unmoved after the fork), scripts/loaded-modules.pl (forked entry in the daemon round trip on Linux, %IMPL comment; module set unchanged), README.md binary section (one sentence, the hunk after the stdio-perl example at ~l.183; the hunks at ~l.834ff are k46's). Fork in the packed set: lib/MCP/Hub.pm:13 use + the lib/ walk in loaded-modules.pl; lib/MCP/Hub/Upstream/Fork.pm is in the archive. Verified on a dev-box build from HEAD + these scripts (scratchpad, PAR::Packer 1.064): verify-binary.sh -> verify: OK (291 modules); smoke-binary.sh -> smoke: OK on the host and in debian:trixie-slim with perl removed, --network none, SMOKE_NO_PERL=1; probe FAILs with _reopen_file stubbed (proves the check can fail); check-binary-libs.sh FAILs as expected for a dev-box build. prove -lr t/ in the checkout (with k46's in-flight edits): PASS, 22 files 213 tests; skipped: docker-live, npx, wiki-live (env-gated). Not run: macOS branch of the smoke (refusal check) and the off-Linux path of loaded-modules.pl.
+
+Committed as 050e07c
