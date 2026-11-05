@@ -525,6 +525,10 @@ sub shutdown_p ($self) {
 
 sub _warm_upstream ($self, $up) {
   return $self if $up->type eq 'perl';    # perl upstreams need no warming
+  # A failed upstream -- the placeholder of an entry that could not be built --
+  # has nothing to fetch: its start would only reject with the build error,
+  # which was logged when it was built.
+  return $self if $up->state eq 'failed';
   if ($up->always_on) {
     $up->start_p->catch(sub ($err) { $self->log->error("$err"); $self->_fetch_failed($up, $err) });
   }

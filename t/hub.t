@@ -3,6 +3,7 @@ use Mojo::Base -strict, -signatures;
 use Test::More;
 use Test::Mojo;
 use Mojo::File    qw(curfile tempdir);
+use Mojo::Log;
 use Mojo::Promise;
 use MCP::Hub;
 use MCP::Client;
@@ -325,6 +326,30 @@ subtest 'refresh via the admin API' => sub {
   $t->post_ok('/_hub/refresh' => json => {})->status_is(200)
     ->json_is('/history/count', 4)->json_is('/history/state', 'ready')
     ->json_is('/broken/state', 'failed')->json_like('/broken/error', qr/No::Such::Class/);
+};
+
+subtest 'the build error of a placeholder is logged once' => sub {
+  # The warm-up used to call start_p on the failed placeholder of a non-perl
+  # entry (here a forked class), and that rejection logged the build error a
+  # second time.
+  my @log;
+  my $log = Mojo::Log->new(level => 'debug');
+  $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @log, "$level: @lines" });
+  my $cache = tempdir;
+  my $app   = MCP::Hub->new(log => $log, hub_config_input => {
+    mcpServers => {broken => {class => 'No::Such::Forked::Class', hub => {fork => \1}}},
+    hub        => {cache_dir => "$cache"},
+  });
+  my $up = $app->upstreams_by_name->{broken};
+  ok $up->placeholder, 'the entry is a placeholder';
+  is $up->type, 'fork', 'of a type that is warmed';
+
+  $app->start_background_fetches;
+  Mojo::Promise->timer(0.2)->wait;
+  my @logged = grep { index($_, $up->error) >= 0 } @log;
+  is scalar @logged, 1, 'its build error is logged exactly once' or diag explain \@log;
+  like $logged[0], qr/^error: failed to build upstream broken: /, 'when it was built';
+  is $up->state, 'failed', 'and it stays failed';
 };
 
 subtest 'config command output' => sub {

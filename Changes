@@ -98,3 +98,4 @@ Revision history for MCP-Hub
     always_on start, or on a refresh) is now `failed` with the reason, shown in
     status and in its 503, instead of answering "not ready yet" for good;
     `mcp-hub refresh` brings it back.
+  - The build error of a broken non-Perl entry is logged once, not twice.
