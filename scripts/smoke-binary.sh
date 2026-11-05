@@ -10,8 +10,11 @@
 # upstream's manifest once, the second serves tools/list from that cache without
 # starting it, starts it on tools/call (t/upstream/echo.sh, a stdio MCP server in
 # POSIX sh), answers a native and a remote HTTP upstream and Mojolicious' 404 page,
-# and leaves no child behind on SIGTERM. Then TLS, with no curl or openssl on the
-# host -- the binary is every client: a hub listening on https with the test
+# runs a native in a forked worker (hub.fork; on Linux, elsewhere it checks the
+# refusal) and leaves no child behind on SIGTERM. On Linux a probe class then checks
+# a forked worker's lazy require and that its archive fds are its own: a read on
+# them leaves the hub's offsets where they were. Then TLS, with no curl or openssl
+# on the host -- the binary is every client: a hub listening on https with the test
 # certificate (t/fixtures/binary/tls), verified through SSL_CERT_FILE and refused
 # without it, which trust store the binary finds on this host and that it verifies
 # a real chain there (Let's Encrypt's R11, a fixture, at a fixed time, offline), and
@@ -94,6 +97,8 @@ cat >"$work/hub.json" <<JSON
 {"mcpServers": {
    "echo":    {"command": "sh", "args": ["$root/t/upstream/echo.sh", "$marker"]},
    "history": {"class": "MCP::Hub::Native::ClaudeHistory", "args": {"root": "$root/t/fixtures/claude"}},
+   "forked":  {"class": "MCP::Hub::Native::ClaudeHistory", "args": {"root": "$root/t/fixtures/claude"},
+               "hub": {"fork": true}},
    "hub":     {"class": "MCP::Hub::Native::Status"},
    "remote":  {"url": "http://127.0.0.1:$port/history"},
    "boxed":   {"docker": "example/mcp-server:1"}},
@@ -172,11 +177,67 @@ echo "tools/call /remote (HTTP upstream): OK"
 out=$(mcp hub tools/call '{"name":"hub_status","arguments":{}}')
 grep -q 'upstreams' <<<"$out" || fail "tools/call hub_status: $(printf '%s' "$out" | tail -n 1 | head -c 300)"
 echo "tools/call /hub (native Status): OK"
+
+# A native in a forked worker (hub.fork): the packed hub forks itself, with no exec,
+# so the worker is the binary's own perl. Linux only -- the worker's fd isolation
+# reads /proc/self/fd; elsewhere the entry is a failed one and the hub runs on.
+fork_pid=
+# The forked entry's row of /_hub/status, on one line.
+forked_row() { http GET /_hub/status | grep -o '{[^{}]*"name":"forked"[^{}]*}' || true; }
+if [ -d /proc/self/fd ]; then
+  self=$(readlink -f "$BIN")
+  # archive_fds PID: "fd:offset ..." for each fd PID holds open on the binary -- the
+  # handles PAR keeps on its archive.
+  archive_fds() {
+    local fd out=
+    for fd in /proc/"$1"/fd/*; do
+      [ "$(readlink "$fd" 2>/dev/null)" = "$self" ] || continue
+      out="$out ${fd##*/}:$(sed -n 's/^pos:[[:space:]]*//p' "/proc/$1/fdinfo/${fd##*/}")"
+    done
+    printf '%s\n' "${out# }"
+  }
+  worker_pid() { forked_row | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p'; }
+  out=$(mcp forked tools/list)
+  grep -q '"name":"list_projects"' <<<"$out" || fail "tools/list on /forked: $(printf '%s' "$out" | tail -n 1 | head -c 300)"
+  [ -z "$(worker_pid)" ] || fail "tools/list on /forked forked a worker (lazy start broken)"
+  echo "tools/list /forked (hub.fork, native ClaudeHistory): OK, listed by the class in the hub, no worker"
+  out=$(mcp forked tools/call '{"name":"list_projects","arguments":{}}')
+  grep -q 'proj-a' <<<"$out" || fail "tools/call on /forked: $(printf '%s' "$out" | tail -n 3 | head -c 300)"
+  fork_pid=$(worker_pid)
+  [ -n "$fork_pid" ] || fail "tools/call on /forked answered, but the status shows no worker"
+  case "$(tr '\0' ' ' <"/proc/$fork_pid/cmdline")" in
+    "mcp-hub-worker forked"*) ;;
+    *) fail "the worker (pid $fork_pid) runs as '$(tr '\0' ' ' <"/proc/$fork_pid/cmdline" | head -c 100)'" ;;
+  esac
+  [ "$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$fork_pid/status")" = "$daemon_pid" ] \
+    || fail "the worker (pid $fork_pid) is no child of the hub (pid $daemon_pid)"
+  echo "tools/call /forked: OK, answered by mcp-hub-worker forked (pid $fork_pid), forked from the hub"
+  # The worker inherited the hub's archive fds and reopened each one: the same fd
+  # numbers, still on the binary (not /dev/null), at the hub's offsets. A second call
+  # goes to the same worker and moves none of them.
+  hub_fds=$(archive_fds "$daemon_pid")
+  [ -n "$hub_fds" ] || fail "the hub holds no fd on its own binary ($self): the archive checks prove nothing"
+  [ "$(archive_fds "$fork_pid")" = "$hub_fds" ] \
+    || fail "the worker's archive fds ($(archive_fds "$fork_pid")) are not the hub's ($hub_fds)"
+  out=$(mcp forked tools/call '{"name":"list_sessions","arguments":{"project":"/home/tester/proj-a"}}')
+  grep -q 'Debug the widget renderer' <<<"$out" || fail "a second tools/call on /forked: $(printf '%s' "$out" | tail -n 3 | head -c 300)"
+  [ "$(worker_pid)" = "$fork_pid" ] || fail "the second call did not go to worker $fork_pid (now: '$(worker_pid)')"
+  [ "$(archive_fds "$daemon_pid")" = "$hub_fds" ] || fail "the hub's archive offsets moved: $hub_fds -> $(archive_fds "$daemon_pid")"
+  echo "archive fds: OK (the worker holds the hub's fds on the binary, $hub_fds, none on /dev/null; a second call moved none)"
+else
+  grep -q 'hub.fork needs Linux' <<<"$(forked_row)" \
+    || fail "hub.fork on $(uname -s): /forked is not failed with 'hub.fork needs Linux': $(forked_row)"
+  echo "hub.fork on $(uname -s): refused as documented (Linux only), the hub runs on"
+fi
 out=$(http GET /no/such/route) || true
 grep -q 'Page Not Found' <<<"$out" || fail "the 404 page (Mojolicious resources) did not render"
 echo "404 page (packed Mojolicious templates): OK"
 "$BIN" --config "$work/hub.json" status >"$work/status" 2>"$work/err" || fail "status: $(cat "$work/err")"
 grep -Eq '^echo +stdio +ready' "$work/status" || fail "status does not show echo ready: $(cat "$work/status")"
+if [ -n "$fork_pid" ]; then
+  grep -Eq "^forked +fork +ready +$fork_pid +[0-9]+ +[0-9]+ " "$work/status" \
+    || fail "status does not show the forked worker with its PSS_KB: $(grep '^forked' "$work/status")"
+fi
 echo "status command: OK"
 grep -q "\[boxed\] cannot start: .*no-such-docker' not found" "$work/daemon1.log" \
   || fail "the docker upstream did not report its missing CLI"
@@ -184,7 +245,106 @@ echo "docker upstream: OK (reports the missing docker CLI, the hub runs on)"
 stop_daemon
 sleep 0.5
 if kill -0 "$echo_pid" 2>/dev/null; then fail "echo (pid $echo_pid) outlived the daemon"; fi
-echo "daemon run 2: OK (SIGTERM stopped the hub and its stdio child)"
+if [ -n "$fork_pid" ] && kill -0 "$fork_pid" 2>/dev/null; then fail "the forked worker (pid $fork_pid) outlived the daemon"; fi
+echo "daemon run 2: OK (SIGTERM stopped the hub, its stdio child${fork_pid:+ and its forked worker})"
+
+# --- a forked worker's lazy require and archive fds (Linux) ------------------------
+# What the daemon cannot show: a worker loading a module the hub never loaded, and a
+# worker reading through its archive fds. The packed perl keeps two fds open on the
+# binary -- the loader's and PAR's bootstrap handle -- and a worker inherits both; the
+# reopen rule gives it an open file description of its own for each, so a read in
+# the worker never moves the hub's offset. The probe class lives only in this eval
+# and is mounted the way hub.fork mounts one: listed in the hub, called in a worker.
+#
+# With PAR 1.021 a require reads the copy of the archive PAR unpacked into
+# PAR_TEMP/inc at the first start, not these fds -- the info line says which. So the
+# worker also seeks and reads on each archive fd, as Archive::Zip does on a member,
+# and the hub's offsets must not follow. They are compared with the offsets at the
+# fork: perl flushes every handle before a fork, PAR's bootstrap handle still holds
+# read-ahead, so the hub's own first fork (any fork) moves that offset once.
+if [ -d /proc/self/fd ]; then
+  timeout 60 "$BIN" eval '
+    use Mojo::Base -strict, -signatures;
+    use Mojo::File qw(path);
+    use Mojo::JSON qw(decode_json encode_json);
+    use MCP::Hub::Upstream::Fork;
+    use POSIX ();
+
+    my $SELF = path($ENV{PAR_PROGNAME})->realpath->to_string;
+
+    # "fd:offset ..." for each fd PID holds open on the binary.
+    sub archive_fds ($pid) {
+      opendir my $dh, "/proc/$pid/fd" or die "/proc/$pid/fd: $!\n";
+      my @fds;
+      for my $fd (sort { $a <=> $b } grep {/^\d+$/} readdir $dh) {
+        next unless (readlink("/proc/$pid/fd/$fd") // "") eq $SELF;
+        open my $info, "<", "/proc/$pid/fdinfo/$fd" or next;
+        my ($pos) = map { /^pos:\s+(\d+)/ ? $1 : () } <$info>;
+        push @fds, "$fd:$pos";
+      }
+      return join " ", @fds;
+    }
+
+    package Probe {
+      use Mojo::Base "MCP::Server", -signatures;
+      sub new ($class, @args) {
+        my $self = $class->SUPER::new(@args);
+        $self->tool(name => "probe", description => "a lazy require, then a read on each archive fd",
+          code => sub ($tool, $args) {
+            my $hub = getppid;
+            my %r = (hub => main::archive_fds($hub), mine => main::archive_fds($$),
+                     preloaded => $INC{"YAML/PP.pm"} ? 1 : 0);
+            require YAML::PP;
+            $r{yaml}          = YAML::PP->new->load_string("k: v\n")->{k};
+            $r{from}          = $INC{"YAML/PP.pm"};
+            $r{after_require} = main::archive_fds($$);
+            for my $fd (map { (split /:/)[0] } split / /, $r{mine}) {
+              POSIX::lseek($fd, 0, POSIX::SEEK_SET()) // die "lseek $fd: $!\n";
+              POSIX::read($fd, my $buf, 4)            // die "read $fd: $!\n";
+            }
+            $r{after_read}     = main::archive_fds($$);
+            $r{hub_after_read} = main::archive_fds($hub);
+            return Mojo::JSON::encode_json(\%r);
+          });
+        return $self;
+      }
+    }
+
+    package main;
+    die "YAML::PP is loaded in the hub already: the require in the worker would not be lazy\n"
+      if $INC{"YAML/PP.pm"};
+    my $up = MCP::Hub::Upstream::Fork->new(name => "probe", config => {type => "fork", class => "Probe"});
+    $up->server;
+    my $res;
+    $up->call_tool("probe", {})->then(sub ($r) { $res = $r })->catch(sub ($e) { $res = {error => "$e"} })->wait;
+    my $hub_after = archive_fds($$);
+    $up->stop;
+    die "tools/call probe: $res->{error}\n" if $res->{error};
+    my $r = decode_json($res->{content}[0]{text});
+    (my $moved = $r->{mine}) =~ s/:\d+/:4/g;
+    say !$r->{preloaded} && ($r->{yaml} // "") eq "v" && index($r->{from} // "", "$ENV{PAR_TEMP}/") == 0
+      ? "lazy require in the worker: YAML::PP, not loaded in the hub, read from the unpacked archive"
+      : "FAIL lazy require: preloaded=$r->{preloaded} yaml=" . ($r->{yaml} // "undef") . " from=" . ($r->{from} // "undef");
+    say length $r->{mine} && $r->{mine} eq $r->{hub}
+      ? "archive fds in the worker: the hub fd numbers, at the hub offsets"
+      : "FAIL archive fds: worker [$r->{mine}], hub [$r->{hub}]";
+    say $r->{after_read} eq $moved && $r->{hub_after_read} eq $r->{hub}
+      ? "a read on each moved the worker offsets only: descriptions of its own"
+      : "FAIL own descriptions: worker after its reads [$r->{after_read}], want [$moved]; hub [$r->{hub}] then [$r->{hub_after_read}]";
+    say $hub_after eq $r->{hub}
+      ? "the hub offsets after the call: as at the fork"
+      : "FAIL hub after the call: [$r->{hub}] then [$hub_after]";
+    say "info: archive fds $r->{hub}; the require read ",
+      $r->{after_require} eq $r->{mine} ? "nothing through them" : "through them ([$r->{mine}] to [$r->{after_require}])";
+  ' >"$work/out" 2>"$work/err" || fail "fork probe: $(cat "$work/out") $(grep -v 'forked a worker' "$work/err" | tail -n 3)"
+  want="lazy require in the worker: YAML::PP, not loaded in the hub, read from the unpacked archive
+archive fds in the worker: the hub fd numbers, at the hub offsets
+a read on each moved the worker offsets only: descriptions of its own
+the hub offsets after the call: as at the fork"
+  [ "$(grep -v '^info: ' "$work/out")" = "$want" ] || fail "fork probe: $(cat "$work/out")"
+  sed 's/^/fork probe: /' "$work/out"
+  echo "fork probe: OK"
+fi
 
 # --- TLS ---------------------------------------------------------------------------
 # The binary is the only TLS client on this host: `mcp-hub get` (Mojolicious' get

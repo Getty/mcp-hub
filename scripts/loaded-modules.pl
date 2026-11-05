@@ -105,6 +105,9 @@ $ENV{HOME} = "$tmp/home";
 mkdir $ENV{HOME} or die $!;
 
 # The dist's own modules, from the checkout (an installed MCP::Hub may be older).
+# All of them, so every upstream class MCP::Hub::Upstream picks by name through
+# %IMPL (Stdio, Http, Perl, Fork, Docker, Compose) is in the set, whatever the
+# round trip below happens to exercise.
 my %mods;
 path( $root, 'lib' )->list_tree->each( sub {
   return unless /\.pm\z/;
@@ -144,7 +147,11 @@ my $tls_listen = "$tls?cert=$tls_dir/server.crt&key=$tls_dir/server.key";
 
 # Every kind of entry: stdio, the three natives, a remote HTTP upstream (the hub's
 # own /history, over https), a container and a compose service (their docker CLI
-# does not exist, so they fail fast without touching a container engine).
+# does not exist, so they fail fast without touching a container engine), and on
+# Linux a native in a forked worker (hub.fork needs /proc/self/fd; elsewhere the
+# entry would only be a failed placeholder). What a worker loads after the fork
+# stays in the worker; its tool code is the in-process history's, which loads here.
+my $fork = -d '/proc/self/fd';
 my $yaml = <<"YAML";
 # the daemon's configuration, as YAML: YAML::PP loads in the daemon too
 mcpServers:
@@ -155,6 +162,10 @@ mcpServers:
   remote:   {url: '$tls/history'}
   boxed:    {docker: 'example/mcp-server:1'}
   stack:    {compose: '$tmp', service: mcp}
+YAML
+$yaml .= "  forked:   {class: MCP::Hub::Native::ClaudeHistory, args: {root: '$claude'}, hub: {fork: true}}\n"
+  if $fork;
+$yaml .= <<"YAML";
 hub:
   listen: '$listen'
   cache_dir: '$tmp/cache'
@@ -263,11 +274,12 @@ sub mcp {
 if ($up) {
   expect( "tools/list $_->[0]", mcp( $_->[0], 'tools/list' ), $_->[1] )
     for ( [ history => qr/list_projects/ ], [ sessions => qr/"name":"\w/ ], [ hub => qr/hub_status/ ],
-          [ echo => qr/"echo"/ ], [ remote => qr/list_projects/ ], [ all => qr/echo__echo/ ] );
+          [ echo => qr/"echo"/ ], [ remote => qr/list_projects/ ], [ all => qr/echo__echo/ ],
+          $fork ? [ forked => qr/list_projects/ ] : () );
   expect( 'tools/call echo', mcp( 'echo', 'tools/call', { name => 'echo', arguments => { msg => 'hi there' } } ),
     qr/hi there/ );
   expect( "tools/call $_ list_projects", mcp( $_, 'tools/call', { name => 'list_projects', arguments => {} } ),
-    qr/proj-a/ ) for qw( history remote );
+    qr/proj-a/ ) for ( qw( history remote ), $fork ? 'forked' : () );
   expect( 'tools/call hub_status', mcp( 'hub', 'tools/call', { name => 'hub_status', arguments => {} } ),
     qr/upstreams/ );
   expect( 'tools/call all echo__echo',

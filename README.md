@@ -180,6 +180,10 @@ page — with these differences:
   shows up as `failed` with `cannot load class …`. Use the CPAN install for those,
   or, with a Perl on the machine, mount them as a stdio upstream instead:
   `{"command": "perl", "args": ["-MMy::Weather", "-e", "My::Weather->new->to_stdio"]}`.
+  `"hub": {"fork": true}` works on the natives as in the CPAN install: on Linux,
+  `ClaudeHistory` and `ClaudeSessions` run their calls in a
+  [forked worker](#forked-class-workers) of the binary; `Status` needs the live hub
+  and is refused.
 - **It replaces Perl, nothing else.** A stdio entry still runs its `command` —
   `npx`, `uvx`, `docker`, … — from the host's `PATH`, and `docker`/`compose`
   entries still need the Docker CLI, exactly as with the CPAN install.

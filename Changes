@@ -99,3 +99,6 @@ Revision history for MCP-Hub
     status and in its 503, instead of answering "not ready yet" for good;
     `mcp-hub refresh` brings it back.
   - The build error of a broken non-Perl entry is logged once, not twice.
+  - Standalone binary: `"hub": {"fork": true}` works with the bundled natives
+    on Linux; the binary smoke now runs one in a forked worker and checks the
+    worker never moves the hub's offsets on the PAR archive.
