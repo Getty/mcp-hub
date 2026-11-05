@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-11-05T23:57:45Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-05T23:57:45Z
+created: 2026-11-04T02:27:45Z
+id: 46
+priority: medium
+started: 2026-11-05T23:15:45Z
+status: done
+tags:
+- config
+- drift
+title: command and url entries silently accept keys that do not apply (headers/type
+  on command; env/cwd/args on url)
+updated: 2026-11-05T23:57:45Z
+---
+
+Found by mcp-hub-worker during k42/k38. k38 closed this drift for class entries only; a command entry still accepts headers and type, and a url entry env, cwd and args, and nothing applies them. Refuse each with its JSON path like _check_class_entry does. The hub is unreleased, so nothing breaks for users.
+
+2026-11-05 23:18 Verified against the readers: Stdio reads command/args/env/cwd only; Http reads url/type/headers; Hub passes idle_timeout only to LAZY types (stdio docker compose fork), so hub.idle_timeout on a url entry is ignored too (Http has no idle stop) -- adding that refusal, same pattern as k38's in-process class hub keys. hub.always_on on url does apply (eager connect at daemon start), request_timeout too. Decision (mine): a command entry keeps accepting type "stdio" -- Claude Code writes "type": "stdio" into .mcp.json (code.claude.com mcp-quickstart / managed-mcp examples), and the config is a superset handed over unchanged; any other type is refused. docker/compose: every allowed key is read, no drift.
+
+2026-11-05 23:23 Also found (drift, not fixed -- for this board's backlog): (1) docs/superpowers/specs/2026-08-25-mcp-hub-design.md 'mcpServers entries' says 'Exactly one of command, class or url' and lists no refusals -- stale since docker/compose and k38/k46; left alone because docs/ is k45's tree right now. (2) skill mcp-hub-core still says 'Genau eines von command, class oder url je Eintrag' (docker/compose missing). (3) skill mcp-hub-runtime 'Die Stellschrauben': the hub-block key list ('kennt genau') lacks docker_command and docker_network. All three are prose/skill text, no behavior.
+
+2026-11-05 23:25 Done, tree commit-ready (not committed). Config.pm: _check_command_entry refuses headers and any type but "stdio" (mcpServers.NAME.headers / .type); _check_url_entry refuses env, cwd, args (mcpServers.NAME.KEY) and hub.idle_timeout (mcpServers.NAME.hub.idle_timeout) -- k38 wording ('KEY' does not apply to a 'KIND' entry, REASON). docker/compose: no drift, unchanged. POD stdio/http items, README entry table, skills mcp-hub-core + mcp-hub-runtime updated. Tests first in t/config.t (2 new subtests, red before, green after; also guards that type stdio on a command, always_on/request_timeout on a url, and env on a compose+url entry still parse). prove -lr t/: Files=22, Tests=206, Result: PASS; skipped opt-in: t/npx.t, t/docker-live.t, t/wiki-live.t. No config in t/, README, docker-compose.yml or bin used a refused key. scripts/loaded-modules.pl in the tree is k44's, not this card's.
+
+Committed as 6717de2
