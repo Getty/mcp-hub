@@ -834,11 +834,11 @@ Exactly one of `command`, `class`, `url`, `docker` or `compose` is required.
 
 | Key | Meaning |
 |---|---|
-| `command`, `args`, `env`, `cwd` | A stdio child, as in `.mcp.json`. `env` is merged over the hub's environment. |
+| `command`, `args`, `env`, `cwd` | A stdio child, as in `.mcp.json`. `env` is merged over the hub's environment. `headers`, and a `type` other than `stdio`, are errors on it. |
 | `class` | A Perl `MCP::Server` subclass, or a class whose instances have a `server` method returning one; loaded and mounted in-process. `env`, `cwd`, `headers` and `type` are errors on it. |
 | `args` (with `class`) | Hash passed to the class's `new` as it is — no `${VAR}`, no `~`. |
 | `hub.fork` (with `class`) | `true` runs the class's calls in a [forked worker](#forked-class-workers) (Linux). An error on any other entry. |
-| `url` | A remote HTTP MCP server. |
+| `url` | A remote HTTP MCP server. `env`, `cwd`, `args` and `hub.idle_timeout` are errors on it: the hub starts no process for it. |
 | `type` (with `url`) | `http` (Streamable HTTP, the default) or `sse` (the older HTTP+SSE transport, e.g. a `…/sse` URL). |
 | `headers` (with `url`) | Extra request headers, such as `{ "Authorization": "Bearer …" }`. |
 | `docker` | An image: a [container](#mcp-servers-in-docker-containers) the hub starts and stops. |

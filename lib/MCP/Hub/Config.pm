@@ -32,6 +32,11 @@ my %ENTRY_HUB_KEYS  = map { $_ => 1 } qw(idle_timeout always_on request_timeout 
 # are about a process of its own, which only a forked class has.
 my @CLASS_REFUSED   = qw(env cwd headers type);
 my @CLASS_PROCESS   = qw(idle_timeout request_timeout always_on);
+
+# A url entry is a remote server: the hub starts no process for it, so there is
+# nothing to hand an environment, a working directory or arguments to, and
+# nothing to stop when it idles.
+my @URL_REFUSED     = qw(env cwd args);
 my %HUB_KEYS        = map { $_ => 1 } qw(listen cache_dir idle_timeout request_timeout profiles clients public_profile
   auto_reload docker_command docker_network);
 
@@ -200,6 +205,7 @@ sub _parse_entry ($self, $name, $entry) {
     $self->_parse_container($kind, $path, $entry, \%out);
   }
   elsif ($kind eq 'command') {
+    $self->_check_command_entry($path, $entry);
     $out{type}    = 'stdio';
     $out{command} = $self->_expand($entry->{command}, "$path.command");
 
@@ -224,6 +230,7 @@ sub _parse_entry ($self, $name, $entry) {
     $out{class_args} = $args;
   }
   else {
+    $self->_check_url_entry($path, $entry, \%hub);
     $out{type} = _http_type($path, $entry->{type});
     $out{url}  = $self->_expand($entry->{url}, "$path.url");
 
@@ -248,6 +255,28 @@ sub _check_class_entry ($self, $path, $entry, $hub, $fork) {
   for my $key (grep { exists $hub->{$_} } @CLASS_PROCESS) {
     _err("$path.hub.$key", "'$key' does not apply to an in-process 'class' entry, only with \"fork\": true");
   }
+  return;
+}
+
+# The keys a command entry would otherwise carry and silently ignore. A type
+# may still say "stdio": Claude Code writes exactly that into a .mcp.json, and
+# a .mcp.json is handed to the hub unchanged.
+sub _check_command_entry ($self, $path, $entry) {
+  _err("$path.headers", "'headers' does not apply to a 'command' entry, which talks to its server over stdio")
+    if exists $entry->{headers};
+  my $type = $entry->{type};
+  _err("$path.type", "'type' does not apply to a 'command' entry, which is always \"stdio\"")
+    if exists $entry->{type} && !(defined $type && !ref $type && $type eq 'stdio');
+  return;
+}
+
+# The keys a url entry would otherwise carry and silently ignore. always_on and
+# request_timeout do apply: the one connects at daemon start, the other bounds
+# each request.
+sub _check_url_entry ($self, $path, $entry, $hub) {
+  my $why = "does not apply to a 'url' entry, a remote server the hub starts no process for";
+  _err("$path.$_", "'$_' $why") for grep { exists $entry->{$_} } @URL_REFUSED;
+  _err("$path.hub.idle_timeout", "'idle_timeout' $why") if exists $hub->{idle_timeout};
   return;
 }
 
@@ -614,13 +643,18 @@ C<class>, C<docker> or C<compose> it carries, and the type-specific keys:
 
 =item C<stdio> (from C<command>)
 
-C<command>, C<args>, C<env> and C<cwd>.
+C<command>, C<args>, C<env> and C<cwd>. C<headers> is an error on it, and so is
+a C<type> other than C<stdio> -- C<"type": "stdio">, which Claude Code writes into
+a F<.mcp.json>, is accepted and changes nothing.
 
 =item C<http> or C<sse> (from C<url>)
 
 C<url> and C<headers>. A C<url> entry is Streamable HTTP unless its C<type> says
 C<sse>, the older HTTP+SSE transport; C<streamable-http> and C<streamable_http>
-are accepted spellings of C<http>.
+are accepted spellings of C<http>. The hub starts no process for a remote
+server, so C<env>, C<cwd> and C<args>, and C<idle_timeout> in its C<hub> block,
+are errors on it rather than silently ignored; C<always_on> (connect at daemon
+start) and C<request_timeout> apply.
 
 =item C<perl> (from C<class>)
 

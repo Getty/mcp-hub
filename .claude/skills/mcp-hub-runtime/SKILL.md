@@ -158,7 +158,7 @@ Der `hub`-Block kennt genau: `listen`, `cache_dir`, `idle_timeout`,
 `request_timeout`, `profiles`, `clients`, `public_profile`, `auto_reload`. Pro
 Server-Eintrag: `idle_timeout`, `always_on`, `request_timeout` und `fork` (im
 `hub`-Block des Eintrags; auf einem In-process-`class`-Eintrag sind die drei
-ersten ein Fehler, `fork` gibt es nur dort). Ein Tippfehler in einem Key fällt beim Start auf, z. B.
+ersten ein Fehler, auf einem `url`-Eintrag `idle_timeout`; `fork` gibt es nur auf `class`). Ein Tippfehler in einem Key fällt beim Start auf, z. B.
 `mcpServers.playwright.hub.idle_timeout`.
 
 ## Test-Hooks

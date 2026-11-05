@@ -126,7 +126,9 @@ YAML ausdrückbar sein.
 `class` oder `url` je Eintrag — bei `class` ist `args` ein Objekt (`class_args`), sonst
 eine Liste. Ein `class`-Eintrag verweigert `env`, `cwd`, `headers` und `type` (er nimmt
 alles über `args`); `hub.idle_timeout`/`request_timeout`/`always_on` gelten nur mit
-`"hub": {"fork": true}` (→ `type: 'fork'`), und `hub.fork` nur auf einem `class`-Eintrag. Ein Profil hat `servers` (Array, Default `['*']`), `tools`
+`"hub": {"fork": true}` (→ `type: 'fork'`), und `hub.fork` nur auf einem `class`-Eintrag. Ein
+`command`-Eintrag verweigert `headers` und jedes `type` außer `stdio` (das Claude Code in
+`.mcp.json` schreibt), ein `url`-Eintrag `env`, `cwd`, `args` und `hub.idle_timeout`. Ein Profil hat `servers` (Array, Default `['*']`), `tools`
 (`{server: {allow: [...], deny: [...]}}`) und `admin`; ein Client hat `token` und
 `profile` (beide Pflicht). Die Schlüsselliste des `hub`-Blocks steht in `mcp-hub-runtime`.
 

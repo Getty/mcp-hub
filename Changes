@@ -91,3 +91,6 @@ Revision history for MCP-Hub
   - `mcp-hub config`, `status`, `refresh` and `reload` no longer carry
     `hub.listen`'s query (`?cert=…&key=…`) into the base URL, so an https
     listen works without `--url`.
+  - A `command` entry refuses `headers` and any `type` but `stdio`, and a
+    `url` entry refuses `env`, `cwd`, `args` and `hub.idle_timeout`, naming the
+    JSON path, instead of silently ignoring them.

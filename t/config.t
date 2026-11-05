@@ -397,6 +397,58 @@ subtest 'a class entry refuses what it would ignore' => sub {
     qr/mcpServers\.x\.args: must be a JSON object for a 'class' upstream/, 'args stays an object when forked';
 };
 
+# --- command and url entries -------------------------------------------------
+
+subtest 'a command entry refuses what it would ignore' => sub {
+  like config_error({command => 'x', headers => {Authorization => 'Bearer t'}}),
+    qr/mcpServers\.x\.headers: 'headers' does not apply to a 'command' entry, which talks to its server over stdio/,
+    'headers on a command entry';
+  for my $type ('http', 'sse', 'streamable-http', '') {
+    like config_error({command => 'x', type => $type}),
+      qr/mcpServers\.x\.type: 'type' does not apply to a 'command' entry, which is always "stdio"/,
+      "type '$type' on a command entry";
+  }
+  like config_error({command => 'x', type => ['stdio']}),
+    qr/mcpServers\.x\.type: 'type' does not apply to a 'command' entry/, 'nor stdio in a list';
+
+  # What Claude Code writes into a .mcp.json, which the hub takes unchanged.
+  my $e = MCP::Hub::Config->from_data({
+    mcpServers => {playwright => {type => 'stdio', command => 'npx', args => ['-y', '@playwright/mcp@latest']}},
+  })->server('playwright');
+  is $e->{type},    'stdio', '"type": "stdio" says what a command entry is anyway';
+  is $e->{command}, 'npx',   'and the entry is read as usual';
+};
+
+subtest 'a url entry refuses what it would ignore' => sub {
+  my %value = (env => {A => 1}, cwd => '/tmp', args => ['--flag']);
+  for my $type (undef, 'sse') {
+    my %type = defined $type ? (type => $type) : ();
+    my $what = $type // 'http';
+    for my $key (qw(env cwd args)) {
+      like config_error({url => 'http://127.0.0.1:1/mcp', %type, $key => $value{$key}}),
+        qr/mcpServers\.x\.$key: '$key' does not apply to a 'url' entry, a remote server the hub starts no process for/,
+        "$key on a url entry ($what)";
+    }
+  }
+
+  like config_error({url => 'http://127.0.0.1:1/mcp', hub => {idle_timeout => 60}}),
+    qr/mcpServers\.x\.hub\.idle_timeout: 'idle_timeout' does not apply to a 'url' entry, a remote server the hub starts no process for/,
+    'hub.idle_timeout on a url entry';
+  like config_error({url => 'http://127.0.0.1:1/mcp', hub => {idle_timeout => 60, bogus => 1}}),
+    qr/mcpServers\.x\.hub\.bogus: unknown key/, 'an unknown hub key is still named first';
+
+  my $e = MCP::Hub::Config->from_data({
+    mcpServers => {remote => {url => 'http://127.0.0.1:1/mcp', hub => {always_on => true, request_timeout => 30}}},
+  })->server('remote');
+  is $e->{always_on},       1,  'always_on applies to a url entry: it connects at daemon start';
+  is $e->{request_timeout}, 30, 'request_timeout applies to a url entry';
+
+  my $s = MCP::Hub::Config->from_data({
+    mcpServers => {stack => {compose => '/srv/stack', service => 'mcp', url => 'http://mcp:8080/mcp', env => {A => 1}}},
+  })->server('stack');
+  is_deeply $s->{env}, {A => 1}, 'a url on a compose entry does not make env a url-entry error';
+};
+
 subtest 'public_profile must exist' => sub {
   eval {
     MCP::Hub::Config->from_data({
