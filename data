@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-11-05T23:57:54Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-05T23:57:54Z
+created: 2026-11-04T02:27:50Z
+id: 47
+priority: low
+started: 2026-11-05T23:19:43Z
+status: done
+tags:
+- log
+- bug
+title: A failed placeholder of a non-perl type logs its build error twice
+updated: 2026-11-05T23:57:54Z
+---
+
+Found by mcp-hub-worker during k42. The background warm-up calls start_p on a failed placeholder (_broken_upstream) of a stdio/http/docker/fork entry, which logs the build error a second time.
+
+2026-11-05 23:48 Fix: MCP::Hub::_warm_upstream returns early for an upstream whose state is 'failed' — at warm time that is only a placeholder (_broken_upstream): it has nothing to fetch, and its start would only reject with the build error that was logged when it was built. Regression test t/hub.t 'the build error of a placeholder is logged once': a {class => 'No::Such::Forked::Class', hub => {fork => true}} entry with a captured Mojo::Log; exactly one line contains the error, and it is the 'failed to build upstream broken:' one. Red verified against a lib copy without the guard (two lines: the build error plus 'upstream broken: cannot load class …').
+
+2026-11-05 23:48 To review. Files: lib/MCP/Hub.pm (4 lines at the top of _warm_upstream), t/hub.t ('use Mojo::Log;' + the new subtest after 'refresh via the admin API'). Shares _warm_upstream with k48: the guard is its own hunk once split (git add -p, s) — one unchanged line separates it from k48's catch change. Green in the same prove -lr t/ run (Files=22, Tests=213, PASS). Not committed.
+
+Committed as 9e3a00f
