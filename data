@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-11-05T23:57:50Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-05T23:57:50Z
+created: 2026-11-04T03:04:17Z
+id: 48
+priority: high
+started: 2026-11-05T23:19:39Z
+status: done
+tags:
+- upstream
+- lifecycle
+title: Any upstream whose single warming fetch fails stays 'stopped' and answers 503
+  'not ready yet' until a refresh
+updated: 2026-11-05T23:57:50Z
+---
+
+Found during k32. The warming fetch runs once; when it fails (stdio {"command": "false"}, an http url at a dead local port) the upstream goes back to 'stopped' with no error, and every tools/list gets 503 'is not ready yet' — the still-fetching meaning — until someone runs mcp-hub refresh. k32 fixed only the TLS case (fails at build time). Needs: a failed warming fetch either records the reason as 'failed' (with refresh clearing it) or retries with backoff; the 503 must not claim 'still fetching' when nothing is fetching.
+
+2026-11-05 23:28 Started. Cause: MCP::Hub::_warm_upstream's catch only logs; every subclass start_p failure path sets state from its own {failed} crash-loop flag, which one failure never sets, so the upstream goes back to 'stopped' with error undef and _route_server's no-manifest branch answers 'not ready yet'. Same after a failing refresh (MCP::Hub::refresh_p). Plan: hub decides (only it knows a fetch is the warming fetch / a refresh of a never-listed upstream), upstream records via a new base method Upstream->fail(reason) that sets the subclasses' {failed} flag + error + state, so later async state changes (_on_close after a handshake-timeout kill) keep it failed and every refresh_p's _clear_failure undoes it. Writing red tests first.
+
+2026-11-05 23:48 Done. Where: MCP::Hub::_fetch_failed decides, Upstream->fail(reason) records. Only the hub knows a fetch is the warming fetch, an always_on start or a refresh of an upstream that never had a manifest; fail() puts it into the subclasses' own {failed} crash-loop flag (+ error + state), so a later _on_close (a child killed after a failed handshake) keeps it failed, start_p rejects with the refresh hint, and every subclass refresh_p's _clear_failure undoes it — same mechanism as the crash loop, no retry/backoff. Guard: nothing happens when the upstream has manifest_fetched_at (it keeps serving the cache, its next call starts it under the crash-loop rule) or is already failed (keeps its reason). Wired into the warm-up catch (both branches) and MCP::Hub::refresh_p's catch. always_on: included — with no cached manifest its start IS the warming fetch, and left stopped nothing would ever start it again (no tools listed, no call reaches it); with a cached manifest it stays stopped/error undef and tools/list answers 200 from the cache (tested). _route_server: 503 'not ready yet' now only while state is 'starting'; a no-manifest upstream with no fetch at all (background fetches never kicked off, i.e. outside the daemon) answers 503 'has no tool list yet, run mcp-hub refresh NAME to fetch it'. 404/401/503 meanings kept. Per type: stdio (hub.t, command fails + command missing), http and sse (http.t, closed local port), docker and compose (docker.t, image not pullable / service not in project) — all failed with reason, 503 'failed: <reason>', refresh without the cause fixed stays failed, refresh after the fix → ready, 200. fork never reaches it (manifest set at build; only a placeholder can be failed). Reload leaves a failed-fetch upstream alone (reload.t, refaddr same, no spawn); tools/call does not restart it (hub.t, started_at unchanged).
+
+2026-11-05 23:48 Drift, not fixed here — for the dispatcher to file on THIS repo's board: (1) under Mojo::Reactor::EV (EV 4.37 is installed, so Mojo's default here) libev reaps stdio children before Upstream::Stdio::_on_close's waitpid gets them: ECHILD, the status becomes 'exited (unknown)' at random, and the exit-127 'is it installed and executable?' hint never appears. Under MOJO_REACTOR=Mojo::Reactor::Poll it is always 'exited (code N)'. Pre-existing; the new tests accept both. (2) The failed reason for a stdio warm-up is the bare rejection ('exited (code 127)'); the log line carries _exit_hint's 'is it installed and executable?' but error/503 do not. (3) docs/superpowers/specs/2026-08-25-mcp-hub-design.md (~l.238, ~l.339 'failed after 3 quick exits') is stale on a failed first fetch — not touched, docs/ is k45's area. (4) .claude/rules/mcp-hub-rules.md calls 503 'still-fetching'; it now also means failed / no tool list yet (the rules file says 'carry meaning', so only the wording is narrow).
+
+2026-11-05 23:48 To review. Files: lib/MCP/Hub.pm (_fetch_failed, warm-up + refresh_p catches, _route_server 503 split, POD start_background_fetches/refresh_p/reload, _refresh_result comment), lib/MCP/Hub/Upstream.pm (fail + POD, error attr POD), lib/MCP/Hub/Upstream/Http.pm (stale _tls_missing comment only), t/hub.t, t/http.t, t/docker.t, t/reload.t, README.md (Troubleshooting), .claude/skills/mcp-hub-core/SKILL.md (503/failed/reload bullets; k46's hunk untouched; mcp-hub-runtime untouched, k50). Red first: hub.t/http.t/docker.t (9 of 18) failed on the old code with 'stopped' + 'not ready yet'. Green: prove -lr t/ → 'Files=22, Tests=213, 243 wallclock secs … Result: PASS' (docker-live, npx, wiki-live skipped: opt-in env vars unset); hub.t + http.t also green under both Poll and EV reactors. Not committed — k47 shares Hub.pm/_warm_upstream and t/hub.t, split by hunk.
+
+Committed as a337938
