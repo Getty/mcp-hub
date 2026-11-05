@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-05T23:45:24Z
+id: 54
+priority: low
+status: backlog
+tags:
+- agent
+- binary
+title: 'mcp-hub-binary-worker agent: $^X under PAR is ''perl'', not the binary'
+updated: 2026-11-05T23:45:24Z
+---
+
+Found by mcp-hub-binary-worker during k44. .claude/agents/mcp-hub-binary-worker.md says $^X under PAR is the binary. In the k44 build $^X is the literal "perl" and /proc/self/exe is PAR_TEMP/mcp-hub. Nothing in lib/ or bin/ uses $^X today. Fix the agent text (check first whether the file is skilletor-managed).
