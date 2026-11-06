@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-11-06T02:06:45Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T02:06:45Z
+created: 2026-11-06T01:05:58Z
+id: 59
+priority: low
+started: 2026-11-06T01:25:31Z
+status: done
+tags:
+- binary
+- test
+title: 'Binary smoke: assert an exec''d child holds no fd on the binary and not the
+  listen socket'
+updated: 2026-11-06T02:06:45Z
+---
+
+Found by mcp-hub-worker during k52, the packed-binary half of k52. scripts/smoke-binary.sh could read /proc/PID/fd of the echo.sh stdio child and assert it holds neither fd 3 on the mcp-hub binary (PAR archive) nor the hub's listening socket. Lane: mcp-hub-binary-worker.
+
+2026-11-06 01:30 Started. Plan: Linux-only block in scripts/smoke-binary.sh right after tools/call /echo — the listening socket is found as socket:[INODE] via /proc/net/tcp (127.0.0.1:port, state 0A), the hub must hold it and an fd on the binary (else the check proves nothing), echo.sh's fds above stderr must hold neither. Red/green: binaries built from clean git-archive exports of b4c3b0b^ and b4c3b0b, my scripts copied in.
+
+2026-11-06 01:32 Red confirmed: smoke against a binary built from a git-archive of b4c3b0b^ fails 'echo (pid N) holds an fd on the binary: 10->…/t/upstream/echo.sh 3->…/mcp-hub-old 6->socket:[48813635]'; with the binary check removed, the second check fails alone: 'holds the hub's listening socket socket:[48813757]'. (Pre-k52 the listen socket was fd 6 here, not fd 4 as in k44.) MCP::Hub::Child is in the packed set: loaded-modules.pl prints it (292 modules at HEAD vs 291 at b4c3b0b^, the diff is exactly that line) and unzip -l of the HEAD binary shows lib/MCP/Hub/Child.pm.
+
+2026-11-06 01:57 Done, commit-ready, not committed. Changed: scripts/smoke-binary.sh only — Linux-only block after tools/call /echo: finds the listening socket as socket:[INODE] from /proc/net/tcp (127.0.0.1:port, LISTEN), requires the hub to hold it and an fd on the binary (so the check cannot pass vacuously), fails if echo.sh's fds above stderr include either; self/archive_fds moved up from the fork block (unchanged), header 'Covered:' names the check. Verified on dev-box builds from git-archive exports (PAR::Packer 1.064): b4c3b0b^ binary → FAIL 'holds an fd on the binary: … 3->…/mcp-hub-old 6->socket:[…]', and the socket check fails on its own with the first check removed; b4c3b0b binary → 'stdio child fds: OK (echo.sh holds 10->…/t/upstream/echo.sh above stderr; …socket:[…] and its archive fds 3:14285865 5:6027650 stayed in the hub)', smoke: OK on the host and in debian:trixie-slim with perl removed, --network none, SMOKE_NO_PERL=1; verify: OK (292 modules). MCP::Hub::Child is packed: loaded-modules.pl lists it (292 vs 291 at b4c3b0b^, only diff), lib/MCP/Hub/Child.pm in unzip -l. check-binary-libs.sh FAILs as expected for a dev-box build (host libcrypt/libcrypto/libssl/libz/libzstd, glibc 2.38) — not counted. Not run: the off-Linux path (block is skipped there).
+
+2026-11-06 01:58 Also found (not mine, not fixed): t/docker.t failed once in a full 'prove -lr t/' of the shared checkout (with other agents' in-flight lib/ edits) — subtest 'a reload rebuilds a changed docker entry, and keeps a cached manifest', 'Can't open file …/state/containers/<id>.json' at t/docker.t line 86: records() lists the fake engine's state dir, then slurps a file already removed. It passed on rerun alone in the checkout (32 tests) and in the full suite on a clean export of b4c3b0b. Looks like a list-then-slurp race in the test helper; lane mcp-hub-test-writer.
+
+Committed as 4d94c6d
