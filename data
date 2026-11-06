@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T16:39:24Z
+created: 2026-11-06T14:41:25Z
+id: 142
+priority: low
+started: 2026-11-06T15:08:16Z
+status: done
+tags:
+- test
+- docker
+title: An interrupted t/docker.t leaves its fake container servers running
+updated: 2026-11-06T16:39:29Z
+---
+
+Found during k130-k134 (worker) and by the k78-k129 release run. A t/docker.t run that is killed partway leaves fake container servers running: its END block does not run on a signal, and the idle fake server's command line (perl -e '$SIG{TERM} = sub { exit 0 }; sleep 1 while 1') does not name fake-docker.pl, so a pgrep for it misses it -- one ran for an hour on 2026-11-06 (FAKE_DOCKER_STATE=/tmp/60TauaoyDS/state). Done: the fakes end when the test process dies (e.g. a pipe or parent check, or $0 naming fake-docker), and an interrupted run leaves nothing behind.
+
+mcp-hub-test-writer: fake_docker() in t/docker.t writes its pid to $state/owner. In t/upstream/fake-docker.pl the detached supervisor (waitpid WNOHANG every 0.05 s) and the attached run -i relay (select with a 1 s bound) check that pid and kill their server and exit once the test is gone; with no owner file nothing changes. Chosen over "state dir exists" (tempdirs survive SIGKILL) and over a $0 rename (only helps whoever looks) -- test-writer's choice. Shown: the real t/docker.t killed with TERM and with KILL left 2 fakes (idle db + its CLI) on the unfixed tree for the whole 6 s, 0 within 1 s on the fixed one; a small driver with an idle compose db, an http container and an attached t/stays: 6 survivors before, 0 after. Normal runs: t/docker.t 37 tests pass under EV and Poll. Not shown: the guard's other direction (a live owner keeps the fakes) beyond the normal runs passing. No Changes entry (test only). Skill line in mcp-hub-runtime added by the k139-k136 worker as its step s6. -> review.
+
+commit-ready: w-k142 snapshots
+
+Committed as 54fd7bf
