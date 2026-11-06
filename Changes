@@ -114,3 +114,5 @@ Revision history for MCP-Hub
   - mcp-hub refuses prefork, cgi and psgi, named or picked by PLACK_ENV or
     GATEWAY_INTERFACE, saying why and pointing at mcp-hub daemon; the command
     list no longer offers them or Mojolicious' generate/inflate/cpanify.
+  - The global --config/-c is only read before the command name, so
+    get -c JSON and daemon -c N keep their own -c.

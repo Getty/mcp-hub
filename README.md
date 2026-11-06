@@ -347,7 +347,8 @@ tool list:
 | `mcp-hub token` | Print a fresh random bearer token. |
 
 A global `--config PATH` (or `-c PATH`, or `$MCP_HUB_CONFIG`) selects the config
-file for every command.
+file for every command. It goes before the command name (`mcp-hub -c PATH status`);
+after it, every option belongs to the command.
 
 `status`, `refresh` and `reload` talk to the running daemon at the config's `listen`
 address (a wildcard such as `0.0.0.0` or `[::]` is reached over loopback, and
