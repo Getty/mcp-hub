@@ -1,0 +1,18 @@
+---
+class: standard
+created: 2026-11-06T03:34:40Z
+id: 75
+priority: low
+started: 2026-11-06T10:08:21Z
+status: backlog
+tags:
+- hazard
+- cli
+- server
+title: Refuse a pre-forking server for every way the app is served, not only via Commands::run
+updated: 2026-11-06T10:27:55Z
+---
+
+Found by mcp-hub-worker during k62 (2026-11-06). k34/k62 refuse prefork/cgi/psgi/hypnotoad only on paths that reach MCP::Hub::Commands::run (bin/mcp-hub ->start). A custom script that returns MCP::Hub->new straight to hypnotoad, or a hand-built Mojo::Server::Prefork, never reaches it and pre-forks the hub. A before_server_start hook in lib/MCP/Hub.pm (emitted by Daemon/Prefork/CGI/PSGI servers) could refuse any server that is not a plain single-process Daemon in one place. Done: such a server is refused with the k34-shaped message; test builds a Mojo::Server::Prefork around the app without forking. plackup was checked by reading Plack::Runner: PLACK_ENV is set before the app loads, so k34's psgi refusal already fires.
+
+2026-11-06 11:35: the worker for k104/k89/k75 was stopped by an API safeguard error (request req_011CgmWnQmdqQskD15HPfsSg), not by a problem in the work. No change in the repo; its partial scratch work is in scratchpad/w-hub7. Back to backlog for the maintainer.
