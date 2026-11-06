@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-06T11:42:58Z
+created: 2026-11-06T10:06:28Z
+id: 123
+priority: medium
+started: 2026-11-06T10:44:18Z
+status: done
+tags:
+- stdio
+- idle
+- bug
+title: The idle timer can stop a stdio child in the middle of a call longer than idle_timeout
+updated: 2026-11-06T11:47:18Z
+---
+
+Found during k26 (drift). The idle timer is armed at a call start, not at its end, so a call that runs longer than idle_timeout can have its child stopped mid-call. Verify first with a test (a call of idle_timeout + 1 s); if confirmed, arm or re-arm the idle countdown when the last call in flight ends, never while one is in flight.
+
+Confirmed on HEAD (idle stop 1 s into a 2 s call; a 4 s call killed by SIGTERM). Fix: Upstream::_forward_p counts requests in flight; _arm_idle_timer arms nothing while any is; finally re-arms. Tests in t/idle.t red on HEAD, green EV/Poll.
+
+Committed as af4f1c7
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): af4f1c7 is now 8b8dc56 on local main.
