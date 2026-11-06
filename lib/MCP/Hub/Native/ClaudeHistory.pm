@@ -184,10 +184,10 @@ sub get_conversation ($self, $args) {
   my $limit  = $args->{limit}  // 50;
   my %roles  = map { $_ => 1 } @{$args->{roles} // ['user', 'assistant']};
 
-  my $file = $self->_file_for_session($args->{session_id});
+  my ($file, $entries) = $self->_file_for_session($args->{session_id});
   return {entries => [], total => 0, has_more => \0} unless $file;
 
-  my @entries = grep { $roles{$_->{role}} } @{$self->_entries($file)};
+  my @entries = grep { $roles{$_->{role}} } @{$entries // $self->_entries($file)};
   my $total   = scalar @entries;
   my @page    = @entries[$offset .. ($offset + $limit - 1 < $#entries ? $offset + $limit - 1 : $#entries)];
   @page = () if $offset > $#entries;
@@ -347,15 +347,21 @@ sub _lines ($fh, $from, $cb) {
 # Claude Code names a session's file after the session, so a file of that name
 # is read first; only if none holds the session are the others read. The
 # session_id is compared with the names of the files listed, never made into a
-# path, so it cannot reach outside the projects dir.
+# path, so it cannot reach outside the projects dir. If the file of that name
+# has to be read at all, it is read once, for its metadata and its entries
+# together; the others, which seldom hold the session, only for their
+# metadata. Returns the file, and its entries if they were read so.
 sub _file_for_session ($self, $session_id) {
   my @files = map { _session_files($_) } $self->_project_dirs;
   my $name  = "$session_id.jsonl";
   for my $file ((grep { $_->basename eq $name } @files), (grep { $_->basename ne $name } @files)) {
-    my $meta = $self->_meta($file);
-    return $file if ($meta->{session_id} // '') eq $session_id;
+    my @entries;
+    my $visit = $file->basename eq $name ? sub ($rec) { my $entry = _entry($rec) or return; push @entries, $entry } : undef;
+    my $read  = $self->_refresh($file, undef, $visit);
+    next unless ($self->meta_cache->{"$file"}{meta}{session_id} // '') eq $session_id;
+    return $file, ($visit && $read ? \@entries : undef);
   }
-  return undef;
+  return;
 }
 
 # --- helpers ---------------------------------------------------------------
@@ -462,7 +468,8 @@ is read only from that offset on, and a file that shrank, was replaced or was
 rewritten without growing is read again from the start. A search reads a file
 whose metadata is out of date only once, for both. C<get_conversation> reads
 the file named after the session (C<< <session_id>.jsonl >>, as Claude Code
-names it) first, and the others only if that one does not hold the session.
+names it) first, and the others only if that one does not hold the session;
+it too reads that file only once where its metadata is out of date.
 
 =head2 Tools
 

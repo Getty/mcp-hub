@@ -215,3 +215,5 @@ Revision history for MCP-Hub
   - list_running_sessions no longer fails as a whole on a message whose
     content holds a block that is not an object ("x", 1, [1]); such a block
     is skipped, as ClaudeHistory skips it.
+  - get_conversation reads the session's own file once on a cold cache, for
+    its metadata and its messages together, instead of twice.
