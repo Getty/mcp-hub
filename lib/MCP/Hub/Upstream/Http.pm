@@ -98,7 +98,7 @@ sub start_p ($self) {
   delete @$self{qw(failure_reason stop_requested)};    # both belong to this attempt only
 
   # A start opens a new session: its initialize goes without the id of an
-  # earlier one -- that a failed start left, say -- and the remote assigns one.
+  # earlier one, and the remote assigns one.
   delete $self->{session_id};
 
   # From here on until the start settles, its handshake runs: what it sends are
@@ -126,6 +126,10 @@ sub start_p ($self) {
       ? $self->log->debug("[@{[$self->name]}] start called off by a stop")
       : $self->log->error("[@{[$self->name]}] handshake failed: $err");
     $self->_close_sse;
+    # The session its initialize was given is ended as a stop ends one -- unless
+    # the stop has ended it already, or the remote has (_session_gone). The next
+    # start opens a new one.
+    if (defined(my $sid = delete $self->{session_id})) { $self->_end_session($sid) }
     $self->_record_failure unless $stopped;
     $self->state($self->{failed} ? 'failed' : 'stopped');
     delete @$self{qw(start_promise handshake)};
@@ -280,7 +284,14 @@ sub _http_send_p ($self, $method, $params, $of_start, $renewed = undef) {
   # HTTP+SSE, with no newline at its end for the agent to read.
   my $fail = sub ($reason) { Mojo::Promise->reject("upstream @{[$self->name]}: $reason") };
   $self->req_ua->start_p($tx)->then(sub ($tx) {
-    return undef if $of_start && !$self->{pending}{$id};    # called off by a stop
+    # Called off by a stop: the answer is turned away. An initialize the stop
+    # found still connecting, or with its answer on the way, has opened a
+    # session on the remote all the same, and that session is ended.
+    if ($of_start && !$self->{pending}{$id}) {
+      my $sid = $method eq 'initialize' && $tx->res->headers->header('Mcp-Session-Id');
+      $self->_end_session($sid) if $sid;
+      return undef;
+    }
     if (my $err = $tx->error) {
       # The remote has ended the session this went out on (_session_gone).
       if (!$found && defined $sent && ($err->{code} // 0) == 404) {
@@ -597,7 +608,8 @@ sub _fail_pending ($self, $reason) {
     $pending->{promise}->reject($reason);
 
     # A Streamable HTTP POST still running goes with its connection. One that
-    # is still connecting has none yet: it runs to its end, unheeded.
+    # is still connecting has none yet: it runs to its end, and its answer is
+    # turned away (_http_send_p).
     my $tx = $pending->{tx};
     Mojo::IOLoop->remove($tx->connection) if $tx && $tx->connection && !$tx->is_finished;
   }
@@ -739,7 +751,11 @@ the session is no longer needed. Nothing waits for it: a remote that answers
 C<405> -- it does not let clients end sessions -- or cannot be reached is only
 logged at debug level, and the connect and request timeouts of L</req_ua> bound
 it. One sent as the daemon shuts down may not get out before the process ends.
-The next start opens a new session: its C<initialize> carries no session id.
+A start that fails after the remote gave it a session ends that session the
+same way, and so does a start that a stop calls off: an answer to its
+C<initialize> that comes after the stop is turned away, but the session it
+names is ended. The next start opens a new session: its C<initialize> carries
+no session id.
 
 A remote that has ended a session -- it restarted, or timed the session out --
 answers C<404> to a request on it. The upstream leaves that session and opens a

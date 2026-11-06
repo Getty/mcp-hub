@@ -222,3 +222,7 @@ Revision history for MCP-Hub
     now waits for that start and goes out on its session, instead of going
     out without a session id in the middle of the handshake, where a stop
     cut it off.
+  - A Streamable HTTP start that fails after the remote gave it a session, or
+    that a stop calls off as its initialize goes out, now ends that session
+    with a DELETE instead of leaving it open on the remote until its own
+    timeout.

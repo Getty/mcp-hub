@@ -714,7 +714,11 @@ subtest 'streamable http upstream: a stop while it starts calls the start off, i
       ok $until->(sub { $tx{initialize}->is_finished }), "$when, start $n: the answer is read";
       Mojo::Promise->timer(0.01)->wait;
       is $up->state, 'stopped', "$when, start $n: and it changes nothing";
-      is_deeply $fake->{deletes}, [], "$when, start $n: nor does it leave a session id to end";
+      # The session it opened is ended all the same, and no id of it is kept.
+      ok $until->(sub { @{$fake->{deletes}} }), "$when, start $n: the session it opened is ended";
+      $up->stop;
+      Mojo::Promise->timer(0.05)->wait;
+      is_deeply $fake->{deletes}, ["s$fake->{sessions}"], "$when, start $n: once, and no session id is left to end";
     }
     is $up->error, undef, "$when: no failure reason";
     is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$when: nothing logged as a failure"
@@ -848,13 +852,15 @@ subtest 'streamable http upstream: a start opens a new session, a stop ends the 
   is_deeply $sessions->(), ['initialize: none', 'notifications/initialized: s2', 'tools/list: s2'],
     'opens a new session: its initialize carries no id';
 
-  # A start that fails after its initialize keeps the session id the remote
-  # gave it; the next start does not send it on.
+  # A start that fails after its initialize ends the session the remote gave
+  # it; the next start does not send its id on.
   $up->stop;
   ok $until->(sub { @{$fake->{deletes}} == 2 }), 'the stop ends s2';
   $fail_list = 1;
   like _await_bounded($up->start_p, 5)->{err}, qr/not now/, 'a start fails after its initialize';
   is_deeply [map { $_->{session} // 'none' } @{$fake->{posts}}], ['none', 's3', 's3'], 'with session s3';
+  ok $until->(sub { @{$fake->{deletes}} == 3 }), 'it ends s3';
+  is $fake->{deletes}[-1], 's3', 'with a DELETE carrying its id';
   splice @{$fake->{posts}};
   $fail_list = 0;
   is $start->(), 'started', 'the next start';
@@ -1395,6 +1401,94 @@ subtest 'streamable http upstream: a call let through just before a start goes o
     weaken(my $gone = $up);
     undef $up;
     is $gone, undef, "$when: nothing holds the upstream";
+    $fake->{daemon}->stop;
+  }
+};
+
+subtest 'streamable http upstream: a start that fails, or that a stop calls off, ends the session it was given' => sub {
+  # A start whose initialize was answered with a session id, and which failed
+  # after that, left the session open on the remote until its own timeout. So
+  # did a start that a stop called off as its initialize went out: the answer
+  # came all the same, the hub turned it away, and with it the session it had
+  # opened. Both end that session, with a DELETE as a stop does. None goes out
+  # where no session was given: by a remote that gives none, to an initialize a
+  # stop cut off before it was answered -- nor for one the remote ended itself.
+  my @cases = (
+    ['a list fails',                       0, qr/^upstream fake: not now$/],
+    ['a list fails',                       1, qr/^upstream fake: not now$/],
+    ['the remote ended its session',       0, qr/^upstream fake: the remote ended the session \(Not Found\)$/],
+    ['stopped as the initialize goes out', 0, qr/^upstream fake: stopped$/],
+    ['stopped as the initialize goes out', 1, qr/^upstream fake: stopped$/],
+    ['stopped during the initialize',      0, qr/^upstream fake: stopped$/],
+  );
+  for my $case (@cases) {
+    my ($when, $stateless, $reason) = @$case;
+    my $phase = $stateless ? "$when, a remote that gives no session" : $when;
+    my $fake  = fake_http(answer => sub ($req) {
+      my ($id, $method) = ($req->{id}, $req->{method} // '');
+      return Mojo::Promise->new if $method eq 'initialize' && $when eq 'stopped during the initialize';    # never settles
+      return pong_answer()->($req) unless $method eq 'tools/list' && $when eq 'a list fails';
+      return {jsonrpc => '2.0', id => $id, error => {code => -32603, message => 'not now'}};
+    });
+    $fake->{stateless} = $stateless;
+    $fake->{volatile}  = $when eq 'the remote ended its session';
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+      cache_dir => tempdir->to_string,
+    );
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+    $up->log($log);
+
+    # The initialize as it goes out -- and the stop that lands then.
+    my $initialize;
+    weaken(my $weak = $up);
+    $up->req_ua->on(start => sub ($ua, $tx) {
+      return unless $tx->req->method eq 'POST' && (eval { $tx->req->json->{method} } // '') eq 'initialize';
+      $initialize = $tx;
+      $weak->stop if $when eq 'stopped as the initialize goes out';
+    });
+
+    my $start = $up->start_p;
+    if ($when eq 'stopped during the initialize') {
+      ok until_true(sub { grep { ($_->{method} // '') eq 'initialize' } @{$fake->{posts}} }),
+        "$phase: the initialize is on its way";
+      $up->stop;
+    }
+    like _await_bounded($start, 5)->{err}, $reason, "$phase: the start fails";
+    is $up->state, 'stopped', "$phase: stopped";
+    # The hub has read the answer to the initialize, and what it does with it
+    # is done -- or, cut off, has none to read.
+    ok until_true(sub { $initialize && $initialize->is_finished }), "$phase: the initialize is over";
+    Mojo::Promise->timer(0.01)->wait;
+
+    my $given = !$stateless && $when ne 'stopped during the initialize';
+    if ($given && $when ne 'the remote ended its session') {
+      ok until_true(sub { @{$fake->{deletes}} }), "$phase: the session it was given is ended";
+      is_deeply $fake->{deletes}, ['s1'], "$phase: with one DELETE carrying its id";
+    }
+    else {
+      Mojo::Promise->timer(0.1)->wait;
+      is_deeply $fake->{deletes}, [], "$phase: no DELETE";
+    }
+    is $fake->{sessions}, $given ? 1 : 0, "$phase: " . ($given ? 'the remote gave it s1' : 'the remote gave it no session');
+
+    # The upstream keeps no id of it: a stop has no session left to end, and
+    # the next start opens a new one.
+    my $deleted = @{$fake->{deletes}};
+    $up->stop;
+    Mojo::Promise->timer(0.05)->wait;
+    is scalar @{$fake->{deletes}}, $deleted, "$phase: a stop then has no session to end";
+    is $up->error, undef, "$phase: no failure reason yet";
+    my @failures = grep { !/^(?:trace|debug|info):/ } @logged;
+    if ($when =~ /^stopped /) { is_deeply \@failures, [], "$phase: nothing logged as a failure" or diag explain \@logged }
+    else                      { like "@failures", qr/^error: \[fake\] handshake failed: /, "$phase: logged as the failure it is" }
+
+    weaken(my $gone = $up);
+    undef $up;
+    is $gone, undef, "$phase: nothing holds the upstream";
     $fake->{daemon}->stop;
   }
 };
