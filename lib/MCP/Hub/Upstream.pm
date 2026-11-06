@@ -74,7 +74,7 @@ sub fail ($self, $reason) {
 }
 
 # Resolves once what stop set in motion is over. Only an upstream whose stop
-# has to wait for something outside the process -- a container -- says so.
+# takes its time -- a child that is still to exit, a container -- says so.
 sub stopped_p ($self) { return Mojo::Promise->resolve($self) }
 
 sub touch ($self) {
@@ -505,9 +505,11 @@ Terminate the upstream. A no-op for Perl upstreams.
   $up->stop;
   $up->stopped_p->then(sub { ... });
 
-Resolves once what L</stop> set in motion is over. Immediately for every
-upstream but a Docker one, whose container is stopped and removed by the
-C<docker> CLI after L</stop> returns; the daemon waits for it on shutdown.
+Resolves once what L</stop> set in motion is over: immediately for an upstream
+that holds no process; for a stdio child or a forked worker once it has exited,
+which it is given up to five seconds for (see
+L<MCP::Hub::Upstream::Stdio/Lifecycle>); for a Docker one once the C<docker>
+CLI has stopped and removed its container. The daemon waits for it on shutdown.
 
 =method touch
 

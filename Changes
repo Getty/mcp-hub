@@ -62,8 +62,8 @@ Revision history for MCP-Hub
     Docker Compose 2 or later; the Docker image ships the compose plugin.
   - `hub.docker_command` picks the container CLI (Podman works) and
     `hub.docker_network` the network HTTP containers join.
-  - `mcp-hub daemon` waits up to 20 seconds on shutdown until the containers
-    it started are gone.
+  - `mcp-hub daemon` waits up to 20 seconds on shutdown until the stdio
+    servers, forked workers and containers it started are gone.
   - A JSON `true` is no longer accepted where an integer is expected, such as
     `idle_timeout` or `port`.
   - Build tooling for a standalone `mcp-hub` binary (PAR::Packer) for

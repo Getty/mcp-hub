@@ -118,6 +118,14 @@ sub stop ($self) {
   return $self;
 }
 
+# Resolves once the child is gone -- after a stop, within KILL_GRACE seconds.
+# A shutdown waits for it: the hub must not exit while a child it stopped is
+# still to be reaped, or killed.
+sub stopped_p ($self) {
+  return Mojo::Promise->resolve($self) unless $self->{pid};
+  return $self->_gone_p->then(sub { $self });
+}
+
 sub refresh_p ($self) {
   if ($self->state eq 'ready' && $self->{pid}) {
     return $self->_list_all_p->then(sub ($lists) {
@@ -526,8 +534,10 @@ A stop closes the child's stdin and sends it C<SIGTERM>, and C<SIGKILL> five
 seconds later; a call that comes in meanwhile waits for it to be gone and starts
 the next child. The hub runs one child at a time. A child that closes its stdout
 but goes on running can never answer again, and is killed after the same five
-seconds. Its exit status is collected without blocking the event loop, under
-L<Mojo::Reactor::EV> too (L<MCP::Hub::Child/watch_exit>).
+seconds. L<MCP::Hub::Upstream/stopped_p> resolves once the child is gone, and
+the daemon waits for that on shutdown. Its exit status is collected without
+blocking the event loop, under L<Mojo::Reactor::EV> too
+(L<MCP::Hub::Child/watch_exit>).
 
 Three exits within five seconds mark it C<failed>, with the reason in
 L<MCP::Hub::Upstream/error>. A failed upstream stays failed until it is
@@ -569,11 +579,12 @@ Seconds of no requests before the child is stopped. Defaults to C<300>.
 
 L<MCP::Hub::Upstream::Stdio> inherits all methods from L<MCP::Hub::Upstream> and
 implements the lifecycle -- L<MCP::Hub::Upstream/start_p>,
-L<MCP::Hub::Upstream/stop> and L<MCP::Hub::Upstream/refresh_p> -- for a child
-process. The idle timer of L</idle_timeout> is the base class's: set by
-L<MCP::Hub::Upstream/touch>, re-armed by L<MCP::Hub::Upstream/apply_timeouts>.
-The forwarding methods the facade calls (C<call_tool>, C<get_prompt>,
-C<read_resource>) are the inherited ones.
+L<MCP::Hub::Upstream/stop>, L<MCP::Hub::Upstream/stopped_p> and
+L<MCP::Hub::Upstream/refresh_p> -- for a child process. The idle timer of
+L</idle_timeout> is the base class's: set by L<MCP::Hub::Upstream/touch>,
+re-armed by L<MCP::Hub::Upstream/apply_timeouts>. The forwarding methods the
+facade calls (C<call_tool>, C<get_prompt>, C<read_resource>) are the inherited
+ones.
 
 =head1 SEE ALSO
 
