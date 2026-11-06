@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T03:51:14Z
+created: 2026-11-06T02:23:40Z
+id: 66
+priority: low
+started: 2026-11-06T03:09:45Z
+status: done
+tags:
+- http
+- sse
+- bug
+title: Http::_open_sse_p leaves its endpoint timer running; it can reject a later
+  attempt
+updated: 2026-11-06T03:51:20Z
+---
+
+Found by mcp-hub-worker during k24 (2026-11-06). _open_sse_p sets a request_timeout timer that is never removed. When it fires it rejects whichever connection attempt is current then, so an earlier attempt's timer can reject a later attempt still waiting for its endpoint ('timed out waiting for the SSE endpoint'). Repro (scratch, not in tree): request_timeout 1, attempt 1 fails fast, attempt 2 starts 0.8 s later and gets its endpoint 0.5 s after that -- rejected anyway. The timer also keeps the upstream object alive until it fires. Done: the timer is removed when its attempt settles and only ever rejects its own attempt; regression test in t/http.t with the fake SSE server.
+
+Root cause confirmed: the endpoint timer in _open_sse_p is never removed and calls _sse_resolve on $self->{sse}, i.e. whichever connect is current when it fires. Fix in Upstream/Http.pm: the timer is stored on its connect, settles only that connect, and _sse_resolve removes it. Three new t/http.t subtests, red before and green after (EV and Poll); mutation-checked in scratch. Running prove -lr t/ now.
+
+Done, tree commit-ready (lib/MCP/Hub/Upstream/Http.pm, t/http.t only). Root cause: the endpoint timer in _open_sse_p was never removed, and when it fired it called _sse_resolve on $self->{sse}, i.e. whichever connect was current then. Fix: the timer is stored on its connect ($s->{timer}) and settles only that connect (_sse_resolve takes an optional $s, default $self->{sse}); _sse_resolve removes the timer when the connect settles. Tests: 3 new t/http.t subtests (fake_sse got an endpoint_delay knob). (a) the card repro: a fast-failing connect, a 2nd connect 1 s later whose endpoint arrives 1.5 s after that, request_timeout 2; (b) a finished connect leaves nothing holding the upstream (weak ref); (c) a stop during the connect no longer leaves start_p hanging. All 3 red before the fix and green after, under EV and Poll; 5x5 repeat runs green. Mutation check: remove-only fails (c), bind-only fails (b). prove -lr t/ PASS in the shared tree (30 files, 27 ok) and in a HEAD export + my files (28 files, 25 ok); skipped: docker-live.t, npx.t, wiki-live.t. Proposed subject: "Keep an SSE connect's endpoint timeout from rejecting a later connect (k66)". Changes: none. Drift for this board: (1) Facade::_tool/_prompt/_resource closures hold the upstream strongly, so upstream -> server -> tool code -> upstream is a cycle and an upstream with any tool is never freed (a reload leaks each replaced or removed upstream; verified in scratch). (2) _close_sse removes a pending SSE connect without settling its promise. Since k66 its own timer rejects it after request_timeout (before: hung forever), but that is counted as a connect failure and logged as "timed out waiting for the SSE endpoint"; _close_sse should settle it at once.
+
+Committed as 6c2f3e0.
