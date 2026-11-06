@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T14:52:51Z
+created: 2026-11-06T12:57:08Z
+id: 134
+priority: low
+started: 2026-11-06T13:23:47Z
+status: done
+tags:
+- upstream
+- reload
+title: A replaced upstream's late handshake can still notify its old listeners
+updated: 2026-11-06T15:07:01Z
+---
+
+Found during k78 (worker). When a reload replaces an upstream while its start is under way, the old object's handshake can still finish and apply its manifest; since k78 that may send a list_changed on the old endpoint and rebuild /all with a notification. Harmless -- the listeners list again and get the current lists -- but spurious. Done: an upstream that the hub no longer holds applies no manifest and notifies nobody; test with a reload during a slow start.
+
+Fixed: new Upstream::_dropped (refaddr check against upstreams_by_name); _apply_manifest in Upstream and Fork returns early for an upstream the hub no longer holds: no cache write (the new upstream shares it when only env changed), no notification. POD in MCP::Hub's reload section. Main agent checked: every _apply_manifest call sits in a promise then (next tick), and reload swaps the map synchronously after warming, so a new upstream is never taken for dropped. Test t/reload.t red 3/12 on HEAD; green under EV and Poll. Left as is (harmless): the start of a dropped upstream still resolves and sets ready on an object nobody holds. -> review.
+
+commit-ready: w-five snapshots
+
+Committed as d91d9a5. Skill text in 43760d2.
+
+Trailer reworded to Opus by the main agent (backup refs/backup/pre-reword-k133-k57b): d91d9a5 is now 152a327; skill text 43760d2 is now 7175354.
