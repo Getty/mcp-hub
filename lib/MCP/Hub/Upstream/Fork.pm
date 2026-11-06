@@ -266,27 +266,6 @@ sub _on_stderr ($self, $bytes) {
   return $self;
 }
 
-# The worker's socket and its stderr pipe end together, and the loop may see
-# the socket and the exit first. What is still in the pipe -- why a
-# constructor died, say -- is read before the exit is reported.
-sub _on_exit ($self, $status) {
-  return $self unless $self->{pid};    # already handled
-  $self->_drain_stderr;
-  return $self->SUPER::_on_exit($status);
-}
-
-sub _drain_stderr ($self) {
-  my $handle = $self->{err_stream} && $self->{err_stream}->handle or return $self;
-  $handle->blocking(0);
-  my $bytes = '';
-  for (1 .. 16) {
-    last unless sysread $handle, my $chunk, 65536;
-    $bytes .= $chunk;
-  }
-  $self->_on_stderr($bytes) if length $bytes;
-  return $self;
-}
-
 # A worker execs nothing: an exit 127 is the class's own.
 sub _exec_hint ($self, $status) { return '' }
 

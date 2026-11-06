@@ -53,8 +53,7 @@ sub _exec_hint ($self, $status) { return '' }
 sub _on_exit ($self, $status) {
   return $self unless $self->{pid};    # already handled
   my $deliberate = $self->{retiring};
-  $self->_drain_stderr;
-  $self->SUPER::_on_exit($status);
+  $self->SUPER::_on_exit($status);    # which reads the rest of its stderr first
 
   if (!$deliberate && (my $owner = $self->owner)) {
     my $why  = 'exited (' . MCP::Hub::Upstream::Stdio::_exit_reason($status) . ')';
@@ -63,23 +62,6 @@ sub _on_exit ($self, $status) {
   }
 
   $self->_teardown;
-  return $self;
-}
-
-# The CLI's stdout and stderr end together, and the IOLoop may see the end of
-# stdout -- and the exit -- first, under load, with all ready at once. The
-# stdio transport then drops the stderr pipe with Docker's own message still
-# unread in it, so what is there is read first. A CLI that lingers, writing
-# on, is not waited for.
-sub _drain_stderr ($self) {
-  my $handle = $self->{err_stream} && $self->{err_stream}->handle or return $self;
-  $handle->blocking(0);
-  my $bytes = '';
-  for (1 .. 16) {
-    last unless sysread $handle, my $chunk, 65536;
-    $bytes .= $chunk;
-  }
-  $self->_on_stderr($bytes) if length $bytes;
   return $self;
 }
 

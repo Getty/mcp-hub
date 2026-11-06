@@ -271,6 +271,24 @@ sub _on_stderr ($self, $bytes) {
   }
 }
 
+# The child's stdout and its stderr end together, and the loop may see the end
+# of stdout -- and the exit -- first, under load, with all ready at once. What
+# it wrote last is often why it died: Docker's own message, a worker's
+# constructor dying. So what is still in the pipe is read before the exit is
+# handled, up to 1 MB and without blocking: a process that lingers on the
+# pipe, writing on, is not waited for.
+sub _drain_stderr ($self) {
+  my $handle = $self->{err_stream} && $self->{err_stream}->handle or return $self;
+  $handle->blocking(0);
+  my $bytes = '';
+  for (1 .. 16) {
+    last unless sysread $handle, my $chunk, 65536;
+    $bytes .= $chunk;
+  }
+  $self->_on_stderr($bytes) if length $bytes;
+  return $self;
+}
+
 # The child's end of the socket is closed: the child is gone, or going. Its
 # exit is handled once its status is in as well (_on_exit) -- nothing here
 # waits for it, the one loop runs on.
@@ -313,6 +331,9 @@ sub _on_exit ($self, $status) {
   # Remember which pid this exit belongs to: the catch in start_p must not
   # count it a second time.
   $self->{exited_pid} = $pid;
+
+  # Its last words, before the exit is reported (and the pipe dropped).
+  $self->_drain_stderr;
 
   my $child = delete $self->{child} // {};
   Mojo::IOLoop->remove($_) for grep {defined} $self->{kill_timer}, $child->{linger};
@@ -519,7 +540,9 @@ npm and Python servers in the wild that do not speak the current stateless
 revision.
 
 The child's stdin and stdout are a single C<AF_UNIX> socket pair wrapped in a
-L<Mojo::IOLoop::Stream>, its stderr a pipe logged at C<debug>; every other fd it
+L<Mojo::IOLoop::Stream>, its stderr a pipe logged at C<debug> -- read to the end
+(up to 1 MB) before the child's exit is handled, so that the last lines it wrote
+are logged even when the end of its stdout is seen first; every other fd it
 inherited from the hub is closed before the exec (L<MCP::Hub::Child>). All
 requests are non-blocking promises, correlated by an integer id, with a
 per-request timeout that rejects the promise and sends
