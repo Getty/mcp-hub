@@ -273,7 +273,9 @@ sub _http_send_p ($self, $method, $params, $of_start, $renewed = undef) {
   };
 
   # A request that fails is rejected with its reason as it is -- as over
-  # HTTP+SSE, with no newline at its end for the agent to read.
+  # HTTP+SSE, with no newline at its end for the agent to read. One the remote
+  # answers with a JSON-RPC error is rejected with that answer, which reads the
+  # same (MCP::Hub::Upstream::_error_answer); an HTTP error status is no answer.
   my $fail = sub ($reason) { Mojo::Promise->reject("upstream @{[$self->name]}: $reason") };
   $self->req_ua->start_p($tx)->then(sub ($tx) {
     # Called off by a stop: the answer is turned away. An initialize the stop
@@ -306,7 +308,7 @@ sub _http_send_p ($self, $method, $params, $of_start, $renewed = undef) {
     # does not SSE-parse -- the de-chunked events sit in the body; parse those.
     my $res = $found // _reply_from_body($tx, $id);
     return $fail->("no response for $method") unless ref $res eq 'HASH';
-    return $fail->($self->_error_message($res->{error})) if $res->{error};
+    return Mojo::Promise->reject($self->_error_answer($res->{error})) if $res->{error};
     return $res->{result} // {};
   })->then(
     sub ($result) { $settled->(); $done->resolve($result); return },
@@ -571,7 +573,7 @@ sub _on_message ($self, $msg) {
     my $pending = delete $self->{pending}{$msg->{id}} or return;
     Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
     if (my $err = $msg->{error}) {
-      $pending->{promise}->reject("upstream @{[$self->name]}: " . $self->_error_message($err));
+      $pending->{promise}->reject($self->_error_answer($err));
     }
     else { $pending->{promise}->resolve($msg->{result} // {}) }
     return;

@@ -234,7 +234,7 @@ sub _on_response ($self, $msg) {
     or return $self->log->debug("[@{[$self->name]}] response with unknown id @{[$msg->{id} // '?']}");
   Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
   if (my $err = $msg->{error}) {
-    $pending->{promise}->reject("upstream @{[$self->name]}: " . $self->_error_message($err));
+    $pending->{promise}->reject($self->_error_answer($err));
   }
   else {
     $pending->{promise}->resolve($msg->{result} // {});
@@ -589,6 +589,11 @@ when the capabilities declare them, C<prompts/list> and C<resources/list>. The
 result is written to the manifest cache and turned into the L<MCP::Server> via
 L<MCP::Hub::Facade>. A C<notifications/*/list_changed> from the child triggers a
 background refresh.
+
+A C<prompts/list> or C<resources/list> the child answers with an error is an
+empty list. One it does not answer -- it times out, a stop cuts it off, the
+child exits -- fails a refresh, and the manifest stays as it was; a start takes
+it for an empty list (L<MCP::Hub::Upstream/refresh_p>).
 
 =head1 ATTRIBUTES
 

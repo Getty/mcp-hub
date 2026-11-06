@@ -263,3 +263,8 @@ Revision history for MCP-Hub
     request in flight. An idle stop no longer comes between two of its
     lists, which used to lose the lists after it, and the idle countdown
     starts again when the refresh ends.
+  - A refresh cut short -- a stop between its lists, a timeout, a lost
+    connection -- no longer stores a manifest without prompts and resources
+    and tells the listeners they changed; it fails and the manifest stays.
+    A prompts/list or resources/list the upstream answers with an error is
+    still an empty list.

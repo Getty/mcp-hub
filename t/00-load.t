@@ -18,6 +18,7 @@ my @modules = qw(
   MCP::Hub::Upstream::Fork
   MCP::Hub::Upstream::Stdio
   MCP::Hub::Upstream::Http
+  MCP::Hub::Upstream::ErrorAnswer
   MCP::Hub::Docker
   MCP::Hub::Upstream::Docker
   MCP::Hub::Upstream::Docker::Engine

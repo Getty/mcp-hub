@@ -1523,6 +1523,67 @@ subtest 'streamable http upstream: a refresh that a stop and a start overtake is
   }
 };
 
+subtest 'a refresh whose prompts/list goes unanswered keeps the manifest, an error answer is an empty list' => sub {
+  # A prompts/list that failed was taken for an empty list, whatever the
+  # failure was: a refresh whose prompts/list timed out stored a manifest with
+  # no prompts. Only an error answer -- the remote declares prompts and cannot
+  # list them -- says there are none. Over both transports.
+  for my $transport (qw(http sse)) {
+    for my $how ('an error answer', 'no answer in time') {
+      my $what   = "$transport, $how";
+      my $phase  = 'start';
+      my $answer = sub ($req) {
+        my ($id, $method) = ($req->{id}, $req->{method} // '');
+        return undef unless defined $id;
+        if ($method eq 'prompts/list' && $phase eq 'refresh') {
+          return {jsonrpc => '2.0', id => $id, error => {code => -32601, message => 'no prompts here'}}
+            if $how eq 'an error answer';
+          return $transport eq 'http' ? Mojo::Promise->new : undef;    # held, or never sent
+        }
+        my $result
+          = $method eq 'initialize'
+          ? {protocolVersion => '2025-06-18', capabilities => {prompts => {}}, serverInfo => {name => 'fake', version => '0.0.1'}}
+          : $method eq 'tools/list' ? {tools => [map { {name => $_, inputSchema => {type => 'object'}} } 'ping', $phase eq 'refresh' ? 'pong' : ()]}
+          : $method eq 'prompts/list' ? {prompts => [{name => 'hello'}]}
+          :                             {content => [{type => 'text', text => 'pong'}]};
+        return {jsonrpc => '2.0', id => $id, result => $result};
+      };
+      my $fake = $transport eq 'http' ? fake_http(answer => $answer) : fake_sse(answer => $answer);
+      my $up   = MCP::Hub::Upstream::Http->new(
+        name      => 'fake',
+        config    => {type => $transport, url => $fake->{url}, request_timeout => 1},
+        cache_dir => tempdir->to_string,
+      );
+      my @logged;
+      my $log = Mojo::Log->new;
+      $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+      $up->log($log);
+      is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$what: started";
+      is_deeply [map { $_->name } @{$up->server->prompts}], ['hello'], "$what: the prompts are listed";
+
+      $phase = 'refresh';
+      is _await_bounded($up->refresh_p, 5), $up, "$what: the refresh is over";
+      if ($how eq 'an error answer') {
+        is_deeply [map { $_->name } @{$up->server->tools}], ['ping', 'pong'], "$what: it found the new tool";
+        is_deeply [map { $_->name } @{$up->server->prompts}], [], "$what: and no prompts to list";
+        ok !(grep {/refresh failed/} @logged), "$what: the refresh did not fail" or diag explain \@logged;
+      }
+      else {
+        is_deeply [map { $_->name } @{$up->server->tools}], ['ping'], "$what: the manifest is the one before";
+        is_deeply [map { $_->name } @{$up->server->prompts}], ['hello'], "$what: the prompts are still listed";
+        is scalar(grep {/^debug: \[fake\] refresh failed: /} @logged), 1,
+          "$what: the refresh failed, at debug level"
+          or diag explain \@logged;
+      }
+      is $up->state, 'ready', "$what: the upstream is ready";
+      is $up->error, undef,   "$what: with no failure reason";
+
+      _stop($up);
+      $fake->{daemon}->stop;
+    }
+  }
+};
+
 subtest 'streamable http upstream: a start that fails, or that a stop calls off, ends the session it was given' => sub {
   # A start whose initialize was answered with a session id, and which failed
   # after that, left the session open on the remote until its own timeout. So

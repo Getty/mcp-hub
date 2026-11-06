@@ -4,6 +4,7 @@ use Mojo::Base 'Mojo::EventEmitter', -signatures;
 
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
+use MCP::Hub::Upstream::ErrorAnswer;
 use MCP::Server::Context;
 use Mojo::IOLoop;
 use Mojo::JSON   qw(encode_json);
@@ -269,16 +270,23 @@ sub _handshake_p ($self) {
   });
 }
 
-# The lists of the upstream, for a start ($of_start) or a refresh.
+# The lists of the upstream, for a start ($of_start) or a refresh. A
+# prompts/list or resources/list the upstream answers with an error is an empty
+# list: it declares the capability and has nothing to list. One that gets no
+# answer -- it timed out, a stop cut it off, the child or the connection went --
+# says nothing about the list. A refresh fails there, and the manifest it was to
+# replace stays (refresh_p). A start takes either for an empty list, as it
+# always has: it has no manifest of its own to keep.
 sub _list_all_p ($self, $of_start = 0) {
-  my $caps = $self->{capabilities} // {};
+  my $caps  = $self->{capabilities} // {};
+  my $empty = sub ($err, @) { return $of_start || $self->_answered($err) ? [] : Mojo::Promise->reject($err) };
   my %out;
   return $self->_paginate_p('tools/list', 'tools', $of_start)->then(sub ($tools) {
     $out{tools} = $tools;
-    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts', $of_start)->catch(sub {[]}) : [];
+    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts', $of_start)->catch($empty) : [];
   })->then(sub ($prompts) {
     $out{prompts} = $prompts;
-    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources', $of_start)->catch(sub {[]}) : [];
+    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources', $of_start)->catch($empty) : [];
   })->then(sub ($resources) {
     $out{resources} = $resources;
     return \%out;
@@ -342,6 +350,19 @@ sub _error_message ($self, $err) {
   };
   return defined $msg ? $msg : 'error';
 }
+
+# What a request the upstream answered with a JSON-RPC error is rejected with:
+# an MCP::Hub::Upstream::ErrorAnswer, which reads as "upstream NAME: " and the
+# error's message -- the text every rejection reads as -- and says that the
+# upstream did answer. A request that got no answer is rejected with a string.
+sub _error_answer ($self, $error) {
+  return MCP::Hub::Upstream::ErrorAnswer->new(
+    error   => $error,
+    message => "upstream @{[$self->name]}: " . $self->_error_message($error),
+  );
+}
+
+sub _answered ($self, $err) { return blessed $err && $err->isa('MCP::Hub::Upstream::ErrorAnswer') ? 1 : 0 }
 
 sub _now_iso {
   my @t = gmtime;
@@ -535,6 +556,12 @@ Forward a C<resources/read>, starting the upstream if needed.
 Re-fetch the manifest and rebuild L</server>. A promise. For a C<failed>
 upstream this is the explicit "try again": it clears the failure first. A no-op
 for Perl upstreams.
+
+A C<prompts/list> or C<resources/list> the upstream answers with a JSON-RPC
+error is taken for an empty list: it declares the capability and has nothing to
+list. One that gets no answer -- it times out, a stop cuts it off, the child or
+the connection goes -- fails the refresh of a running upstream, which keeps the
+manifest it had and notifies nobody. A start takes either for an empty list.
 
 Agents listening on the upstream's endpoint are sent a
 C<notifications/tools/list_changed>, C<prompts/list_changed> or
