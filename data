@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-06T10:33:07Z
+created: 2026-11-03T06:33:15Z
+id: 26
+priority: low
+started: 2026-11-06T03:22:04Z
+status: done
+tags:
+- refactor
+title: Deduplicate the idle-timer code of Upstream::Stdio and Upstream::Docker
+updated: 2026-11-06T10:33:55Z
+---
+
+Noted by the k21 worker on 2026-11-03: `_arm_idle_timer` / `_clear_idle_timer` / the `apply_timeouts` re-arm exist twice, in `Upstream::Stdio` and in the new `Upstream::Docker` (k21 left Stdio.pm untouched on purpose). Pull them into one place, e.g. the base class or a role, with no change in behaviour. Small extra from the same note: "line buffer exceeded 16MB" is logged twice per kill.
+
+From k42: _drain_stderr now exists twice, in Upstream::Fork and Upstream::Docker::Stdio; it could move into Upstream::Stdio along with the idle-timer dedup.
+
+Done, uncommitted (worker). The _drain_stderr part of this card is done by k25. Dedup: _arm_idle_timer/_clear_idle_timer, touch and the apply_timeouts re-arm now live once in MCP::Hub::Upstream, gated by _idles (an upstream with an idle_timeout attribute: stdio, fork, docker, compose); Stdio's and Docker's copies are gone, Docker::apply_timeouts only forwards request_timeout to its engine. No behaviour change: Http and Perl have no idle_timeout and arm nothing (Http would not want it -- no process to stop); Stdio's dropped "&& pid" guard is implied by state ready. Line overflow: logged once per kill now -- the child is flagged, further reads are dropped and inbuf emptied, so the next child no longer starts on the 16 MB of the old one (before: 2-3 log lines, and the next call was killed too). Tests: t/stdio.t new subtest 'a line over 16MB: the child is killed, once, and the next one starts clean' (red on HEAD: got 2-3 lines, next call "exited (signal 9)"); new t/idle.t (characterization, green on HEAD and after: re-arm on a shorter idle_timeout, 0 stops the countdown, a request re-arms, stopped child arms nothing, a Perl upstream arms nothing); t/docker.t new subtest 'new timeouts reach a running container: its idle timer and its engine'. Green under EV and Poll. Files: lib/MCP/Hub/Upstream.pm, Upstream/Stdio.pm, Upstream/Docker.pm, t/stdio.t, t/idle.t, t/docker.t. Split: w-k39/k26.patch (k25 -> k26). Subject: "Keep one idle timer in the upstream base class, log a line overflow once (k26)". Changes: none. Drift for the main agent: a partial line left in inbuf when a child crashes mid-line still corrupts the next child's first line (reset inbuf in _attach); the idle timer is armed at a call's start, so a call longer than idle_timeout can be stopped mid-call. Drift filed as k122-k127; skill drift as a note on k57.
+
+Committed as 435bfd6
