@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T10:06:38Z
+id: 125
+priority: low
+status: backlog
+tags:
+- lifecycle
+- reload
+title: 'A reload''s old child is not waited for: it can overlap the new one and outlive
+  a shutdown'
+updated: 2026-11-06T10:06:38Z
+---
+
+Found during k39/k81 (drift). On reload, removed or changed upstreams are stopped and dropped from upstreams, not waited for. With k39 the old child can run on next to the new one for up to 7 s, and a shutdown right after a reload does not wait for it (shutdown_p only walks upstreams). Options: keep dropped upstreams in a leaving set until stopped_p resolves and include them in shutdown_p.
