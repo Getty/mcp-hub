@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-06T14:52:09Z
+created: 2026-11-06T12:56:53Z
+id: 133
+priority: low
+started: 2026-11-06T13:23:32Z
+status: done
+tags:
+- test
+title: 't/stdio-stop.t warns: "my" variable $deadline masks earlier declaration'
+updated: 2026-11-06T15:06:46Z
+---
+
+Found during k78/k113/k129 (worker); on HEAD since k128 (54d345a). prove -lr t/ prints "\"my\" variable $deadline masks earlier declaration in same scope at t/stdio-stop.t line 273". Done: the second declaration is an assignment (or its own block), the file runs without warnings under EV and Mojo::Reactor::Poll, and no assertion changes.
+
+Fixed: t/stdio-stop.t:273 assigns the $deadline declared earlier in the subtest instead of declaring it again. perl -wc warned on HEAD and does not now; no assertion changed; passes under EV and Poll; neither full-suite log has the warning. -> review.
+
+commit-ready: w-five snapshots
+
+Committed as 817fd81.
+
+Trailer reworded to Opus by the main agent (backup refs/backup/pre-reword-k133-k57b): 817fd81 is now 0ba078f.
