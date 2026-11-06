@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T11:43:17Z
+created: 2026-11-06T03:08:28Z
+id: 72
+priority: low
+started: 2026-11-06T10:44:23Z
+status: done
+tags:
+- cosmetic
+- errors
+title: Failed-start message reads '…executable?, run mcp-hub refresh NAME'
+updated: 2026-11-06T11:47:23Z
+---
+
+Found by mcp-hub-worker during k56. Since the exit-127 hint is part of the failed reason, the 503/refresh text of a failed stdio start reads "…exited (code 127) while starting 'X' -- is it installed and executable?, run 'mcp-hub refresh NAME' to try again" -- comma after a question mark. Done: the joining text reads cleanly whether the reason ends in '?' or not; test pins the full string.
+
+Joining text now built once in Upstream::_failed_message; '?'/'.'/'!' reasons get a new sentence. Pinned in t/failed-reason.t (stdio/http/docker) and t/stdio.t; red on HEAD, green EV/Poll.
+
+Committed as a8ae9c2
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): a8ae9c2 is now c246b88 on local main.
