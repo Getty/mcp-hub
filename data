@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T07:26:53Z
+created: 2026-11-06T06:37:08Z
+id: 97
+priority: medium
+started: 2026-11-06T06:45:59Z
+status: done
+tags:
+- native
+- bug
+title: ClaudeHistory/ClaudeSessions die on a JSON line that is not an object
+updated: 2026-11-06T07:26:53Z
+---
+
+Found during k85 (already in HEAD before it). A session-file line that decodes to a non-object -- [1], 42, "x" -- passes `eval { decode_json($line) } or next` and then `$rec->{sessionId}` / `$rec->{type}` dies with "Not a HASH reference". list_sessions, search_conversations and get_conversation (and list_running_sessions) then fail as a whole for every session, not just the bad one.
+
+Done: every place that decodes a line skips one whose value is not a HASH (ref $rec eq q{HASH}); a test under t/native/ with such a line in a fixture session: list, search, get and list_running_sessions still answer and the other lines count.
+
+2026-11-06 07:17 Cause: eval { decode_json } or next lets [1], 42, "x", true through; $rec->{...} then dies "Not a HASH reference", and the whole tool fails. Fix: ClaudeHistory and ClaudeSessions decode each line through a new _record($line), which returns the value only if it is a HASH. It is used at both _refresh sites (from the offset on, and the raw-tested lines before it), in _each_record, and in the k86 head and tail scans. Test t/native/claude-non-object-lines.t puts 8 non-object lines at the head, in the middle and at the tail. list_projects, list_sessions, search_conversations (cold, warm, after an append), get_conversation and list_running_sessions all answer and match the same session without those lines (4 messages). Red before; I put each of the 5 sites back one at a time and the test caught every one. Also found: ClaudeSessions::_text dies on a content block that is not a hash ("content":["x"]: Can't use string as a HASH ref). That fails list_running_sessions as a whole in the same way. ClaudeHistory::_text already guards against it. Candidate card on this board.
+
+2026-11-06 07:17 Done, not committed. Files: lib/MCP/Hub/Native/ClaudeHistory.pm, lib/MCP/Hub/Native/ClaudeSessions.pm, new t/native/claude-non-object-lines.t (needs git add). Patch: scratchpad w-native2/k97.patch (first in the chain k97, k98, k93, from f8d6d62; applies unchanged on 19ce671). Verified: prove -lr t/native/ and the full prove -lr t/ pass on an export of f8d6d62 and on one of 19ce671 (36 files, 393 and 395 tests). The full run also passes under MOJO_REACTOR=Mojo::Reactor::Poll. Self-skips: t/docker-live.t, t/npx.t, t/wiki-live.t. Proposed subject: "Skip a session-file line that is JSON but not an object (k97)".
+
+Committed as 34457ce
