@@ -25,19 +25,13 @@ use constant FAIL_WINDOW    => 5;
 # request, and cancels it on the remote (_cancel).
 use constant TIMED_OUT => qr/^Request timeout\z/;
 
-# The streaming user agent for the long-lived SSE GET stream (no timeout).
-has ua => sub {
-  my $ua = Mojo::UserAgent->new;
-  $ua->inactivity_timeout(0);
-  $ua->max_response_size(0);
-  return $ua;
-};
-
-# A separate agent for POSTs, so its request timeout never cuts the SSE stream.
-# That timeout is all that bounds a request: a remote may stay silent longer
-# than Mojo's inactivity timeout (40 s, or $MOJO_INACTIVITY_TIMEOUT) -- a long
-# tool call answered with one JSON body, an event stream without keep-alives
-# -- and is waited for all the same.
+# The agent for every POST, and for the DELETE that ends a session. The
+# long-lived HTTP+SSE GET stream is on no agent -- it is a raw Mojo::IOLoop
+# connection without a timeout (_open_sse_p) -- so this agent's request timeout
+# never cuts it. That timeout is all that bounds a request: a remote may stay
+# silent longer than Mojo's inactivity timeout (40 s, or
+# $MOJO_INACTIVITY_TIMEOUT) -- a long tool call answered with one JSON body, an
+# event stream without keep-alives -- and is waited for all the same.
 has req_ua => sub ($self) {
   my $ua = Mojo::UserAgent->new;
   $ua->request_timeout($self->request_timeout || 60);
@@ -911,9 +905,10 @@ L<Mojo::UserAgent/inactivity_timeout>, so a remote that stays silent longer
 than Mojo's default -- a long tool call answered with one JSON body, an event
 stream without keep-alives -- is waited for until the request timeout.
 
-=attr ua
-
-The L<Mojo::UserAgent> used for the long-lived SSE stream.
+The long-lived C<GET> stream of HTTP+SSE runs on no user agent: it is a plain
+L<Mojo::IOLoop> connection without a timeout, which the upstream reads the
+events from itself -- L<Mojo::UserAgent> parses no chunked event stream, and
+the servers in the wild send theirs chunked.
 
 =head1 METHODS
 

@@ -74,9 +74,12 @@ unterscheiden sich vorerst mit Absicht.
 
 ### Http — Streamable HTTP oder HTTP+SSE
 
-`Mojo::UserAgent`, zwei Agenten: der Stream-UA (SSE-GET) läuft **ohne** Timeout,
-der POST-UA mit `request_timeout` (Default 60 s) — sonst kappt der POST-Timeout
-den langlebigen SSE-Stream. Der POST-UA (`req_ua`) hat **keinen** Inactivity-Timeout:
+Ein `Mojo::UserAgent`, `req_ua`, trägt jeden POST (und das `DELETE` einer Session), mit
+`request_timeout` (Default 60 s). Der langlebige SSE-GET läuft auf keinem Agenten, sondern
+als rohe `Mojo::IOLoop`-Verbindung ohne Timeout (`_open_sse_p`: Header abstreifen,
+de-chunken, `Mojo::SSE`) — `Mojo::UserAgent` parst keinen chunked Event-Stream, und die
+Server da draußen senden ihren chunked; so kappt auch kein Request-Timeout den Stream.
+`req_ua` hat **keinen** Inactivity-Timeout:
 `request_timeout` ist die einzige Grenze eines Requests, auch wenn der Remote länger
 schweigt als Mojos Default (40 s bzw. `$MOJO_INACTIVITY_TIMEOUT`) — ein langer Call mit
 einer JSON-Antwort, ein Event-Stream ohne Keep-alive. Ein Reload, der `request_timeout`
