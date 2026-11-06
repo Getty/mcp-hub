@@ -232,6 +232,36 @@ subtest 'a call that comes upon a stop fails at once' => sub {
   is scalar(terms($signals, $t0)), 1, 'and the stop goes on as it would: SIGTERM once the grace is over';
 };
 
+subtest 'a request written just before the stop still reaches the child' => sub {
+  # Written in the same tick as the stop, it is still in the stream's buffer
+  # when the stop sends EOF -- and the stop shut the socket's write side at
+  # once. The request was lost: a child that ends on its EOF never read it, and
+  # the request failed as its exit; for one that stays on, the stream wrote it
+  # to the shut socket again and again, a core busy until the child was
+  # signalled. The EOF goes once what was written before it is out.
+  for my $case (['ends on its EOF', 0], ['stays on after it', 1, '--ignore-eof']) {
+    my ($what, $terms, @flags) = @$case;
+    my ($up, $signals) = upstream(@flags);
+    await_bounded($up->start_p, 30);
+    my $pid = $up->stats->{pid};
+    my ($r, $cpu0, $t0);
+    Mojo::IOLoop->next_tick(sub {
+      ($cpu0, $t0) = ((times)[0], Time::HiRes::time());
+      $up->_request_p('tools/call', {name => 'echo', arguments => {msg => 'hi'}})
+        ->then(sub { $r = shift }, sub { $r = {err => shift} });
+      $up->stop;
+    });
+    await_bounded($up->stopped_p, 20);
+    my $cpu = (times)[0] - $cpu0;
+    is ref $r eq 'HASH' && ref $r->{content} eq 'ARRAY' ? $r->{content}[0]{text} : undef, 'hi',
+      "a child that $what: the request is answered" or diag explain $r;
+    my @terms = terms($signals, $t0);
+    is scalar @terms, $terms, "and the stop goes on as it would: $terms SIGTERM";
+    is exit_of($pid), 'code 0', 'the child ends';
+    cmp_ok $cpu, '<', 0.5, sprintf 'no core busy meanwhile (%.2fs of CPU)', $cpu;
+  }
+};
+
 subtest 'a stop during the start is no failed start' => sub {
   # It comes as the start asks for its tools, or for its prompts -- which a
   # start takes for an empty list when they are not answered. The request is

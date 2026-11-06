@@ -143,7 +143,16 @@ sub stop ($self) {
   $self->{stopping} = 1;
   $self->_clear_idle_timer;
   return $self if $child->{stop} || $child->{killed};
-  shutdown($self->{socket}, 1) if $self->{socket};    # SHUT_WR -> EOF on child stdin
+
+  # SHUT_WR -> EOF on the child's stdin, once what was written to it is out. A
+  # request written in the same tick is still in the stream's buffer: shut
+  # first, it was lost -- the child ended on its EOF without it, and it failed
+  # as that exit -- and the stream wrote it to the shut socket over and over,
+  # busy until the child was gone. Nothing is written after the stop
+  # (_refused), so the buffer only drains.
+  my $stream = $self->{stream};
+  if   ($stream && $stream->is_writing) { $stream->once(drain => sub ($s) { shutdown($s->handle, 1) if $s->handle }) }
+  elsif ($self->{socket})               { shutdown($self->{socket}, 1) }
   $child->{eof}  = 1;
   $child->{stop} = Mojo::IOLoop->timer(EOF_GRACE, sub { $self->_terminate($child) });
   return $self;
@@ -614,10 +623,12 @@ L</idle_timeout> seconds after its last request ended -- never while one is in
 flight, however long it runs, nor while a refresh asks it for its lists --
 unless L<MCP::Hub::Upstream/always_on>, and restarted on the next call.
 
-A stop closes the child's stdin and gives it two seconds to exit on its own, as
-a stdio server does at the end of its input. A child that does is never sent a
-signal, so whatever it was in the middle of -- a git commit, say -- is finished.
-One that is still there gets C<SIGTERM>, and C<SIGKILL> five seconds after that.
+A stop closes the child's stdin -- after whatever was written to it before, so
+that a request written just before the stop still reaches it -- and gives it
+two seconds to exit on its own, as a stdio server does at the end of its
+input. A child that does is never sent a signal, so whatever it was in the
+middle of -- a git commit, say -- is finished. One that is still there gets
+C<SIGTERM>, and C<SIGKILL> five seconds after that.
 A call that comes in meanwhile waits for it to be gone and starts the next
 child: the hub runs one child at a time. L<MCP::Hub::Upstream/stopped_p>
 resolves once it is gone, and the daemon waits for that on shutdown. A child

@@ -177,6 +177,7 @@ sub mcp_answer ($error) {
 # is answered 404 and counted in `gone`, at once, or -- when it forgot the
 # session while it held the request -- once the answer is ready. `stateless`
 # gives no session ids, and an answer {http_status => N} is a bare status N.
+# A notification is answered with `notify_status` (202).
 sub fake_http (%opt) {
   my $app = Mojolicious->new;
   $app->log->level('warn');
@@ -195,7 +196,7 @@ sub fake_http (%opt) {
     push @{$state->{posts}}, {%$req, session => $sid, version => $c->req->headers->header('MCP-Protocol-Version')};
     my $gone = sub { defined $sid && !$state->{live}{$sid} && ++$state->{gone} };
     return $c->rendered(404) if $gone->();
-    return $c->rendered(202) unless defined $req->{id};    # a notification
+    return $c->rendered($state->{notify_status} // 202) unless defined $req->{id};    # a notification
     my $answered;
     $c->on(finish => sub { $state->{cut}++ unless $answered });
     $c->render_later;
@@ -2184,6 +2185,44 @@ subtest 'streamable http upstream: a request it times out is cancelled on the re
   is $cancels->[0]{version}, '2025-06-18', 'with the negotiated version';
   is $up->state, 'ready', 'the upstream stays ready';
   is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'and answers the next call';
+  _stop($up);
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: a notification the remote does not take is logged' => sub {
+  # Its POST went out with an empty callback: a notification the remote did
+  # not take -- an error status, a refused connection -- left no trace, where
+  # over HTTP+SSE it is logged. It is logged at debug, as there, and changes
+  # nothing: there is no request to fail.
+  my $probe = IO::Socket::INET->new(Listen => 5, LocalAddr => '127.0.0.1', LocalPort => 0, ReuseAddr => 1)
+    or plan skip_all => "cannot bind a probe socket: $!";
+  my $dead_port = $probe->sockport;
+  close $probe;
+  my $fake = fake_http(answer => pong_answer());
+  $fake->{notify_status} = 500;
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}},
+    cache_dir => tempdir->to_string,
+  );
+  my @logged;
+  my $log = Mojo::Log->new(level => 'debug');
+  $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+  $up->log($log);
+  my $failed = sub ($method, $reason) { [grep { $_ eq "debug: [fake] POST of $method failed: $reason" } @logged] };
+
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  ok until_true(sub { @{$failed->('notifications/initialized', 'Internal Server Error')} }),
+    'a notification answered with an error status is logged at debug' or diag explain \@logged;
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'and the upstream answers the next call';
+  {
+    local $up->{url} = "http://127.0.0.1:$dead_port/mcp";
+    $up->_notify('notifications/cancelled', {requestId => 1, reason => 'test'});
+    ok until_true(sub { @{$failed->('notifications/cancelled', 'Connection refused')} }),
+      'so is one the remote refuses to connect for' or diag explain \@logged;
+  }
+  is $up->state, 'ready', 'neither stopped the upstream';
+  is_deeply [grep { !/^debug:/ && !/^info:/ } @logged], [], 'nor was logged louder' or diag explain \@logged;
   _stop($up);
   $fake->{daemon}->stop;
 };

@@ -421,9 +421,17 @@ sub _session_gone ($self, $sid, $renew) {
   return undef;
 }
 
+# A notification, which nothing waits for: a POST of one the remote does not
+# take -- an HTTP error status, no response, a refused connection -- is only
+# logged, at debug, as over HTTP+SSE (_sse_post_failed). The callback holds the
+# upstream weakly: a POST in flight keeps no upstream a reload has dropped.
 sub _http_post ($self, $obj) {
   my $tx = $self->req_ua->build_tx(POST => $self->{url} => $self->_http_headers($obj->{method}) => json => $obj);
-  $self->req_ua->start($tx => sub { });
+  weaken(my $weak = $self);
+  $self->req_ua->start($tx => sub ($ua, $tx) {
+    my $err = $tx->error or return;
+    $weak->log->debug("[@{[$weak->name]}] POST of $obj->{method} failed: " . $weak->_error_message($err)) if $weak;
+  });
   return 1;
 }
 
@@ -819,7 +827,8 @@ C<Mcp-Session-Id> and C<MCP-Protocol-Version>, over HTTP+SSE to the endpoint.
 Never for an C<initialize>, which a client may not cancel, and not once the
 upstream is stopped, or has left the session -- or the stream -- the request
 went out on. Nothing waits for it: the request has failed already, and a POST
-of it that fails changes nothing.
+of it that fails changes nothing. Like the POST of any notification the remote
+does not take, on either transport, it is only logged at debug level.
 
 Over HTTP+SSE every request is a POST whose answer comes on the stream. A POST
 the remote does not take -- an HTTP error status, no response, a refused

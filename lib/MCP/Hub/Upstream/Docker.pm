@@ -115,7 +115,7 @@ sub start_p ($self) {
 
     if ($stopped) {
       $self->state('stopped');
-      $done->reject("upstream @{[$self->name]}: stopped while starting");
+      $done->reject("upstream @{[$self->name]}: stopped");
       return;
     }
 
@@ -596,7 +596,8 @@ then removes the container in case the CLI was killed first; an HTTP container i
 (C<docker stop -t 5>) and removed -- by its labels, when C<docker run -d> never
 said its id. L</stopped_p> resolves once that is done -- the daemon waits for it
 on shutdown. A stop that arrives while the container starts, even during the
-MCP handshake, ends the start and removes the container.
+MCP handshake, ends the start and removes the container; the start fails as
+C<upstream NAME: stopped>, as a stdio or HTTP start a stop calls off does.
 
 =head1 ATTRIBUTES
 

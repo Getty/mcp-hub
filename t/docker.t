@@ -503,7 +503,7 @@ subtest 'a stop while starting' => sub {
   $up->stop;
   my ($ok, $err) = await($start);
   ok !$ok, 'the start gives up';
-  like $err, qr/stopped while starting/, 'saying it was stopped';
+  is $err, 'upstream srv: stopped', 'saying it was stopped';
   is $up->state, 'stopped', 'stopped';
   await($up->stopped_p);
   ok wait_until(sub { !@{records($fake)} }), 'and the container it had begun is gone';
@@ -525,7 +525,7 @@ subtest 'a stop during the MCP handshake' => sub {
 
   my ($ok, $err) = await($up->start_p);
   ok !$ok, 'the start gives up';
-  like $err, qr/stopped while starting/, 'saying it was stopped';
+  is $err, 'upstream srv: stopped', 'saying it was stopped';
   is $up->state, 'stopped', 'stopped, not ready';
   ok !$up->{engine}, 'with no connection left';
   ($ok) = await($up->stopped_p, 15);
@@ -1280,7 +1280,7 @@ subtest 'compose: what the service waits for is ready before the handshake' => s
   my $t0 = time;
   $up->stop;
   ok wait_until(sub { defined $err || $ok }, 10), 'the start ends';
-  like $err // '', qr/stopped while starting/, 'as stopped';
+  is $err, 'upstream tool: stopped', 'as stopped';
   ok time - $t0 < 5, 'at once, not when the database is healthy';
   is $up->state, 'stopped', 'and the upstream is stopped';
   ok !(grep { $_->{cwd} eq $slow && $_->{argv}[1] eq 'run' } @{calls($fake)}), 'without running the service';

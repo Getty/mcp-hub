@@ -45,7 +45,10 @@ Listen-Socket des Hubs ist nicht close-on-exec, ein Kind, das den Hub überlebt,
 sonst den Port —, und `child_env` lässt `MOJO_REUSE` weg; dasselbe gilt für jeden
 `docker`-Lauf (`Docker::run_p`), der Fork-Worker legt `/dev/null` darüber
 (`inherited_fds`). Den Exit-Status holt `watch_exit`, aufgesetzt direkt nach dem `fork`.
-Stop: `shutdown` SHUT_WR (EOF) → nach `EOF_GRACE` (2 s) `SIGTERM` → nach `KILL_GRACE`
+Stop: `shutdown` SHUT_WR (EOF) — erst nach `drain`, wenn der Stream noch puffert: ein im
+selben Tick geschriebener Request ginge sonst verloren (das Kind endet ohne ihn auf EOF, er
+scheitert als dessen Exit) und der Stream schriebe ihn endlos gegen den geschlossenen Socket
+(EPIPE-Spin) → nach `EOF_GRACE` (2 s) `SIGTERM` → nach `KILL_GRACE`
 (5 s) `SIGKILL`; wer auf EOF endet, sieht nie ein Signal. Ein Kind, das stdout schließt
 und weiterlebt, wird nach `KILL_GRACE` gekillt. Es läuft immer höchstens ein Kind: ein
 Call während eines Stops wartet auf dessen Ende (`_gone_p`) und startet das nächste.
@@ -58,7 +61,8 @@ Kinds — endet es auf den EOF, bevor es den Request in flight beantwortet, lehn
 trotzdem als `stopped` ab, nicht als `exited (…)`. Nicht gezählt, das Kind bleibt dem Stop
 (kein Signal, wenn es auf EOF endet), geloggt auf debug (`start called off by a stop`, wie
 Http), nie als `handshake failed` auf error; Kriterium ist `$child->{eof}`. Fork und
-Docker-stdio erben das mit `start_p` (Docker lehnt ohnehin als `stopped while starting` ab).
+Docker-stdio erben das mit `start_p` (Docker lehnt einen Start, den ein Stop abbricht, ebenso
+als `upstream NAME: stopped` ab).
 
 Ein Refresh (`refresh_p`, nur bei `ready` mit pid) ist an das Kind gebunden, auf dem er
 begann: `_list_all_p(0, $self->{child})` reicht es als `$on` bis `_request_p`, und jeder
@@ -102,7 +106,8 @@ ausgehandelter Version, SSE an den Endpoint). Nie für `initialize` (Spec); nich
 Upstream nicht `ready`/`starting` ist oder nicht mehr auf der Session des Requests (`$sent`)
 bzw. seinem Stream sitzt — ein Stop hat die Session beendet oder beendet sie nach dem
 letzten Call. Fire-and-forget: der Request ist schon abgelehnt; ein gescheiterter POST
-ändert nichts (SSE loggt ihn auf debug).
+ändert nichts und wird, wie der jeder Notification, über beide Transporte nur auf debug
+geloggt (`POST of METHOD failed: …`; Streamable HTTP in `_http_post`).
 
 Streamable-HTTP-Sessions: jeder Start öffnet eine **neue** Session — sein `initialize`
 trägt weder Session-Id noch `MCP-Protocol-Version`, die Id kommt nur aus dessen Antwort

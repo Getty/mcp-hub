@@ -311,3 +311,9 @@ Revision history for MCP-Hub
   - A stdio, forked-class or Docker-stdio request that times out is
     cancelled with a reason ('timed out after Ns'); an initialize that
     times out is no longer cancelled, as MCP 2025-06-18 requires.
+  - A stdio stop no longer loses a request written just before it, which
+    also kept a core busy while a child that stays on was waited for.
+  - Streamable HTTP logs a notification POST the remote does not take at
+    debug level, as HTTP+SSE does.
+  - A Docker or Compose start that a stop calls off fails as 'upstream
+    NAME: stopped' (was 'stopped while starting').
