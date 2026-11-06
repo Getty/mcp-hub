@@ -363,6 +363,34 @@ subtest 'a port means HTTP on it, and an HTTP container is stopped and removed' 
   is_deeply \@teardown, ["stop -t 5 $id", "rm -f $id"], 'stopped and removed by its id, nothing else';
 };
 
+subtest 'a refresh longer than idle_timeout is not stopped under it, over stdio or HTTP' => sub {
+  # The idle timer is the upstream's, and its engine refreshes the container:
+  # only a call held the countdown off, and the idle stop between two lists of
+  # a refresh took the container away -- the lists after it were taken for
+  # empty ones.
+  for my $entry ({docker => 't/stdio'}, {docker => 't/http', port => 8080}) {
+    my $mode = $entry->{port} ? 'http' : 'stdio';
+    my $fake = fake_docker(images => \%IMAGES);
+    my $up   = upstream($fake, $entry, idle_timeout => 1);
+    my ($ok, $err) = await($up->start_p);
+    ok $ok, "$mode: started" or diag $err;
+    is $up->mode, $mode, "$mode: over $mode";
+    ok +(await($up->call_tool('slow_lists', {seconds => 0.7})))[0], "$mode: every list takes 0.7 s from now on";
+    ok +(await($up->call_tool('notify', {what => 'tools', quiet => \1})))[0], "$mode: a new tool, unannounced";
+
+    my $since = @LOG;
+    my ($through, $refreshed) = await($up->refresh_p);
+    ok $through && $refreshed == $up, "$mode: the refresh is through";
+    Mojo::Promise->timer(0.3)->wait;    # what a stop under it would have ended by now
+    ok !(grep {/idle for/} @LOG[$since .. $#LOG]), "$mode: with no idle stop while it ran";
+    is $up->state, 'ready', "$mode: the container is up";
+    ok +(grep { $_->name eq 'echo2' } @{$up->server->tools}), "$mode: the refresh found the new tool";
+    is_deeply [map { $_->uri } @{$up->server->resources}], ['echo://readme'], "$mode: and the resources";
+    ok wait_until(sub { $up->state eq 'stopped' }, 10), "$mode: stopped once idle";
+    ok wait_until(sub { !@{records($fake)} }), "$mode: and the container is gone";
+  }
+};
+
 subtest 'without a port, the image decides' => sub {
   my $fake = fake_docker(images => \%IMAGES);
 

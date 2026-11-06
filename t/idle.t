@@ -142,6 +142,32 @@ subtest 'the countdown starts when the last request in flight ends' => sub {
   ok wait_until(sub { $up->state eq 'stopped' }), 'and stops the upstream';
 };
 
+subtest 'a refresh longer than idle_timeout is not stopped under it' => sub {
+  # Only calls held the countdown off. A refresh of the running child asks it
+  # for one list after another, and the idle stop came between two of them: it
+  # sent the EOF, and the next list was refused -- taken for an empty one, so
+  # the refresh lost that list, and the child it was asking went.
+  my @lines;
+  my $up = upstream(idle_timeout => 1);
+  $up->log(log_to(\@lines));
+  await_bounded($up->call_tool('slow_lists', {seconds => 0.7}));    # three lists: 2.1 s
+  await_bounded($up->call_tool('notify', {what => 'tools', quiet => \1}));
+  my $pid = $up->stats->{pid};
+
+  my $refreshed = await_bounded($up->refresh_p);
+  my $end       = time;
+  is $refreshed, $up, 'the refresh is through' or diag explain $refreshed;
+  Mojo::Promise->timer(0.3)->wait;    # what a stop under it would have ended by now
+  is idle_stop_at(\@lines), undef, 'with no idle stop while it ran';
+  is $up->state, 'ready', 'the upstream is ready';
+  is $up->stats->{pid}, $pid, 'with the child it asked';
+  ok +(grep { $_->name eq 'echo2' } @{$up->server->tools}), 'whose new tool the refresh found';
+  is_deeply [map { $_->name } @{$up->server->prompts}],  ['greet'],         'with its prompts';
+  is_deeply [map { $_->uri } @{$up->server->resources}], ['echo://readme'], 'and its resources';
+  ok wait_until(sub { $up->state eq 'stopped' }), 'which stops once idle';
+  cmp_ok idle_stop_at(\@lines) // 0, '>=', $end + 0.9, 'idle_timeout after the refresh ended';
+};
+
 subtest 'apply_timeouts on a stopped child arms nothing' => sub {
   my $up = upstream(idle_timeout => 300);
   $up->apply_timeouts({idle_timeout => 1, request_timeout => 7});

@@ -69,7 +69,9 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   Cache-Manifest startet **nicht** bei Daemon-Start; die Façade kommt aus dem Cache.
   Erst der erste `tools/call`/`prompts/get`/`resources/read` ruft `start_p`; weitere Calls
   während `starting` queuen auf derselben Promise. Jeder Request ruft `touch`; der
-  Idle-Timer schließt stdin, `SIGTERM`, nach 5 s `SIGKILL`. `always_on` startet eager
+  Idle-Timer schließt stdin, `SIGTERM`, nach 5 s `SIGKILL`. Calls und der Refresh
+  eines laufenden Upstreams sind in flight (`_held_p`): kein Countdown, solange einer
+  läuft — er beginnt, wenn der letzte endet. `always_on` startet eager
   ohne Idle-Timer. Ein `fork`-Upstream liest sein Manifest beim Build in-process aus
   einer Wegwerf-Instanz (kein Cache, kein Warming) und forkt erst beim ersten Call.
 - **Manifest-Hash geht über `[command, args, cwd]` — nie über `env`.** `env` kann

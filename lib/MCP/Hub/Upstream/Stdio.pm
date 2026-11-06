@@ -135,11 +135,13 @@ sub stopped_p ($self) {
 }
 
 sub refresh_p ($self) {
+  # The running child is asked for its lists again, in flight like a call: an
+  # idle stop between two of them would refuse the next (_held_p).
   if ($self->state eq 'ready' && $self->{pid}) {
-    return $self->_list_all_p->then(sub ($lists) {
+    return $self->_held_p($self->_list_all_p->then(sub ($lists) {
       $self->_apply_manifest($self->_manifest_from($lists));
       return $self;
-    });
+    }));
   }
   $self->_clear_failure if $self->state eq 'failed';
   return $self->start_p;
@@ -557,8 +559,8 @@ The child is B<lazily> started: at daemon start a fresh cached manifest is
 enough to answer C<tools/list>, and nothing is spawned until the first
 C<tools/call>, C<prompts/get> or C<resources/read>. It is stopped again
 L</idle_timeout> seconds after its last request ended -- never while one is in
-flight, however long it runs -- unless L<MCP::Hub::Upstream/always_on>, and
-restarted on the next call.
+flight, however long it runs, nor while a refresh asks it for its lists --
+unless L<MCP::Hub::Upstream/always_on>, and restarted on the next call.
 
 A stop closes the child's stdin and gives it two seconds to exit on its own, as
 a stdio server does at the end of its input. A child that does is never sent a
@@ -605,8 +607,8 @@ C<5>.
 
 =attr idle_timeout
 
-Seconds after the last request ended before the child is stopped. Defaults to
-C<300>.
+Seconds after the last request -- a call, or a refresh of the running child --
+ended before the child is stopped. Defaults to C<300>.
 
 =head1 METHODS
 

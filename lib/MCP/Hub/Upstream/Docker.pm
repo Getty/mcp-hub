@@ -618,8 +618,9 @@ The crash-loop window in seconds. Defaults to C<5>.
 
 =attr idle_timeout
 
-Seconds without a call after which the container is stopped; C<0> never stops
-it. Defaults to C<300>.
+Seconds without a call after which the container is stopped -- counted from
+the end of the last one, or of a refresh of the running container; C<0> never
+stops it. Defaults to C<300>.
 
 =attr owner_id
 

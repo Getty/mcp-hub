@@ -54,7 +54,7 @@ package OneTool {
 
 package main;
 
-my @ECHO_TOOLS = qw(die echo exit fail notify sleep);
+my @ECHO_TOOLS = qw(die echo exit fail notify sleep slow_lists);
 
 sub hub ($servers) {
   my $cache = tempdir;

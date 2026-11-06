@@ -259,3 +259,7 @@ Revision history for MCP-Hub
   - Streamable HTTP: when a stop and a new start overtake a refresh, its
     next page now waits for that start and goes out on the new session,
     instead of going out mid-handshake without a session id.
+  - A refresh of a running stdio, forked or docker upstream counts as a
+    request in flight. An idle stop no longer comes between two of its
+    lists, which used to lose the lists after it, and the idle countdown
+    starts again when the refresh ends.

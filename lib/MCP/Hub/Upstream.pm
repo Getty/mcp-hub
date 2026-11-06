@@ -123,7 +123,7 @@ sub _arm_idle_timer ($self) {
   my $timeout = $self->idle_timeout;
   return unless $timeout > 0;
   $self->_clear_idle_timer;
-  return if $self->{in_flight};    # the last request to end arms it (_forward_p)
+  return if $self->{in_flight};    # the last request to end arms it (_held_p)
   $self->{idle_timer} = Mojo::IOLoop->timer($timeout => sub {
     $self->log->info("[@{[$self->name]}] idle for ${timeout}s, stopping");
     $self->stop;
@@ -162,18 +162,23 @@ sub read_resource ($self, $uri) {
   });
 }
 
-# Start the upstream if need be and send it the request. The idle countdown
-# is off while any request is in flight and starts when the last one ends: a
-# call that runs longer than idle_timeout must not have its upstream stopped
-# under it.
+# Start the upstream if need be and send it the request, in flight (_held_p).
 sub _forward_p ($self, $method, $params) {
   my $start = $self->start_p;
-  $self->{in_flight}++;
-  $self->_clear_idle_timer;
-  return $start->then(sub {
+  return $self->_held_p($start->then(sub {
     $self->touch;
     return $self->_request_p($method, $params);
-  })->finally(sub {
+  }));
+}
+
+# $promise in flight: the idle countdown is off while any is, and starts when
+# the last one ends. A call -- or a refresh, which asks the running upstream
+# for one list after another -- that runs longer than idle_timeout must not
+# have its upstream stopped under it.
+sub _held_p ($self, $promise) {
+  $self->{in_flight}++;
+  $self->_clear_idle_timer;
+  return $promise->finally(sub {
     $self->{in_flight}--;
     $self->touch;
     return;
@@ -575,8 +580,8 @@ CLI has stopped and removed its container. The daemon waits for it on shutdown.
 =method touch
 
 Reset L</last_used> and, for a running upstream that stops when idle, its idle
-timer -- unless a request is in flight: then the countdown starts when the
-last one ends.
+timer -- unless a request is in flight, a call or a refresh of the running
+upstream: then the countdown starts when the last one ends.
 
 =method type
 

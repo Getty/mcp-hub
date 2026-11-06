@@ -12,6 +12,19 @@ use Mojo::JSON qw(encode_json);
 use Mojo::Promise;
 use Scalar::Util qw(weaken);
 
+# Seconds each list takes before it is answered (the tool slow_lists): the
+# server blocks for them, as one does that lists slowly.
+has list_delay => 0;
+
+sub _handle_tools_list     ($self, @args) { $self->_list_pause; return $self->SUPER::_handle_tools_list(@args) }
+sub _handle_prompts_list   ($self, @args) { $self->_list_pause; return $self->SUPER::_handle_prompts_list(@args) }
+sub _handle_resources_list ($self, @args) { $self->_list_pause; return $self->SUPER::_handle_resources_list(@args) }
+
+sub _list_pause ($self) {
+  select undef, undef, undef, $self->list_delay if $self->list_delay > 0;
+  return;
+}
+
 sub new ($class, @args) {
   my $self = $class->SUPER::new(name => 'echo-server', version => '9.9.9', @args);
   $self->instructions('Echo things back.');
@@ -104,6 +117,19 @@ sub new ($class, @args) {
       print STDOUT encode_json({jsonrpc => '2.0', method => "notifications/$what/list_changed"}) . "\n"
         unless $args->{quiet};
       return $tool->text_result('notified');
+    },
+  );
+
+  # Has every tools/list, prompts/list and resources/list from now on take
+  # `seconds` before it is answered (list_delay): a server slow to list, for a
+  # refresh that outlasts idle_timeout.
+  $self->tool(
+    name         => 'slow_lists',
+    description  => 'Take the given number of seconds over every list from now on',
+    input_schema => {type => 'object', properties => {seconds => {type => 'number'}}},
+    code         => sub ($tool, $args) {
+      $server->list_delay($args->{seconds} // 0);
+      return $tool->text_result('slowed');
     },
   );
 

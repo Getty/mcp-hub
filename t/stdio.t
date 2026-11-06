@@ -87,7 +87,7 @@ subtest 'handshake, manifest and echo' => sub {
   ok $up->stats->{pid}, 'has a pid';
 
   my @tools = map { $_->name } @{$up->server->tools};
-  is_deeply [sort @tools], [sort qw(echo sleep fail die exit notify)], 'all tools listed';
+  is_deeply [sort @tools], [sort qw(echo sleep fail die exit notify slow_lists)], 'all tools listed';
 
   my ($prompt) = @{$up->server->prompts};
   is $prompt->name, 'greet', 'prompt listed';

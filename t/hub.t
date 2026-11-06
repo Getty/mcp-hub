@@ -71,7 +71,7 @@ subtest 'open mode: lazy start, per-server endpoints, aggregate' => sub {
 
   my $ec    = client($t, '/echo');
   my $tools = $ec->list_tools;
-  is_deeply [sort map { $_->{name} } @{$tools->{tools}}], [sort qw(echo sleep fail die exit notify)],
+  is_deeply [sort map { $_->{name} } @{$tools->{tools}}], [sort qw(echo sleep fail die exit notify slow_lists)],
     'tool names are unchanged (no prefix on a per-server endpoint)';
   is $echo->stats->{pid}, undef, 'tools/list did not spawn the child';
 

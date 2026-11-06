@@ -25,6 +25,13 @@ sub _apply_manifest ($self, $manifest) {
   return $self;
 }
 
+# A refresh of the container holds off the idle countdown of the upstream that
+# owns it, as a call does: the engine has none (MCP::Hub::Upstream::_held_p).
+sub _held_p ($self, $promise) {
+  my $owner = $self->owner or return $promise;
+  return $owner->_held_p($promise);
+}
+
 # Crash loops are the owning upstream's to count, over every start and every
 # container: an engine lives for a single run.
 sub _record_exit    ($self, @) { return $self }
