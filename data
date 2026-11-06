@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-06T16:40:53Z
+created: 2026-11-06T13:40:50Z
+id: 136
+priority: low
+started: 2026-11-06T15:08:11Z
+status: done
+tags:
+- native
+- loop
+title: 'ClaudeSessions: the pgrep backticks fallback runs a blocking child in the
+  hub''s loop'
+updated: 2026-11-06T16:41:36Z
+---
+
+Found during k57 (worker). Native::ClaudeSessions::_claude_pids falls back to backticks `pgrep -x claude` when its /proc scan finds no claude process. That runs a blocking child inside the hub's loop (when the native is in-process), the child inherits the hub's fds above 2 (no MCP::Hub::Child::close_inherited_fds), and under EV libev may reap it before the backticks' waitpid. pgrep reads the same /proc/*/comm the scan just read, so it cannot find what the scan missed -- the fallback looks redundant. Done: the fallback is gone (or, if a case exists where pgrep sees more than the scan, it goes through a non-blocking child); t/native/ still green; no backticks or system() left in lib/ outside a forked worker.
+
+Done (mcp-hub-worker): the pgrep fallback is removed; a comment says why. Worker's reasoning (from memory, no strace on the host, no hidepid /proc here): pgrep reads the task name from /proc/PID/stat, the scan /proc/PID/comm, both proc_task_name(); hidepid hides both alike; on this host scan, pgrep and the module returned the same 7 pids. Only a kernel without /proc/PID/comm (< 2.6.33) would differ, judged irrelevant. POD names /proc/PID/comm. No red test (the fallback is unreachable here); t/native green, 12 files, 253 tests. The worker's edit of the dated design spec was reverted by the main agent and noted on k51 (6). No Changes entry. Not committed.
+
+Committed as 08558b7
