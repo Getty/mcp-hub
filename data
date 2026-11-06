@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-11-06T06:11:34Z
+created: 2026-11-06T05:14:06Z
+id: 90
+priority: low
+started: 2026-11-06T05:21:19Z
+status: done
+tags:
+- http
+- sse
+title: 'SSE: a stop between two handshake requests leaves the next request hanging
+  on no endpoint'
+updated: 2026-11-06T11:46:47Z
+---
+
+Found by mcp-hub-worker during k74 (2026-11-06). A stop that lands between two handshake requests (e.g. after initialize, before tools/list) sends the next request to no endpoint; it hangs until request_timeout -- forever with request_timeout 0 -- and the upstream's start is stuck. Rare. Done: _sse_request_p rejects at once when there is no endpoint (or no SSE stream); test with the fake SSE server stopping between the two requests.
+
+Done, at review. Root cause: a stop between two handshake requests (initialize answered, tools/list not sent yet) deletes the SSE endpoint. _sse_post then returned undef without a word, and the tools/list waited in {pending} until request_timeout, or forever with 0. start_promise stayed set, so every later start joined the stuck one. A remote that drops the stream in the same gap left the endpoint behind: the request was posted, and its answer had no way back.
+Fix (Upstream/Http.pm): _sse_request_p rejects at once with "upstream NAME: not connected" when there is no endpoint or no SSE stream. start_p's catch rejects a start that a stop called off as "upstream NAME: stopped", whichever step noticed the stop.
+Tests (t/http.t): the k74 subtest gains a 'between two requests' phase, with the stop placed in the req_ua start event of notifications/initialized. All phases now run with request_timeout 5 and 0. New subtest: a request without the stream to answer on is rejected at once (request_timeout 0). Red against the HEAD Http.pm, green after; 5x EV + 5x Poll green; full prove -lr t/ green.
+Split: the tree holds k90+k91 together. HEAD->k90 is scratchpad/w-k90/k90.patch, k90->final is scratchpad/w-k90/k91.patch (checked: k90 state + k91.patch == final files). tree.sha1 is in the same dir.
+Proposed subject: Reject an SSE request at once when its stream or endpoint is gone (k90)
+Changes: "An HTTP+SSE upstream stopped between two requests of its handshake no longer leaves the next request waiting for request_timeout (forever with request_timeout 0) and the start stuck with it; a request with no stream to answer on fails at once.
+
+Committed as 5742a2f
+
+Commit reworded (trailer Opus 5.5), now 8547e10
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): 5742a2f is now 8547e10 on local main.
