@@ -10,6 +10,7 @@ use Mojo::Base 'MCP::Server', -signatures;
 use Mojo::IOLoop;
 use Mojo::JSON qw(encode_json);
 use Mojo::Promise;
+use Scalar::Util qw(weaken);
 
 sub new ($class, @args) {
   my $self = $class->SUPER::new(name => 'echo-server', version => '9.9.9', @args);
@@ -60,14 +61,17 @@ sub new ($class, @args) {
     code         => sub ($tool, $args) { exit($args->{code} // 0) },
   );
 
-  # Adds a new tool and announces it, to test the list_changed refresh path.
+  # Adds a new tool and announces it, to test the list_changed refresh path. It
+  # reaches the server weakly: a closure over $self would be a cycle through the
+  # server, and a reload that drops a `class` entry would never free it.
+  weaken(my $server = $self);
   $self->tool(
     name         => 'notify',
     description  => 'Add a tool and send notifications/tools/list_changed',
     input_schema => {type => 'object'},
     code         => sub ($tool, $args) {
-      unless (grep { $_->name eq 'echo2' } @{$self->tools}) {
-        $self->tool(
+      unless (grep { $_->name eq 'echo2' } @{$server->tools}) {
+        $server->tool(
           name         => 'echo2',
           description  => 'A tool that appeared after a refresh',
           input_schema => {type => 'object'},

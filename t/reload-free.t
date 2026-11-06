@@ -6,6 +6,8 @@
 # upstream -> facade -> primitive -> upstream kept every upstream with a single
 # tool alive for the life of the daemon. A call in flight when the reload drops
 # its upstream settles with an error result, and only then is the upstream freed.
+# The instance of a class entry is freed with it: the natives' tools, and the
+# test EchoServer's, reach their own server weakly.
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use Test::Mojo;
@@ -18,6 +20,9 @@ use Time::HiRes  qw(time);
 use MCP::Client;
 use MCP::Hub;
 use MCP::Hub::Facade;
+use MCP::Hub::Native::ClaudeHistory;
+use MCP::Hub::Native::ClaudeSessions;
+use MCP::Hub::Native::Status;
 use MCP::Hub::Upstream;
 use MCP::Server::Context;
 
@@ -249,6 +254,59 @@ subtest 'a primitive whose upstream is gone answers with an error result' => sub
 
   my ($list) = $server->_handle_tools_list($context);
   is $list->{tools}[0]{title}, 'Echo it', 'the listing keeps its extras all the same';
+};
+
+# The instance of an in-process class entry goes with its upstream: the tools
+# it registers on itself reach it weakly -- the natives' and EchoServer's do --,
+# where a closure over it would be a cycle through its own server. Each of these
+# classes is an MCP::Server, so its instance is the upstream's server. Their
+# tools run through /all; served on its own endpoint, a server is also held by
+# the transport its action builds, and that transport by it (MCP 0.15).
+subtest 'a reload frees the instance of a class entry it removes' => sub {
+  my $dir     = tempdir;
+  my $claude  = $dir->child('claude')->make_path->to_string;
+  my %classes = (
+    echo     => {class => 'EchoServer'},
+    history  => {class => 'MCP::Hub::Native::ClaudeHistory', args => {root => $claude}},
+    sessions => {class => 'MCP::Hub::Native::ClaudeSessions',
+      args => {root => $claude, proc_root => $dir->child('proc')->make_path->to_string}},
+    status => {class => 'MCP::Hub::Native::Status'},
+  );
+  my $app = hub_for($dir, {%classes, keep => {class => 'EchoServer'}});
+  my $t   = Test::Mojo->new($app);
+
+  my $all = client($t, '/all');
+  for my $tool (qw(history__list_projects sessions__list_running_sessions status__hub_status)) {
+    ok !$all->call_tool($tool, {})->{isError}, "$tool answers";
+  }
+  is $all->call_tool('echo__echo', {msg => 'hi'})->{content}[0]{text}, 'hi', 'echo__echo answers';
+
+  my $upstreams = weak_refs($app, keys %classes);
+  my %instances;
+  weaken($instances{$_} = $app->upstreams_by_name->{$_}->server) for keys %classes;
+  write_config($dir, {keep => {class => 'EchoServer'}});
+  is_deeply [sort @{$app->reload->{removed}}], [sort keys %classes], 'every one of them was removed';
+  is_deeply alive_after($upstreams), [], 'their upstreams are freed';
+  is_deeply alive_after(\%instances), [], 'and so are their instances';
+};
+
+# What a native's tool answers when it outlived its server -- something held on
+# to the tool alone. In the hub nothing does, as for a facade primitive.
+subtest 'a native tool whose server is gone answers with an error result' => sub {
+  my $dir = tempdir;
+  for my $native (
+    ['MCP::Hub::Native::ClaudeHistory', root => "$dir"],
+    ['MCP::Hub::Native::ClaudeSessions', root => "$dir", proc_root => "$dir"],
+    ['MCP::Hub::Native::Status'],
+  ) {
+    my ($class, %args) = @$native;
+    my ($name, @tools) = do { my $server = $class->new(%args); ($server->name, @{$server->tools}) };
+    for my $tool (@tools) {
+      my $out = $tool->call({}, MCP::Server::Context->new);
+      ok $out->{isError}, "$name: " . $tool->name . ' is an error result';
+      like $out->{content}[0]{text}, qr/^\Q$name\E: gone/, 'that says so';
+    }
+  }
 };
 
 done_testing;

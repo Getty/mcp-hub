@@ -4,6 +4,7 @@ use Mojo::Base 'MCP::Server', -signatures;
 
 use Mojo::File qw(path);
 use Mojo::JSON qw(decode_json encode_json);
+use Scalar::Util qw(weaken);
 
 # ABSTRACT: Native MCP server for discovering live Claude Code sessions
 
@@ -19,12 +20,17 @@ sub new ($class, %args) {
   return $self;
 }
 
+# The tool reaches this server weakly, as MCP::Hub::Native::ClaudeHistory's do.
 sub _register ($self) {
+  my $gone = $self->name . ': gone, the server of this tool was freed';
+  weaken $self;
+
   $self->tool(
     name         => 'list_running_sessions',
     description  => 'List the Claude Code sessions currently running on this machine',
     input_schema => {type => 'object'},
     code         => sub ($tool, $args) {
+      return $tool->text_result($gone, 1) unless $self;
       if ($^O ne 'linux' && $self->proc_root eq '/proc') {
         return $tool->text_result('Live session discovery is only supported on Linux', 1);
       }

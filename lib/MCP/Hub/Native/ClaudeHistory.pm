@@ -4,6 +4,7 @@ use Mojo::Base 'MCP::Server', -signatures;
 
 use Mojo::File qw(path);
 use Mojo::JSON qw(decode_json encode_json);
+use Scalar::Util qw(weaken);
 
 # ABSTRACT: Native MCP server for browsing the local Claude Code history
 
@@ -25,12 +26,22 @@ sub new ($class, %args) {
   return $self;
 }
 
+# The tools reach this server weakly: it holds them, so a strong reference back
+# would be a cycle, and an instance that a configuration reload drops would
+# never be freed. Whoever mounts the server keeps it alive; a tool that outlived
+# it answers with an error result.
 sub _register ($self) {
+  my $gone = $self->name . ': gone, the server of this tool was freed';
+  weaken $self;
+
   $self->tool(
     name         => 'list_projects',
     description  => 'List the projects that have Claude Code history, newest activity first',
     input_schema => {type => 'object'},
-    code         => sub ($tool, $args) { _json($tool, $self->list_projects) },
+    code         => sub ($tool, $args) {
+      return $tool->text_result($gone, 1) unless $self;
+      return _json($tool, $self->list_projects);
+    },
   );
 
   $self->tool(
@@ -45,7 +56,10 @@ sub _register ($self) {
         limit   => {type => 'integer', description => 'Maximum sessions to return (default 50)'},
       },
     },
-    code => sub ($tool, $args) { _json($tool, $self->list_sessions($args)) },
+    code => sub ($tool, $args) {
+      return $tool->text_result($gone, 1) unless $self;
+      return _json($tool, $self->list_sessions($args));
+    },
   );
 
   $self->tool(
@@ -63,7 +77,10 @@ sub _register ($self) {
       },
       required => ['query'],
     },
-    code => sub ($tool, $args) { _json($tool, $self->search_conversations($args)) },
+    code => sub ($tool, $args) {
+      return $tool->text_result($gone, 1) unless $self;
+      return _json($tool, $self->search_conversations($args));
+    },
   );
 
   $self->tool(
@@ -79,7 +96,10 @@ sub _register ($self) {
       },
       required => ['session_id'],
     },
-    code => sub ($tool, $args) { _json($tool, $self->get_conversation($args)) },
+    code => sub ($tool, $args) {
+      return $tool->text_result($gone, 1) unless $self;
+      return _json($tool, $self->get_conversation($args));
+    },
   );
 
   return $self;

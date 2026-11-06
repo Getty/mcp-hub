@@ -201,3 +201,6 @@ Revision history for MCP-Hub
   - get_conversation reads the session's own file (`<session_id>.jsonl`, as
     Claude Code names it) first, so on a cold cache it no longer reads every
     session file; a session in a file named otherwise is still found.
+  - A reload that removes a ClaudeHistory, ClaudeSessions or Status entry no
+    longer keeps its instance alive through the instance's own tools (an
+    instance served on its own endpoint is still held by its transport).

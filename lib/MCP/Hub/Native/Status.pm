@@ -3,6 +3,7 @@ our $VERSION = '0.001';
 use Mojo::Base 'MCP::Server', -signatures;
 
 use Mojo::JSON qw(encode_json);
+use Scalar::Util qw(weaken);
 
 # ABSTRACT: Native MCP server exposing hub introspection and refresh
 
@@ -15,12 +16,17 @@ sub new ($class, %args) {
   return $self;
 }
 
+# The tools reach this server weakly, as MCP::Hub::Native::ClaudeHistory's do.
 sub _register ($self) {
+  my $gone = $self->name . ': gone, the server of this tool was freed';
+  weaken $self;
+
   $self->tool(
     name         => 'hub_status',
     description  => 'Report the state of every upstream and the known clients',
     input_schema => {type => 'object'},
     code         => sub ($tool, $args) {
+      return $tool->text_result($gone, 1) unless $self;
       return $tool->text_result('hub status is unavailable', 1) unless $self->hub;
       return _json($tool, $self->hub->status_report);
     },
@@ -34,6 +40,7 @@ sub _register ($self) {
       properties => {name => {type => 'string', description => 'A single server to refresh'}},
     },
     code => sub ($tool, $args) {
+      return $tool->text_result($gone, 1) unless $self;
       my $hub = $self->hub or return $tool->text_result('hub is unavailable', 1);
 
       if ($hub->hub_config->mode eq 'clients') {
