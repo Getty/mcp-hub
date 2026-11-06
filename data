@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T10:33:22Z
+created: 2026-11-06T03:54:10Z
+id: 81
+priority: high
+started: 2026-11-06T10:33:22Z
+status: done
+tags:
+- lifecycle
+- shutdown
+- flake
+title: shutdown_p does not wait for stdio and forked children to exit; t/fork.t 'shutdown
+  stops every worker' flakes
+updated: 2026-11-06T10:34:00Z
+---
+
+Found by mcp-hub-release-manager during the k62 commit run (2026-11-06): t/fork.t test 11 ('shutdown stops every worker', line 285: probe/idle still have a pid) failed 2 of 2 full runs and 1 of 6 alone on 9d035c5. Cause (main agent): Upstream::Stdio has no stopped_p, so Hub::shutdown_p's all_settled over stopped_p resolves at once. Before k23 the blocking waitpid in _on_close cleared the pid synchronously at the socket close; since k23 (a45b061) it is cleared once the status is in too (watch_exit), so the test races. Real bug beyond the test: daemon shutdown resolves before the children are gone, and with k39 (EOF first, TERM after 2 s) the hub would exit before ever sending TERM, leaving a child that ignores EOF orphaned. Done: Stdio (and so Fork, Docker::Stdio) stopped_p resolves once the child's exit is handled (or at once with no child); shutdown_p waits for it; t/fork.t test 11 deterministic (green many runs under EV and Poll); a regression test that fails on the current code. Handed to the k25/k26/k39 worker.
+
+Done, uncommitted (worker). Root cause as on the card: Upstream::Stdio had no stopped_p, so it inherited the base one that resolves at once, and Hub::shutdown_p's all_settled over stopped_p waited for no stdio child, forked worker or docker-stdio CLI; since k23 the pid is cleared only once the exit status is in too, so t/fork.t 'shutdown stops every worker' raced (seen here too: HEAD, EV, 1 failure in my baseline run). Fix: Stdio::stopped_p resolves with the upstream once the child's exit is handled (_gone_p, the k23 seam), at once when there is no child; Fork and Docker::Stdio inherit it. Hub.pm untouched: shutdown_p already waits on stopped_p, so it now really waits (worst case KILL_GRACE 5 s, k39 makes it 7 s, both inside daemon SHUTDOWN_WAIT 20 s; a stop always ends, k23). Docker's stopped_p is its own _settled_p (engines' down_p, after the CLI's _on_exit and the container removal, raced against SETTLE_WAIT 30) -- consistent, unchanged. POD: Upstream/stopped_p now says what each kind waits for; Stdio Lifecycle names stopped_p and the shutdown wait; METHODS lists it. Test: new t/shutdown.t -- stopped_p with no child resolves at once; three rounds of "a shutdown resolves once every child is gone" (stdio echo.pl + forked ForkProbe + an in-process class): right after shutdown_p no pid, state stopped, child reaped. Red on HEAD in all rounds under EV and Poll, green on the k81 stage and final under both. t/fork.t on the k81 stage: 6/6 EV + 6/6 Poll green. Files: lib/MCP/Hub/Upstream/Stdio.pm, lib/MCP/Hub/Upstream.pm, t/shutdown.t. Split: w-k39/k81.patch (k26 -> k81; k39 goes on top). Subject: "Let a shutdown wait until every stdio child and worker is gone (k81)". Changes: reword "`mcp-hub daemon` waits up to 20 seconds on shutdown until the containers it started are gone." to "... until the stdio servers, forked workers and containers it started are gone." Drift (main agent, prose): Hub.pm shutdown_p comment + POD and Command/daemon.pm SHUTDOWN_WAIT comment + "Shutting down" POD still say only containers are waited for. Reload: removed/changed upstreams are stopped and dropped, not waited for -- the old child can overlap the new one for its stop (up to 7 s with k39), and a shutdown right after a reload does not wait for it (it is no longer in upstreams). Drift filed as k122-k127; skill drift as a note on k57.
+
+Committed as eb127d6
