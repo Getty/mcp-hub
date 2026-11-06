@@ -83,8 +83,10 @@ sub _merge ($info, $extra) {
 
 =head1 DESCRIPTION
 
-L<MCP::Hub::Facade::Server> is the L<MCP::Server> the hub mounts for each stdio
-upstream, and the base of L<MCP::Hub::Aggregate> at C</all>. It is a plain
+L<MCP::Hub::Facade::Server> is the L<MCP::Server> the hub mounts for every
+upstream but an in-process class, which brings its own -- stdio, HTTP, forked
+class, Docker and Compose alike -- and the base of L<MCP::Hub::Aggregate> at
+C</all>. It is a plain
 server in every respect except that its C<tools/list>, C<prompts/list> and
 C<resources/list> rendering merges the C<title>, C<icons> and C<_meta> fields
 the upstream reported back into each entry.

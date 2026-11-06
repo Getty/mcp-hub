@@ -1,6 +1,6 @@
 ---
 name: mcp-hub-runtime
-description: Load with mcp-hub-core before changing how the hub talks to or shows upstreams — the upstream types (stdio legacy JSON-RPC, remote HTTP/SSE, in-process or forked Perl class), the manifest cache, the façade, the /all aggregate, the wire rules for server-initiated traffic, the native servers, the dynamic routing.
+description: Load with mcp-hub-core before changing how the hub talks to or shows upstreams — the upstream types (stdio legacy JSON-RPC, remote HTTP/SSE, in-process or forked Perl class, Docker image or Compose service), the manifest cache, the façade, the /all aggregate, the wire rules for server-initiated traffic, the native servers, the dynamic routing.
 user-invocable: false
 model: inherit
 ---
@@ -35,14 +35,35 @@ wird der Kindprozess gekillt. Exit 127 beim Start ist ein Konfigurationsproblem:
 die Meldung nennt das Kommando ("is it installed and executable?"). Drei Exits
 binnen 5 s → `failed`.
 
+Zwischen `fork` und `exec` schließt `Child::close_inherited_fds` jeden fd > 2 — der
+Listen-Socket des Hubs ist nicht close-on-exec, ein Kind, das den Hub überlebt, hielte
+sonst den Port —, und `child_env` lässt `MOJO_REUSE` weg; dasselbe gilt für jeden
+`docker`-Lauf (`Docker::run_p`), der Fork-Worker legt `/dev/null` darüber
+(`inherited_fds`). Den Exit-Status holt `watch_exit`, aufgesetzt direkt nach dem `fork`.
+Stop: `shutdown` SHUT_WR (EOF) → nach `EOF_GRACE` (2 s) `SIGTERM` → nach `KILL_GRACE`
+(5 s) `SIGKILL`; wer auf EOF endet, sieht nie ein Signal. Ein Kind, das stdout schließt
+und weiterlebt, wird nach `KILL_GRACE` gekillt. Es läuft immer höchstens ein Kind: ein
+Call während eines Stops wartet auf dessen Ende (`_gone_p`) und startet das nächste.
+
 ### Http — Streamable HTTP oder HTTP+SSE
 
 `Mojo::UserAgent`, zwei Agenten: der Stream-UA (SSE-GET) läuft **ohne** Timeout,
 der POST-UA mit `request_timeout` (Default 60 s) — sonst kappt der POST-Timeout
 den langlebigen SSE-Stream. `type: "http"` = Streamable HTTP (Antwort auf dem
 POST, JSON oder `text/event-stream`), `type: "sse"` = HTTP+SSE (langlebiger
-GET-Stream). `headers` trägt das Auth; eine Session-Id aus `Mcp-Session-Id` wird
-mitgeschickt. Drei Fehlschläge binnen 5 s → `failed`.
+GET-Stream). `headers` trägt das Auth. Drei Fehlschläge binnen 5 s → `failed`.
+
+Streamable-HTTP-Sessions: jeder Start öffnet eine **neue** Session — sein `initialize`
+trägt weder Session-Id noch `MCP-Protocol-Version`, die Id kommt nur aus dessen Antwort
+(`Mcp-Session-Id`), spätere Requests tragen Id und ausgehandelte Version. Ein Stop
+beendet die Session mit einem `DELETE`, aber erst, wenn der letzte Call darauf fertig
+ist — ein Call auf `ready` läuft über Streamable HTTP weiter (über SSE scheitert er als
+stopped); ein gescheiterter oder abgebrochener Start beendet die Session seines
+`initialize` genauso. Ein Start nach einem Stop ist frisch und beginnt erst, wenn der
+abgebrochene sich gesetzt hat (`next_start`) — nie zwei Handshakes zugleich. Ein `404` auf
+einen Request **mit** Session-Id heißt: die Gegenseite hat die Session beendet → neue
+Session (geteilt von allen Requests, die dieselbe verloren), der Request geht genau
+einmal neu raus — nie ein Request des Starts, kein `DELETE` für die tote Session. Ein `404` ohne Session-Id ist ein gewöhnlicher Fehler.
 
 Welche Requests die **des Starts** sind, sagt `_handshake_p` selbst (`$of_start` an
 `_request_p`, durch `_list_all_p`/`_paginate_p`) — nie aus dem Methodennamen
@@ -95,11 +116,62 @@ einem Thread, wird nicht geforkt; das zählt wie ein fehlgeschlagener Start.
 Lifecycle, Timeouts, Crash-Loop: alles von `Stdio`. Status-Zeile: `type` `fork`
 plus `pss_kb` aus `/proc/PID/smaps_rollup`.
 
+### Docker und Compose — ein Container pro Start
+
+`Upstream::Docker` (`"docker": IMAGE`) und `Upstream::Compose` (`"compose": DIR` plus
+`service`; Docker-Subklasse, nur die Kommandos sind anders) sind lazy wie stdio: Manifest
+aus dem Cache, Idle-Stop, `always_on`; die Crash-Loop (3 gescheiterte Starts oder Crashes
+binnen `fail_window` 5 s) zählt der Upstream über alle Läufe.
+
+**stdio oder HTTP entscheidet jeder Start neu** (`_plan_p`, `mode`) — docker nach dem
+Pull: `"stdio": true` → stdio; `port` → HTTP darauf; genau ein `EXPOSE`-Port → HTTP;
+mehrere → Startfehler; keiner → stdio. Compose liest das Projekt per `docker compose
+config --format json` (der Hub parst nie YAML): `stdio`; `url` → HTTP genau dorthin;
+`port` (muss unter `ports:` publiziert sein); genau ein publizierter Port; mehrere →
+Fehler; keiner → stdio. Landet es bei stdio, sind gesetzte `path`/`type`/`headers` ein
+Startfehler. Was lange dauert (Pull oder Build eines fehlenden Images, Abhängigkeiten),
+läuft **vor** dem Handshake und ohne Timeout, damit `request_timeout` nur den Server misst.
+
+**Engine pro Start.** Der Transport kann nicht die Klasse sein: jeder Start baut eine
+Engine — `Docker::Stdio` (`docker run -i --rm …` bzw. `docker compose run --rm -T
+--no-deps …` als gewöhnliches Stdio-Kind) oder `Docker::Http` (Transport von
+`Upstream::Http`). `Docker::Engine` steht in deren `@ISA` vor dem Transport: die Engine
+ist nirgends gemountet, hält ihren Owner schwach, teilt dessen Façade und Hash, reicht jedes Manifest
+und `_held_p` an ihn weiter und zählt keine Crash-Loop. Ein ungebetener Exit oder ein
+abgerissener SSE-Stream im Betrieb → `owner->_engine_down`.
+
+HTTP-Container: `docker run -d`, Port auf `127.0.0.1::PORT` (mit `hub.docker_network`
+stattdessen `--network`, Adresse `mcp-hub-<name>:PORT`), Adresse per `docker port`,
+Pfad-Default `/mcp`. **Readiness** (`_ready_p`): ein offener Port beweist nichts — POST
+alle 0,5 s, bis irgendein HTTP-Status kommt; Abbruch, wenn der Container endet (`docker
+wait`, Fehler mit dem Ende von `docker logs`) oder nach `request_timeout`; kam der Port
+aus `EXPOSE`/`ports:`, rät der Fehler zu `"stdio": true`. Compose übernimmt einen schon
+laufenden Service (kein `up`, nie gestoppt), sonst `up -d --no-recreate SERVICE` und beim
+Stop `compose stop SERVICE`. Für stdio vorher Pull/Build, `up -d --no-recreate` der
+`depends_on` und deren Bedingungen (Poll auf `ps -a`). Compose stoppt nie eine
+Abhängigkeit und recreatet nie, was existiert; Compose ≥ 2, kein podman-compose.
+
+**Was dem Hub gehört, sagen nur die Labels.** Name `mcp-hub-<name>`, Labels
+`mcp-hub.server`, `mcp-hub.owner` (Zufalls-Id in `<cache_dir>/docker-owner` — ohne sie
+startet kein Container) und `mcp-hub.run` (je Start). Vor jedem Start entfernt
+`remove_orphans_p` eigene Reste, jeden Treffer per `inspect` nachgeprüft — nie einen
+fremden; ein fremder gleichnamiger lässt den Start scheitern. Ein Start wartet (max.
+30 s, `%SETTLING` je cache_dir + Name, auch über einen Reload), bis der vorige Container
+des Servers weg ist. Stop: stdio wie jedes Stdio-Kind, danach der Container per
+`run`-Label weg; HTTP `docker stop -t 5` + `rm -f`; `stopped_p` → der Daemon wartet
+beim Shutdown. `env` geht als nacktes `-e KEY`, der Wert nur über die Umgebung des
+CLI-Prozesses. Fehlertexte tragen nur stderr (`stderr_tail`), nie stdout — `compose
+config` liefert das ganze Projekt samt Secrets. Status-Zeile: `container` und `mode`
+(compose: `compose`, `service`), `pid`/`rss_kb` bleiben `undef`.
+
 ## Der Manifest-Cache
 
 Unter `<cache_dir>/manifests/`, Datei `<name>-<hash>.json`. Der Hash entsteht aus
-den ersten 16 Hex-Zeichen des SHA-256 über `[command, args, cwd]` (bei HTTP über
-`[url, type]`) — bewusst **nicht** über `env`. Writes sind atomar: eine Temp-Datei
+den ersten 16 Hex-Zeichen des SHA-256 über `[command, args, cwd]` — bei HTTP über
+`[url, type]`, bei docker über `"docker:<image>"` plus `[args, port, path, transport,
+volumes, docker_args, stdio]`, bei compose über `"compose:<dir>"` plus `[service, url,
+port, path, transport, stdio]` — bewusst **nie** über `env`, nie über
+`docker_command`/`docker_network`. Writes sind atomar: eine Temp-Datei
 im selben Verzeichnis, dann `rename`. Es gibt **kein TTL**: ein veraltetes
 Manifest kostet nur eine falsche Tool-Beschreibung bis zum nächsten Refresh.
 `fresh` vergleicht den gespeicherten Hash mit dem aktuellen.
@@ -111,7 +183,10 @@ ersetzt die Listen **in place**, damit die gemountete Instanz (und ihre
 Notification-Abonnenten) über einen Manifest-Refresh hinweg dieselbe bleibt.
 Jedes Tool ruft `$upstream->call_tool`, jeder Prompt `get_prompt`, jede Resource
 `read_resource` — Ergebnisse (`content`, `isError`, `structuredContent`) kommen
-unverändert zurück.
+unverändert zurück. Jede Primitive hält ihren Upstream **schwach** (Upstream → Server →
+Primitive → Upstream wäre ein Zyklus, ein per Reload ersetzter Upstream würde nie frei);
+die Upstream-Liste des Hubs und ein laufender Call halten ihn. Ist er weg, antwortet die
+Primitive mit einem Error-Result.
 
 Ein neues Manifest (Start oder Refresh, `Upstream::_show_manifest`) vergleicht
 das eigene Rendering der drei Listen vorher/nachher: der eigene Endpunkt bekommt
@@ -125,7 +200,9 @@ hängen an `Facade::Tool->extra`, Prompt-Extras (nach Name) und Resource-Extras
 Rendering von `tools/list`, `prompts/list` und `resources/list` in das Ergebnis
 zurück — `MCP::Server` rendert sie sonst nicht. Claude-Code-Annotationen wie
 `anthropic/maxResultSizeChars` und `anthropic/requiresUserInteraction` überleben
-so den Weg durch den Hub.
+so den Weg durch den Hub. Gerenderter Eintrag und Objekt finden sich **per Position**
+(`_pairs`; `_tools`/`_prompts` reichen die Objekte des Events durch), nie per Name;
+weicht an einer Position der Name ab, wird nichts gemischt.
 
 ## Das `/all`-Aggregat
 
@@ -143,18 +220,23 @@ durch Splitten des Namens am ersten `__`: ein Servername darf selbst `__` enthal
 
 Bekannte Grenze: zwei Server können denselben `/all`-Namen erzeugen (`p` mit Tool
 `x__echo`, `p__x` mit `echo` → beide `p__x__echo`). Beide werden gelistet, der Call trifft
-den ersten in Servernamen-Reihenfolge; sieht das Profil nur einen, ist es dieser — nur
-`title`/`icons`/`_meta` werden weiter per Name gesucht und sind die des letzten. Darum
+den ersten in Servernamen-Reihenfolge; sieht das Profil nur einen, ist es dieser, und
+jeder wird mit seinen eigenen `title`/`icons`/`_meta` gelistet. Darum
 die Herkunft am Objekt und keine Name→Server-Map — die müsste einen der beiden falsch
 zuordnen. `t/aggregate-origin.t` hält das fest; `__` in Servernamen zu verbieten
 (Config) ist Entscheidung des Maintainers.
 
 Extras: `Aggregate` ist ein `Facade::Server`. `rebuild` liest `title`/`icons`/`_meta`
 aus dem **eigenen Rendering** jedes Upstream-Servers (`_handle_tools_list` /
-`_handle_prompts_list` mit leerem Context, also ohne Profil-Filter) — nicht aus den
-Objekten: ein In-process-Server hat plain `MCP::Tool`s ohne `extra` und rendert sie
-selbst. Sie landen am gewrappten `Facade::Tool->extra` bzw. in
-`extra->{prompts}{<u>__<p>}` und werden nach dem Filter zurückgemischt.
+`_handle_prompts_list` mit leerem Context, also ohne Profil-Filter; dort per Name, auf
+einem Endpunkt eindeutig) — nicht aus den Objekten: ein In-process-Server hat plain
+`MCP::Tool`s ohne `extra` und rendert sie selbst. Danach hängen sie **am Wrapper**:
+Tool-Extras an `Facade::Tool->extra`, Prompt-Extras im privaten `_prompt_extras` per
+`refaddr` des Wrappers (überschriebenes `_prompt_extra`) — `$agg->extra->{prompts}`
+bleibt leer. Zurückgemischt wird nach dem Filter. Jeder Wrapper übernimmt außerdem
+`scopes`, `cache_ttl` und `cache_scope` des Originals (`_primitive_fields`): der Call
+geht am Scope-Check des Original-Servers vorbei, also prüft `/all` selbst. Nur
+In-process-Klassen setzen sie; Manifest-Tools tragen sie nie.
 
 Selbstbeschreibung pro Request: `MCP::Server` beantwortet `server/discover` (und das
 Legacy-`initialize`, `MCP::Server::Legacy::legacy_result`) aus den **ungefilterten**
@@ -185,9 +267,14 @@ alles andere werden verworfen.
 
 `Native::ClaudeHistory` liest `$CLAUDE_CONFIG_DIR` bzw. `~/.claude`, Unterordner
 `projects/`; vier Tools: `list_projects`, `list_sessions`,
-`search_conversations` (Substring-Suche, **kein** Volltext-Index in v1 — streamt
-und filtert) und `get_conversation`. `Native::ClaudeSessions` findet laufende
-`claude`-Prozesse über `/proc/*/comm` (plus `cwd`) — **Linux-only**, andernfalls
+`search_conversations` (Substring-Suche, **kein** Volltext-Index in v1) und
+`get_conversation`. Session-Dateien werden zeilenweise gelesen, nie geslurpt; die Suche
+dekodiert eine Zeile nur, wenn ihre Rohbytes den Treffer halten können (`_raw_skip` —
+auch JSON-Escapes zählen). `meta_cache` hält je Datei dev/inode/size/mtime und den Offset
+nach der letzten ganzen Zeile: unverändert → nicht gelesen, nur gewachsen → ab dem
+Offset, sonst von vorn. `Native::ClaudeSessions` findet laufende
+`claude`-Prozesse über `/proc/*/comm` (plus `cwd`) und liest von deren Session-Datei nur
+Kopf und Ende — **Linux-only**, andernfalls
 ein Error-Result (`proc_root` ist testbar überschreibbar). `Native::Status`
 liefert `hub_status` und `hub_refresh` (letzteres braucht in clients mode ein
 `admin`-Profil). `rss_kb` (Resident set size) ist **kein** Tool, sondern ein
@@ -218,6 +305,9 @@ ersten ein Fehler, auf einem `url`-Eintrag `idle_timeout`; `fork` gibt es nur au
 Jede Unit ist allein testbar: `Config` auf Strings, `Manifest` auf temp dir,
 `Auth` auf einem Config-Hash, `Façade` auf einem Manifest-Hash mit Mock-Upstream,
 `Stdio` gegen `t/upstream/echo.pl` (Perl `MCP::Server::Legacy`, Tools
-`echo`/`sleep`/`fail`/`die`/`exit`/`notify` — der einzige Upstream, den die Suite
-spawnt; der Server selbst ist die Klasse `t/lib/EchoServer.pm`, die `t/fork.t` als
-`class` forkt), die Natives gegen `t/fixtures/claude/projects/`.
+`echo`/`sleep`/`fail`/`die`/`exit`/`notify`/`slow_lists` — der einzige Upstream, den die Suite
+spawnt, außer `t/upstream/echo.sh` in `t/binary.t`; der Server selbst ist die Klasse
+`t/lib/EchoServer.pm`, die `t/fork.t` als `class` forkt), Docker/Compose in `t/docker.t`
+gegen `t/upstream/fake-docker.pl` per `hub.docker_command` (seine „Container" sind
+`echo.pl`-Prozesse, jeder CLI-Aufruf wird protokolliert — kein Daemon, kein Image), die
+Natives gegen `t/fixtures/claude/projects/`.
