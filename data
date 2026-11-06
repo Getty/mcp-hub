@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T07:57:15Z
+created: 2026-11-06T07:19:23Z
+id: 103
+priority: medium
+started: 2026-11-06T07:27:47Z
+status: done
+tags:
+- native
+- bug
+title: ClaudeSessions _text dies on a content block that is not an object
+updated: 2026-11-06T07:57:15Z
+---
+
+Found during k97. ClaudeSessions::_text walks message.content and dereferences each block as a hash; a block that is not an object ("content":["x"] or [1]) dies with "Not a HASH reference" and list_running_sessions fails as a whole. ClaudeHistory::_text already guards against this. Done: skip non-object blocks as ClaudeHistory does; test with such a line in a t/native fixture.
+
+Fixed in lib/MCP/Hub/Native/ClaudeSessions.pm: _text now skips a content block that is not an object (ref ne HASH), the same way ClaudeHistory::_text does. The head scan and the tail scan both reach last_prompt through _text, so both could die; the one guard covers both. New t/native/claude-non-object-blocks.t builds fixtures in a tempdir with "x", 1, 1.5, null, true, false, [1], ["text"] and [{...}] blocks in the first line (head scan), the last user line (tail scan), a one-line file, and a line holding only odd blocks. Each case is compared with the same session written without those blocks, and last_prompt with ClaudeHistory's text for the same line. Against HEAD all 4 subtests fail ('Can't use string ("x") as a HASH ref'); with the fix they pass. prove -lr t/ on a HEAD export with only the native files on top: PASS (37 files, 400 tests), also under MOJO_REACTOR=Mojo::Reactor::Poll. Self-skips: docker-live, npx, wiki-live. Patch: scratchpad w-native3/k103.patch. Proposed commit: 'Skip a content block that is not an object in list_running_sessions (k103)'.
+
+Ready for review: ClaudeSessions _text skips non-object blocks, as ClaudeHistory does; regression test t/native/claude-non-object-blocks.t is red on HEAD and green now. Not committed.
+
+Committed as e578257
