@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-06T12:57:13Z
+id: 135
+priority: medium
+status: backlog
+tags:
+- decision
+- idle
+- stdio
+title: 'Decide: should a refresh restart the idle countdown in full, keeping a chatty
+  list_changed child alive?'
+updated: 2026-11-06T12:57:13Z
+---
+
+From k129. Since k129 a refresh of a running upstream counts as in flight (Upstream::_held_p) and, like a call, starts the full idle countdown again when it ends. A child that sends notifications/tools/list_changed more often than idle_timeout -- each answered with a refresh -- is then never stopped when idle, against the hub's RAM goal. Options: (A, current, worker's choice) a refresh counts like a call: full countdown from its end. (B) a refresh holds the countdown off while it runs but does not touch last_used: at its end the countdown resumes from the end of the last call, stopping at once if that is already past. Maintainer call.
