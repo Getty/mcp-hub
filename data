@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-11-06T16:15:05Z
+id: 146
+priority: low
+status: backlog
+tags:
+- stdio
+- upstream
+- decision
+title: 'Decide: should a 16 MB line-buffer kill count toward the stdio crash loop?'
+updated: 2026-11-06T16:15:05Z
+---
+
+Found by mcp-hub-worker during k139 (2026-11-06). Needs a decision before code.
+Stdio _on_read kills a child whose line buffer passes 16 MB (MAX_LINE_BUFFER) and sets {stopping} = 1 -- the flag that means "this exit is deliberate". So _on_exit records no exit, and a start whose child overflows is not counted either (the catch skips a pid _on_exit has handled). A server that floods without a newline on every start is therefore spawned again on every call and never reaches 'failed' with a reason, unlike one that crashes.
+Question: should an overflow kill count toward the crash loop (three within fail_window -> failed, reason "line buffer exceeded 16MB")? If yes: count it without the "child exited" warning, and add a test in t/stdio.t.
