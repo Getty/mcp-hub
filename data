@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T07:57:30Z
+created: 2026-11-06T07:19:33Z
+id: 105
+priority: low
+started: 2026-11-06T07:28:02Z
+status: done
+tags:
+- native
+- performance
+title: get_conversation reads its session file twice on a cold cache
+updated: 2026-11-06T07:57:30Z
+---
+
+Found during k98. On a cold cache get_conversation reads the session file once for its metadata (_file_for_session -> _meta -> _refresh) and once more for the messages (_entries). One pass could do both, as k85 did for search (_refresh with a visit callback). Low: one file, not every file.
+
+Fixed in lib/MCP/Hub/Native/ClaudeHistory.pm. _file_for_session now refreshes the file named after the session with a _refresh visit that collects the entries (the k85 mechanism), and returns them with the file; get_conversation uses them, or calls _entries when the pass did not read the file. Cold cache: 1 read instead of 2 (20-line file: 20 decodes instead of 40). Named file that grew: 23 decodes instead of 26. Warm cache: unchanged (stat, then _entries reads once). The k98 order is kept: the named file first, then the fallback scan. Fallback files are still read only for their metadata, so a grown one is read from its offset. Trade-off, my choice: on a cold cache a session found only by the fallback is still read twice; a file named after the session but holding another one is read with the visit (entries built, then dropped), and if it grew it is read from the start. Tests in t/native/claude-history-session-file.t: the cold-cache open count goes from [target, target] to [target]. That assertion described the double read, which this card removes, so the claim is replaced, not kept. New subtest 'each line decoded once' covers cold, warm, grown and fallback-grown. Against HEAD 2 subtests fail (40 vs 20, 26 vs 23); with the fix they pass. Mutation checks: visiting every candidate fails the fallback guard (35 vs 12); dropping the $read check fails the warm cases. Wire output: get_conversation tool results from HEAD and from the fix are byte-identical over t/fixtures/claude. That is 288 results: every session plus a missing id, 9 argument sets, cold/warm/after-list/grown. It was run as the files are named and again renamed to <session_id>.jsonl, because the fixtures are named sess-<id>.jsonl and only reach the fallback path. prove -lr t/ on the export: PASS (37/400), also under the Poll reactor; self-skips docker-live, npx, wiki-live. Patch: scratchpad w-native3/k105.patch. Proposed commit: 'Read the session file once for metadata and messages in get_conversation (k105)'.
+
+Ready for review: one pass for metadata and entries on the named file; warm path unchanged; wire output byte-identical to HEAD over the fixtures, named and renamed. Not committed.
+
+Committed as 8e94994
