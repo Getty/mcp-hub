@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T11:41:13Z
+created: 2026-11-06T09:21:57Z
+id: 121
+priority: low
+started: 2026-11-06T10:44:07Z
+status: done
+tags:
+- tests
+- stdio
+title: t/stdio.t around line 300 leaves a sleep 20 grandchild behind
+updated: 2026-11-06T11:47:09Z
+---
+
+Split from k118 item 2 (found during k110, pre-existing at HEAD). A subtest in t/stdio.t around line 300 leaves a "sleep 20" grandchild running for up to 20 s after the run. Reap or kill it (its process group) in the test. stdio lane: pick up once the open stdio chain (k25/k26/k39/k81) is committed.
+
+Holder fixture writes holder.pid; the test kills it after the stop and asserts it is gone. Red on HEAD: ps shows the sleep 20 left with ppid 1 after the subtest; with the fix none, EV and Poll.
+
+Committed as 2f1f768
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): 2f1f768 is now 194e0a1 on local main.
