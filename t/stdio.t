@@ -370,9 +370,11 @@ subtest 'a child that exits in the middle of the handshake fails the start' => s
   # longer answered is taken for an empty one at a start, and so the start
   # came up ready with no child: no pid, and a call to it waited out the
   # request timeout. The start fails with its exit instead, and the exit
-  # counts toward the crash loop -- once.
+  # counts toward the crash loop -- once. The timeout only bounds a start that
+  # never ends: 30 seconds, so that a loaded machine, where the child's start
+  # and its answers take over a second, still sees the exit and not the timeout.
   for my $at ('answered', 'prompts/list') {
-    my $up = brief($at, request_timeout => 1);
+    my $up = brief($at, request_timeout => 30);
     for my $n (1 .. 3) {
       my $r = _await_bounded($up->start_p, 30);
       is ref $r eq 'HASH' ? $r->{err} : 'ready', 'upstream brief: exited (code 0)',
