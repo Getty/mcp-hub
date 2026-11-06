@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-06T04:17:17Z
+created: 2026-11-06T02:55:32Z
+id: 71
+priority: low
+started: 2026-11-06T03:19:07Z
+status: done
+tags:
+- aggregate
+- reload
+title: /all sends no prompts/list_changed on reload
+updated: 2026-11-06T04:17:24Z
+---
+
+Found by mcp-hub-worker during k68 (2026-11-06). On reload /all sends only notifications/tools/list_changed. Since k68 /all's prompts depend on the profile and on which upstreams exist, a reload that adds/drops a server or changes its prompts should also send notifications/prompts/list_changed to /all sessions. Test next to the existing reload notification test.
+
+2026-11-06 03:39 Done (not committed). Before: a reload that added/removed/changed a server or moved the access rules sent /all listeners only notifications/tools/list_changed, though /all's prompts depend on both. Fix: _apply_config sends tools and prompts list_changed to /all under the same condition. Files: lib/MCP/Hub.pm (+reload POD), t/reload.t (new subtest: a real subscriptions/listen on /all; a no-op reload then an adding reload must yield exactly tools+prompts list_changed; 5 s inactivity timeout guards a red run; adds use lib t/lib for EchoServer), mcp-hub-core skill. Verified: the subtest red on HEAD (only tools/list_changed arrived), green after; full suite as on k69. Patch: scratchpad/w-k69/k71.patch. Drift: the manifest-refresh path (Upstream.pm:152, Fork.pm:122, Hub::refresh_p) rebuilds /all but notifies it of nothing, and a facade gets only tools/list_changed when its prompts changed.
+
+Committed as a86dd0a.
