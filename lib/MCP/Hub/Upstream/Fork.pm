@@ -2,6 +2,7 @@ package MCP::Hub::Upstream::Fork;
 our $VERSION = '0.001';
 use Mojo::Base 'MCP::Hub::Upstream::Stdio', -signatures;
 
+use MCP::Hub::Child qw(inherited_fds);
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
 use MCP::Server::Context;
@@ -212,13 +213,11 @@ sub _reset_signals ($self) {
 # dormant inherited handle may still close its fd number later, and that must
 # never hit a fresh fd of the class.
 sub _isolate_fds ($self) {
-  opendir my $dh, '/proc/self/fd' or die "cannot read /proc/self/fd: $!\n";
-  my @fds = grep { /^\d+$/ && $_ > 2 } readdir $dh;
-  closedir $dh;
+  my $fds = inherited_fds() // die "cannot read /proc/self/fd: $!\n";
 
+  # Every listed fd is open, so /dev/null lands on none of them.
   my $null = POSIX::open('/dev/null', POSIX::O_RDWR()) // die "cannot open /dev/null: $!\n";
-  for my $fd (@fds) {
-    next if $fd == $null || !defined readlink "/proc/self/fd/$fd";    # the directory's own, gone now
+  for my $fd (@$fds) {
     POSIX::dup2($null, $fd) unless $self->_reopen_file($fd);
   }
   POSIX::close($null);

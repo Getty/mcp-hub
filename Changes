@@ -105,3 +105,6 @@ Revision history for MCP-Hub
   - Standalone binary: `"hub": {"fork": true}` works with the bundled natives
     on Linux; the binary smoke now runs one in a forked worker and checks the
     worker never moves the hub's offsets on the PAR archive.
+  - A stdio upstream and every docker/compose CLI run no longer inherit the
+    hub's listening socket (or any other fd above stderr): a child that
+    outlived a crashed hub kept its port bound.

@@ -2,6 +2,7 @@ package MCP::Hub::Upstream::Stdio;
 our $VERSION = '0.001';
 use Mojo::Base 'MCP::Hub::Upstream', -signatures;
 
+use MCP::Hub::Child qw(close_inherited_fds);
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
 use MCP::Hub::Manifest;
@@ -315,6 +316,7 @@ sub _spawn ($self) {
     open(STDIN,  '<&', $child)  or POSIX::_exit(127);
     open(STDOUT, '>&', $child)  or POSIX::_exit(127);
     open(STDERR, '>&', $err_w)  or POSIX::_exit(127);
+    close_inherited_fds();    # the hub's listening socket among them
     %ENV = (%ENV, %{$c->{env} // {}});
     if (defined $c->{cwd}) { chdir $c->{cwd} or POSIX::_exit(127) }
     { exec {$c->{command}} $c->{command}, @{$c->{args} // []} }
@@ -445,9 +447,11 @@ npm and Python servers in the wild that do not speak the current stateless
 revision.
 
 The child's stdin and stdout are a single C<AF_UNIX> socket pair wrapped in a
-L<Mojo::IOLoop::Stream>, its stderr a pipe logged at C<debug>. All requests are
-non-blocking promises, correlated by an integer id, with a per-request timeout
-that rejects the promise and sends C<notifications/cancelled>.
+L<Mojo::IOLoop::Stream>, its stderr a pipe logged at C<debug>; every other fd it
+inherited from the hub is closed before the exec (L<MCP::Hub::Child>). All
+requests are non-blocking promises, correlated by an integer id, with a
+per-request timeout that rejects the promise and sends
+C<notifications/cancelled>.
 
 =head2 Lifecycle
 

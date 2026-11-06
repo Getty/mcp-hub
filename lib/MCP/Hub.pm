@@ -778,8 +778,11 @@ stays fully in effect and the error, with its JSON path, is logged and returned.
 One process serves HTTP and owns all state -- a single L<Mojo::Server::Daemon>,
 never hypnotoad or a pre-forking server, whose every worker would spawn its own
 children and hold its own state. Its child processes are exec'd upstreams or
-forked class workers (L<MCP::Hub::Upstream::Fork>). A worker never runs the hub's
-loop, holds none of its fds or signal handlers, and ends with C<_exit>.
+forked class workers (L<MCP::Hub::Upstream::Fork>). An exec'd child -- a stdio
+upstream, a C<docker> CLI run -- starts with its stdin, stdout and stderr and no
+other fd of the hub's, the listening socket included (L<MCP::Hub::Child>). A
+worker never runs the hub's loop, holds none of its fds or signal handlers, and
+ends with C<_exit>.
 Everything else -- child processes, idle timers, manifests, in-process servers --
 lives in the one event loop, and tool calls are non-blocking promises, so one
 slow upstream does not block the others. An in-process C<class> entry is the

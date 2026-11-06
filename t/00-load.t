@@ -7,6 +7,7 @@ my @modules = qw(
   MCP::Hub::Config
   MCP::Hub::Manifest
   MCP::Hub::Auth
+  MCP::Hub::Child
   MCP::Hub::Help
   MCP::Hub::Facade
   MCP::Hub::Facade::Server

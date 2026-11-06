@@ -8,8 +8,8 @@ requires 'YAML::PP';         # .yml/.yaml configuration files
 
 # YAML::PP is loaded on demand, only when a YAML config is actually read, but
 # it is a hard requirement all the same so that a .yml never fails on a fresh
-# install. Everything else the hub uses (Digest::SHA, JSON::PP, IPC/socketpair,
-# Socket, POSIX, Scalar::Util, Time::HiRes) is core.
+# install. Everything else the hub uses (Digest::SHA, Exporter, JSON::PP,
+# IPC/socketpair, Socket, POSIX, Scalar::Util, Time::HiRes) is core.
 
 on test => sub {
   requires 'Test::More';

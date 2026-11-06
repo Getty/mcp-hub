@@ -3,6 +3,7 @@ our $VERSION = '0.001';
 use Mojo::Base -base, -signatures;
 
 use Crypt::PRNG  qw(random_bytes_hex);
+use MCP::Hub::Child qw(close_inherited_fds);
 use Mojo::File   qw(path);
 use Mojo::IOLoop;
 use Mojo::IOLoop::Stream;
@@ -134,6 +135,7 @@ sub run_p ($self, $args, %opt) {
     open(STDIN,  '<',  '/dev/null') or POSIX::_exit(127);
     open(STDOUT, '>&', $out_w)      or POSIX::_exit(127);
     open(STDERR, '>&', $err_w)      or POSIX::_exit(127);
+    close_inherited_fds();
     %ENV = (%ENV, %{$opt{env} // {}});
     if (defined $opt{cwd} && !chdir $opt{cwd}) {
       print STDERR "mcp-hub: cannot chdir: $!\n";
