@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T09:20:50Z
+created: 2026-11-06T08:29:08Z
+id: 115
+priority: medium
+started: 2026-11-06T08:40:34Z
+status: done
+tags:
+- native
+- wire
+- privacy
+title: ClaudeHistory list_sessions puts the internal _file (absolute server path)
+  on the wire
+updated: 2026-11-06T09:20:50Z
+---
+
+Found during k110. list_sessions returns each session with "_file", the absolute path of its session file on the hub host (e.g. /home/USER/.claude/projects/.../ID.jsonl). It is an internal field (search_conversations uses it), undocumented in the POD, and has been on the wire since v1. It leaks the host username/home layout to every agent with access. Done: strip _file from the list_sessions result (keep it internal for search), or document it deliberately; test that the tool output has no _file.
+
+Done: list_sessions (tool and method) no longer returns _file; search_conversations reads a new internal _sessions that keeps it. Only _file leaked: list_projects, search_conversations, get_conversation, list_running_sessions carry no _-key. New t/native/claude-internal-keys.t calls every tool of both natives over the fixtures and asserts no _-key and no host path in text or structuredContent; red at HEAD on list_sessions (4 tests). Tests that used _file from the method follow (search oracle uses _sessions, incremental drops _file, non-object-lines loses no_file). POD/README/skills/spec never mentioned _file. prove -lr t/ green under EV and Poll on HEAD export. Patch: w-native5/k115.patch.
+
+Ready for commit: k115.patch (ClaudeHistory.pm + 4 tests; git add t/native/claude-internal-keys.t). Wire: list_sessions entries lose the _file key.
+
+Committed as 2f87743
