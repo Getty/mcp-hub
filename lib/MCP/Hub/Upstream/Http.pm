@@ -226,7 +226,7 @@ sub _http_headers ($self) {
 
 sub _open_sse_p ($self) {
   my $done = Mojo::Promise->new;
-  $self->{sse}          = {ready => 0, promise => $done, raw => '', body => '', events => '', headers_done => 0};
+  my $s    = $self->{sse} = {ready => 0, promise => $done, raw => '', body => '', events => '', headers_done => 0};
 
   my $url  = Mojo::URL->new($self->{url});
   my $tls  = ($url->protocol // '') eq 'https' ? 1 : 0;
@@ -249,8 +249,13 @@ sub _open_sse_p ($self) {
     $stream->on(error => sub ($s, $e)     { $self->log->debug("[@{[$self->name]}] sse error: $e"); $self->_sse_closed });
   });
 
-  Mojo::IOLoop->timer($self->request_timeout || 30 => sub {
-    $self->_sse_resolve(0, 'timed out waiting for the SSE endpoint');
+  # The wait for the endpoint belongs to this connect: the timer settles only
+  # it -- even one a stop called off, which nothing else settles -- and goes
+  # when it settles (_sse_resolve). Left behind, it rejected whichever connect
+  # was current when it fired, a later one still waiting for its endpoint, and
+  # held the upstream until then.
+  $s->{timer} = Mojo::IOLoop->timer($self->request_timeout || 30 => sub {
+    $self->_sse_resolve(0, 'timed out waiting for the SSE endpoint', $s);
   });
 
   return $done;
@@ -323,9 +328,11 @@ sub _foreign_origin ($self, $endpoint) {
   return undef;
 }
 
-sub _sse_resolve ($self, $ok, $err = undef) {
-  my $s = $self->{sse} or return;
+# Settles a connect, once: the current one, or the one $s names.
+sub _sse_resolve ($self, $ok, $err = undef, $s = $self->{sse}) {
+  return unless $s;
   return if $s->{ready}++;
+  if (my $timer = delete $s->{timer}) { Mojo::IOLoop->remove($timer) }
   $ok ? $s->{promise}->resolve : $s->{promise}->reject("upstream @{[$self->name]}: $err");
 }
 

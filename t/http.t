@@ -9,6 +9,7 @@ use Mojo::JSON qw(encode_json);
 use Mojo::Promise;
 use Mojo::Server::Daemon;
 use IO::Socket::INET;
+use Scalar::Util qw(weaken);
 use MCP::Server;
 use MCP::Hub;
 use MCP::Hub::Upstream::Http;
@@ -67,7 +68,9 @@ sub _error_text ($result) {
 # A fake HTTP+SSE MCP server: the GET stream announces an endpoint, every
 # JSON-RPC response comes back as a "message" event on that stream -- the way
 # the servers the hub's SSE transport talks to behave. It records every POST it
-# receives, so a test can prove that a request did not reach it.
+# receives, so a test can prove that a request did not reach it. With
+# endpoint_delay set it holds the endpoint event back that many seconds, as a
+# slow remote does.
 sub fake_sse (%opt) {
   my $app = Mojolicious->new;
   $app->log->level('warn');
@@ -77,8 +80,13 @@ sub fake_sse (%opt) {
     $c->render_later;
     $c->res->headers->content_type('text/event-stream');
     $state->{tx} = $c->tx;
-    $c->write_sse({type => 'endpoint', text => $state->{endpoint}});
-    $c->tx->resume;
+    my $announce = sub {
+      return unless $c->tx;    # the client hung up while the event was held back
+      $c->write_sse({type => 'endpoint', text => $state->{endpoint}});
+      $c->tx->resume;
+    };
+    my $delay = $state->{endpoint_delay};
+    $delay ? Mojo::IOLoop->timer($delay => $announce) : $announce->();
   });
 
   $app->routes->post('/messages' => sub ($c) {
@@ -344,6 +352,82 @@ subtest 'sse upstream: a stream the remote drops is never taken for a stop' => s
     $up->stop;
     $fake->{daemon}->stop;
   }
+};
+
+subtest 'sse upstream: the endpoint wait of one connect never rejects a later one' => sub {
+  # Every connect waits request_timeout seconds for the endpoint event. That
+  # timer stayed behind when its connect was over, and when it fired it
+  # rejected whichever connect was current then: a later one, still well inside
+  # its own wait, failed with "timed out waiting for the SSE endpoint".
+  my $fake = fake_sse(answer => mcp_answer('unused'));
+  my $up   = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 2},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+
+  # The first connect is over at once: its endpoint is on another origin.
+  $fake->{endpoint} = 'http://127.0.0.1:1/messages';
+  my $first = _await_bounded($up->start_p, 10);
+  like $first->{err}, qr/origin/, 'the first connect fails at once';
+
+  # The second starts a second later and gets its endpoint 1.5 s after that:
+  # past the end of the first connect's wait (2 s), inside its own (3 s).
+  @$fake{qw(endpoint endpoint_delay)} = ('/messages', 1.5);
+  Mojo::Promise->timer(1)->wait;
+  my $second = _await_bounded($up->start_p, 10);
+  ok !$second->{err}, 'the second connect waits for its endpoint and starts' or diag $second->{err};
+  is $up->state, 'ready', 'ready';
+
+  $up->stop;
+  $fake->{daemon}->stop;
+};
+
+subtest 'sse upstream: a connect that is over leaves no timer holding the upstream' => sub {
+  # The endpoint timer held the upstream until it fired -- request_timeout
+  # after the connect, a minute by default -- though the connect it waited for
+  # was long over. An upstream a reload replaced lived on that long.
+  my $fake = fake_sse(endpoint => 'http://127.0.0.1:1/messages');
+  my $up   = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 30},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  like _await_bounded($up->start_p, 10)->{err}, qr/origin/, 'the connect fails at once';
+
+  weaken(my $gone = $up);
+  undef $up;
+  is $gone, undef, 'the upstream goes with its last reference';
+
+  $fake->{daemon}->stop;
+};
+
+subtest 'sse upstream: a stop while it connects does not leave the start hanging' => sub {
+  # The stop calls the connect off before it is through, so nothing on the
+  # stream ever settles the start. The endpoint timer of that connect is all
+  # that is left to do it -- it may not look for whichever connect is current,
+  # there is none.
+  my $fake = fake_sse(answer => mcp_answer('unused'));
+  my $up   = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 1},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+
+  my $start = $up->start_p;    # the connect is under way ...
+  $up->stop;                   # ... and called off
+  my $r = _await_bounded($start, 5);
+  like $r->{err}, qr/^upstream fake:/, 'the start is rejected, not left hanging' or diag explain $r;
+
+  my $again = _await_bounded($up->start_p, 5);
+  ok !$again->{err}, 'the next start connects' or diag $again->{err};
+  is $up->state, 'ready', 'ready';
+
+  $up->stop;
+  $fake->{daemon}->stop;
 };
 
 subtest 'an https url without TLS is a failed upstream that names the fix' => sub {
