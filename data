@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-06T03:51:47Z
+created: 2026-11-06T02:28:03Z
+id: 67
+priority: low
+started: 2026-11-06T03:09:40Z
+status: done
+tags:
+- cli
+title: Give mcp-hub help a usage header of its own
+updated: 2026-11-06T03:51:53Z
+---
+
+Found by mcp-hub-binary-worker in the post-k34 binary verify (2026-11-06). MCP::Hub::Commands::_list prints the inherited Mojolicious::Commands->message above the command list. That text still shows 'mojo generate lite-app', 'Tip: CGI and PSGI environments can be automatically detected...' and '-m ... MOJO_MODE/PLACK_ENV'. Since k34, generate is an unknown command, CGI and PSGI are refused, and PLACK_ENV gets the hub refused instead of setting the mode. Override message (and hint if needed) in MCP::Hub::Commands with mcp-hub examples; t/command.t asserts the list text never names a refused or dropped command. verify-binary.sh compares help output with perl, so the binary follows with no packing change.
+
+MCP::Hub::Commands now overrides message and hint with heredocs (house style, like the commands' usage): 'Usage: mcp-hub [--config PATH] COMMAND [OPTIONS]', mcp-hub examples, the global -c/--config (before the command name), -h and -m (after it; checked: 'mcp-hub -m x token' is an invalid command, 'token -m x' works), mode default MOJO_MODE without PLACK_ENV, hint 'See mcp-hub help COMMAND'. --home left out of the text on purpose (still accepted, hub does not use app home). Heredoc rather than extract_usage, so the text does not depend on POD surviving pp. New subtest in t/command.t over [], help, --help, -h: usage/hint are mcp-hub's and never name prefork/cgi/psgi/generate/inflate/cpanify, PLACK_ENV, auto-detection, mojo, myapp, APPLICATION (32 red before, green after). POD =attr message/hint added. No scripts/ change: verify-binary.sh compares binary vs perl help. Not committed; snapshot + patch in w-cli/k67*.
+
+Committed as c312bf1.
