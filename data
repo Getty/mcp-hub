@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-06T08:39:30Z
+created: 2026-11-06T07:49:47Z
+id: 109
+priority: low
+started: 2026-11-06T07:57:52Z
+status: done
+tags:
+- native
+- bug
+- wire
+title: 'Native _text edge cases: tool_use without name warns; non-array content goes
+  out unstringified'
+updated: 2026-11-06T08:39:30Z
+---
+
+Found during k103/k105.
+1. ClaudeHistory::_text: a tool_use block without "name" emits "Use of uninitialized value" every time the line is read and shows as "[tool_use ]".
+2. Both _text functions (ClaudeHistory, ClaudeSessions) return message.content unchanged when it is not an array. An object or number there goes out as a JSON object/number in "text" / "last_prompt" instead of a string. The comment at $CONTENT_VALUE in ClaudeHistory says "_text stringifies"; in fact only the search's lc does.
+Done: no warning for a nameless tool_use; non-string, non-array content becomes a string (or empty) consistently in both natives; the k84 raw-skip comment matches; tests under t/native/.
+
+Worker done. ClaudeHistory::_text: a tool_use without name (missing or null) renders [tool_use], no warning. Both _text: content that is not an array becomes a string — string as is, number/boolean as its string (1e5 "100000", true "1", false "0"), object as empty text; null stays null (unchanged, so first_prompt //= semantics stay). Object -> empty, not its JSON: a re-encoding (sorted keys, normalised numbers, \/ escapes) puts bytes in text that the raw line lacks and would break k84's raw-skip premise; it matches k103's skip of non-object blocks; and HASH(0x...) addresses leave the wire. $CONTENT_VALUE and _raw_skip comments now say what really stringifies; raw-skip rules unchanged (still a superset; [tool_use] only adds ']' after tool_use, which no raw-tested needle can hold). Tests: new t/native/claude-text-values.t (9 of 12 subtests fail on HEAD, warning via $SIG{__WARN__}); k84 equivalence test extended with nameless tool_use, false, null and object content plus needles hash(0x, 0, null, tool_use], ... Wire byte-identical to HEAD over t/fixtures/claude (679-line dump of every tool, cold+warm cache). prove -lr t/ green on a HEAD export + only these files, default and Poll reactor. Drift (for the dispatcher to file on this board): list_sessions puts _file (absolute server path) on the wire; ClaudeSessions pid is a JSON string with one session and a number with several; block text / tool_use name that is an object still renders HASH(0x...).
+
+Commit-ready, uncommitted. Files: lib/MCP/Hub/Native/ClaudeHistory.pm, lib/MCP/Hub/Native/ClaudeSessions.pm, t/native/claude-history-search.t, new t/native/claude-text-values.t. Proposed subject: Render a nameless tool_use as [tool_use] and send non-array content as a string (k109).
+
+Committed as da321fa
