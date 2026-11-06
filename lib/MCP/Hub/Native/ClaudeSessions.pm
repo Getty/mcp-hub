@@ -156,11 +156,13 @@ sub _record ($line) {
   return ref $rec eq 'HASH' ? $rec : undef;
 }
 
+# The text blocks of a message; a block that is not an object ("x", 1, [1]) is
+# skipped, as MCP::Hub::Native::ClaudeHistory skips it.
 sub _text ($message) {
   return '' unless ref $message eq 'HASH';
   my $content = $message->{content};
   return $content unless ref $content eq 'ARRAY';
-  return join "\n", map { $_->{text} // '' } grep { ($_->{type} // '') eq 'text' } @$content;
+  return join "\n", map { $_->{text} // '' } grep { ref $_ eq 'HASH' && ($_->{type} // '') eq 'text' } @$content;
 }
 
 sub _json ($tool, $data) {
