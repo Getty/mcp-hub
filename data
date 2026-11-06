@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-11-06T02:05:28Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T02:05:28Z
+created: 2026-11-06T01:05:53Z
+id: 58
+priority: low
+started: 2026-11-06T01:23:42Z
+status: done
+tags:
+- stdio
+- docker
+- env
+title: MOJO_REUSE reaches exec'd children and names fds they no longer hold
+updated: 2026-11-06T02:05:28Z
+---
+
+Found by mcp-hub-worker during k52. Mojo sets MOJO_REUSE in the hub's environment (e.g. 127.0.0.1:44483:3,127.0.0.1:35871:4) and every exec'd child (stdio upstreams, docker/compose CLI) inherits it. Since k52 closes fds above 2 before exec, a child Mojo app listening on exactly the hub's address and port would pick up a dead fd; before k52 it silently shared the hub's socket. Likely fix: drop MOJO_REUSE from the child env in Stdio::_spawn and Docker::run_p (unless the entry's own env sets it). Regression test next to t/exec-fds.t.
+
+2026-11-06 01:28 Cause: Mojo::IOLoop::Server::listen (Mojo 9.49, Mojo/IOLoop/Server.pm:34-36 read, :72 append, :17 DESTROY removes) keeps every listener as address:port:fd in $ENV{MOJO_REUSE}; only consumer is hypnotoad hot deploy (Hypnotoad.pm:130 fork+exec inherits env and the $^F=1023 fds). The hub never re-execs itself, so in every child the variable names fds it no longer holds (closed by k52 in exec'd children, /dev/null in Fork workers via _isolate_fds). Red tests on HEAD: new t/exec-env.t (stdio child + run_p: MOJO_REUSE present, 2 fails) and t/fork.t (worker %ENV has it). Decision (mine): scrub in MCP::Hub::Child as child_env($entry_env) for all three child kinds incl. the Fork worker; entry env still wins.
+
+2026-11-06 01:34 Fix: MCP::Hub::Child::child_env($env) = hub %ENV minus MOJO_REUSE, entry env on top (explicit MOJO_REUSE in an entry still wins -- the entry env is applied verbatim, as before). Used at Stdio::_spawn and Docker::run_p (replaces %ENV = (%ENV, env)) and in Fork::_worker after _isolate_fds (%ENV = child_env()). docker run -i: only the entry's env keys reach the container (bare -e KEY, Docker.pm run_args), so MOJO_REUSE only ever reached the CLI process; a compose file naming MOJO_REUSE in environment: would have passed it on. t/exec-env.t, t/fork.t green after the fix; full prove -lr running.
+
+2026-11-06 01:44 Done: MCP::Hub::Child::child_env($env) (hub %ENV minus MOJO_REUSE, entry env on top) now builds the env of every child -- Stdio::_spawn, Docker::run_p, and the Fork worker after _isolate_fds. POD: Child (SYNOPSIS/DESCRIPTION/=func child_env), Fork 'What a worker inherits', MCP::Hub 'Process model'. Tests: new t/exec-env.t (no /proc needed, runs everywhere: stdio child + run_p, with/without entry MOJO_REUSE, other vars still inherited) and a t/fork.t assertion via new ForkProbe getenv tool -- red on HEAD (3 fails), green after. prove -lr t/: 237 tests, my suites green; FAIL only from other agents' in-flight work in the same tree (t/cli.t 1/2, t/command.t 13-16 -- fail identically on pristine HEAD) and one t/reload.t flake under host load ('exited (unknown)', passes 3/3 alone). Tree is shared with other agents: lib/MCP/Hub.pm carries foreign hunks besides mine (@@ -780 Process model POD is mine). t/exec-env.t is untracked -- needs git add.
+
+Committed as b959f97
