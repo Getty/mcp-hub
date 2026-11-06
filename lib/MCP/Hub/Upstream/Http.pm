@@ -118,7 +118,7 @@ sub start_p ($self) {
     # A start that a stop called off did not fail: it is neither logged nor
     # counted as a connect failure, and it is rejected as stopped, whichever
     # step of it the stop cut short -- a request in flight, the next one, which
-    # is not sent (_sse_request_p, _http_request_p), or none.
+    # is not sent (_sse_request_p, _http_send_p), or none.
     my $stopped = delete $self->{stop_requested};
     $stopped
       ? $self->log->debug("[@{[$self->name]}] start called off by a stop")
@@ -155,7 +155,7 @@ sub _start_after_p ($self, $called_off) {
 # (_start_after_p), a connect still waiting for its endpoint (_close_sse) and
 # the requests in flight -- those first, before the closing stream fails them as
 # closed. Over Streamable HTTP the requests in flight here are those of a start
-# (_http_request_p); a call is left to finish. The stop also ends the session
+# (_http_send_p); a call is left to finish. The stop also ends the session
 # (_end_session).
 sub stop ($self) {
   $self->{stop_requested} = 1 if $self->{start_promise};
@@ -205,7 +205,18 @@ sub _notify ($self, $method, $params = {}) {
 
 # --- Streamable HTTP (single endpoint, response on the POST) ---------------
 
+# A request that comes back 404 because the remote has ended its session
+# (_session_gone) is sent once more, on the new session -- not again after
+# that. The 404 says it did not run on the old one, so it does not run twice.
 sub _http_request_p ($self, $method, $params) {
+  my $renewed;
+  return $self->_http_send_p($method, $params, \$renewed)->catch(sub ($err) {
+    return Mojo::Promise->reject($err) unless $renewed;
+    return $renewed->then(sub { $self->_http_send_p($method, $params) });
+  });
+}
+
+sub _http_send_p ($self, $method, $params, $renewed = undef) {
   # The next request of a start that a stop called off is not sent.
   return Mojo::Promise->reject("upstream @{[$self->name]}: stopped") if $self->{stop_requested};
 
@@ -234,7 +245,8 @@ sub _http_request_p ($self, $method, $params) {
 
   # Such a call keeps the session it went out on, so that a stop ends the
   # session only once the call is through (_end_session).
-  my $session = $of_start ? undef : $self->{session_id};
+  my $sent    = $self->{session_id};
+  my $session = $of_start ? undef : $sent;
   $self->{calls_on}{$session}++ if defined $session;
   my $settled = sub {
     delete $self->{pending}{$id};
@@ -246,6 +258,12 @@ sub _http_request_p ($self, $method, $params) {
   $self->req_ua->start_p($tx)->then(sub ($tx) {
     return undef if $of_start && !$self->{pending}{$id};    # called off by a stop
     if (my $err = $tx->error) {
+      # The remote has ended the session this went out on (_session_gone).
+      if (!$found && defined $sent && ($err->{code} // 0) == 404) {
+        my $renew = $self->_session_gone($sent, $renewed && !$of_start);
+        $$renewed = $renew if $renewed;
+        die "upstream @{[$self->name]}: the remote ended the session (" . $self->_error_message($err) . ")\n";
+      }
       die "upstream @{[$self->name]}: " . $self->_error_message($err) . "\n" unless $found;
     }
     # The session is the one the answer to the initialize names. A later answer
@@ -298,6 +316,32 @@ sub _end_session ($self, $sid) {
     $log->debug("[$name] the remote did not end the session: $err->{message}");
   });
   return $self;
+}
+
+# The remote answered 404 to a request on session $sid: it has ended the
+# session -- it restarted, or timed the session out -- and the spec has the
+# client open a new one. The upstream leaves it, and nothing ends it again: no
+# DELETE goes out for it, not even the one a stop left to its last call.
+#
+# With $renew -- for a request that is no request of a start and goes out once
+# more -- it returns the promise of the session to send it on: a new one if
+# the upstream was still on $sid, opened by one start (start_p) that every
+# request which lost $sid shares; the one it is on, or opening, if it has moved
+# on since. None after a stop: a call left to finish does not start again what
+# the stop stopped. Without $renew a request of a start fails its start, and
+# any other request fails, leaving the upstream stopped: its next call opens a
+# new session.
+sub _session_gone ($self, $sid, $renew) {
+  delete $self->{ending}{$sid};
+  my $current = defined $self->{session_id} && $self->{session_id} eq $sid;
+  if ($current) {
+    delete $self->{session_id};
+    $self->state('stopped') if $self->state eq 'ready';
+  }
+  return undef unless $renew;
+  return $self->start_p
+    if $current || $self->state eq 'ready' || ($self->{start_promise} && !$self->{stop_requested});
+  return undef;
 }
 
 sub _http_post ($self, $obj) {
@@ -662,6 +706,17 @@ C<405> -- it does not let clients end sessions -- or cannot be reached is only
 logged at debug level, and the connect and request timeouts of L</req_ua> bound
 it. One sent as the daemon shuts down may not get out before the process ends.
 The next start opens a new session: its C<initialize> carries no session id.
+
+A remote that has ended a session -- it restarted, or timed the session out --
+answers C<404> to a request on it. The upstream leaves that session and opens a
+new one, and sends the request once more, on it: the C<404> says it did not run
+on the old one. Requests that lose the same session share one new session, and
+none goes out a third time -- one whose new session ends too fails, and the
+next call opens another. A request of a start is not sent again: the start
+fails. No C<DELETE> goes out for a session the remote has ended, and a call
+left to finish past a stop opens no new session; it fails, saying the remote
+ended the session. A C<404> on a request without a session id -- a remote that
+gives none, or a wrong C<url> -- is an error like any other.
 
 An C<https> C<url> needs TLS in the perl the hub runs on: L<IO::Socket::SSL>
 2.009 or newer, which L<Mojolicious> speaks TLS with, and C<MOJO_NO_TLS> unset.

@@ -204,3 +204,8 @@ Revision history for MCP-Hub
   - A reload that removes a ClaudeHistory, ClaudeSessions or Status entry no
     longer keeps its instance alive through the instance's own tools (an
     instance served on its own endpoint is still held by its transport).
+  - A Streamable HTTP upstream whose remote has ended its session (a 404 on
+    a request carrying the session id) opens a new session and sends the
+    request once more on it, instead of failing every call on the dead
+    session until a reload; calls that lose the same session share one new
+    session, and no DELETE goes out for a session the remote ended.

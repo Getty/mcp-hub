@@ -143,10 +143,17 @@ sub mcp_answer ($error) {
 # A DELETE ends a session: `deletes` records the session ids they carry, and
 # each is answered with `delete_status` (200), or with no answer at all, its
 # connection dropped, for `drop`.
+#
+# The sessions it knows are in `live`; a test forgets one by deleting it there,
+# as a remote that restarted, or timed the session out, does -- `volatile`
+# forgets each one as soon as it is given. A POST on a session it does not know
+# is answered 404 and counted in `gone`, at once, or -- when it forgot the
+# session while it held the request -- once the answer is ready. `stateless`
+# gives no session ids, and an answer {http_status => N} is a bare status N.
 sub fake_http (%opt) {
   my $app = Mojolicious->new;
   $app->log->level('warn');
-  my $state = {posts => [], answered => 0, cut => 0, sessions => 0, deletes => []};
+  my $state = {posts => [], answered => 0, cut => 0, sessions => 0, deletes => [], live => {}, gone => 0};
 
   $app->routes->delete('/mcp' => sub ($c) {
     push @{$state->{deletes}}, $c->req->headers->header('Mcp-Session-Id');
@@ -157,7 +164,10 @@ sub fake_http (%opt) {
 
   $app->routes->post('/mcp' => sub ($c) {
     my $req = eval { $c->req->json } // {};
-    push @{$state->{posts}}, {%$req, session => $c->req->headers->header('Mcp-Session-Id')};
+    my $sid = $c->req->headers->header('Mcp-Session-Id');
+    push @{$state->{posts}}, {%$req, session => $sid};
+    my $gone = sub { defined $sid && !$state->{live}{$sid} && ++$state->{gone} };
+    return $c->rendered(404) if $gone->();
     return $c->rendered(202) unless defined $req->{id};    # a notification
     my $answered;
     $c->on(finish => sub { $state->{cut}++ unless $answered });
@@ -165,9 +175,12 @@ sub fake_http (%opt) {
     Mojo::Promise->resolve($opt{answer}->($req))->then(sub ($res) {
       return unless $c->tx;
       $answered = ++$state->{answered};
-      my $session = ($req->{method} // '') eq 'initialize'
-        ? 's' . ++$state->{sessions}
-        : $c->req->headers->header('Mcp-Session-Id');
+      return $c->rendered(404) if $gone->();
+      return $c->rendered($res->{http_status}) if ref $res eq 'HASH' && $res->{http_status};
+      my $session = ($req->{method} // '') ne 'initialize' ? $sid
+        : $state->{stateless}                             ? undef
+        :                                                   's' . ++$state->{sessions};
+      $state->{live}{$session} = 1 if defined $session && !$state->{volatile};
       $c->res->headers->header('Mcp-Session-Id' => $session) if defined $session;
       $c->render(json => $res);
     });
@@ -972,6 +985,325 @@ subtest 'a start after a stop is a fresh one, though the stopped start has not s
     weaken(my $gone = $up);
     undef $up;
     is $gone, undef, "$phase: nothing holds the upstream";
+    $fake->{daemon}->stop;
+  }
+};
+
+# The MCP conversation of a fake Streamable HTTP server: a handshake that lists
+# one tool, and a tools/call answered `pong` -- or by $call, when it returns
+# something.
+sub pong_answer ($call = sub { undef }) {
+  return sub ($req) {
+    my ($id, $method) = ($req->{id}, $req->{method} // '');
+    return {jsonrpc => '2.0', id => $id, result => {
+      protocolVersion => '2025-06-18',
+      capabilities    => {},
+      serverInfo      => {name => 'fake-http', version => '0.0.1'},
+    }} if $method eq 'initialize';
+    return {jsonrpc => '2.0', id => $id, result => {tools => [{name => 'ping', inputSchema => {type => 'object'}}]}}
+      if $method eq 'tools/list';
+    return $call->($req) // {jsonrpc => '2.0', id => $id, result => {content => [{type => 'text', text => 'pong'}]}};
+  };
+}
+
+# Every POST a fake Streamable HTTP server received since the last look, as
+# "method: session" -- without the notifications/initialized, which goes on a
+# connection of its own and may arrive after the requests that follow it.
+sub posts_on ($fake) {
+  return [map { "$_->{method}: " . ($_->{session} // 'none') }
+    grep { ($_->{method} // '') ne 'notifications/initialized' } splice @{$fake->{posts}}];
+}
+
+sub until_true ($cond, $within = 5) {
+  my $deadline = time + $within;
+  Mojo::Promise->timer(0.01)->wait until $cond->() || time > $deadline;
+  return $cond->();
+}
+
+subtest 'streamable http upstream: a session the remote ended is replaced, and the request goes out again on the new one' => sub {
+  # A remote that has ended a session -- it restarted, or timed the session
+  # out -- answers 404 to every request on it, and the spec has the client open
+  # a new session then, with an initialize that carries no session id. The
+  # upstream stayed `ready` on the dead session instead: the call failed with
+  # "Not Found", and so did every later one, and a refresh, which listed again
+  # over the same session, until a reload or a restart. The session goes, a new
+  # one opens, and the request is sent once more, on it: the 404 says that it
+  # did not run on the old one.
+  my $calls = 0;
+  my $fake  = fake_http(answer => pong_answer(sub ($req) { $calls++; undef }));
+  my $up    = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  my @logged;
+  my $log = Mojo::Log->new;
+  $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+  $up->log($log);
+
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'a call is answered';
+  is_deeply posts_on($fake), ['initialize: none', 'tools/list: s1', 'tools/call: s1'], 'on session s1';
+
+  delete $fake->{live}{s1};
+  my $r = _await_bounded($up->call_tool('ping', {}), 5);
+  is _error_text($r), 'pong', 'the remote ended s1: the next call is answered all the same' or diag explain $r;
+  ok !$r->{isError}, 'as a result, not an error';
+  is_deeply posts_on($fake), ['tools/call: s1', 'initialize: none', 'tools/list: s2', 'tools/call: s2'],
+    'after its 404 on s1, a new session -- its initialize without a session id -- and the call once more, on s2';
+  is $calls, 2, 'the tool ran once for each call';
+  is $up->state, 'ready', 'ready';
+
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'the next call';
+  is_deeply posts_on($fake), ['tools/call: s2'], 'goes out on s2 at once';
+
+  # A refresh lists over the session the upstream is on, and the same holds.
+  delete $fake->{live}{s2};
+  my $refreshed = _await_bounded($up->refresh_p->then(sub { 'refreshed' }), 5);
+  is $refreshed, 'refreshed', 'the remote ended s2: a refresh goes through all the same' or diag explain $refreshed;
+  is_deeply posts_on($fake), ['tools/list: s2', 'initialize: none', 'tools/list: s3', 'tools/list: s3'],
+    'on a new session, s3';
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'and the next call';
+  is_deeply posts_on($fake), ['tools/call: s3'], 'goes out on s3';
+
+  # The sessions the remote ended are not ended again; the one it knows is.
+  Mojo::Promise->timer(0.05)->wait;
+  is_deeply $fake->{deletes}, [], 'no DELETE for a session the remote ended';
+  $up->stop;
+  ok until_true(sub { @{$fake->{deletes}} }), 'a stop ends the session';
+  is_deeply $fake->{deletes}, ['s3'], 'the one the upstream is on, and only that one';
+  is $up->error, undef, 'no failure reason';
+  is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], 'nothing logged as a failure' or diag explain \@logged;
+
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: a request goes out once more at most, a request of a start not again' => sub {
+  # A new session for a request that lost its session, and the request once
+  # more on it -- once: a remote that ends that session too fails the request.
+  # A request of a start is never sent again: the start fails. The upstream
+  # never stays on a session the remote has ended, and never ends it itself.
+  my ($forget, $fake);
+  $fake = fake_http(answer => pong_answer(sub ($req) {
+    %{$fake->{live}} = () if $forget;    # it ends the session while the call runs
+    undef;
+  }));
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  posts_on($fake);
+
+  # The remote ends s1, and the new session s2 while the call runs on it.
+  delete $fake->{live}{s1};
+  $forget = 1;
+  my $r = _await_bounded($up->call_tool('ping', {}), 5);
+  ok $r->{isError}, 'a call whose new session ends too is an error result' or diag explain $r;
+  like _error_text($r), qr/^upstream fake: the remote ended the session \(Not Found\)$/, 'that says why';
+  is_deeply posts_on($fake), ['tools/call: s1', 'initialize: none', 'tools/list: s2', 'tools/call: s2'],
+    'it went out once more, on s2, and not again';
+  is $up->state, 'stopped', 'the upstream is not left on s2';
+  $forget = 0;
+
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'the next call is answered';
+  is_deeply posts_on($fake), ['initialize: none', 'tools/list: s3', 'tools/call: s3'], 'on a new session';
+
+  # A remote that ends every session as soon as it gives it: the tools/list of
+  # the next start 404s.
+  $up->stop;
+  ok until_true(sub { @{$fake->{deletes}} }), 'a stop ends s3';
+  $fake->{volatile} = 1;
+  my $s = _await_bounded($up->start_p, 5);
+  like $s->{err}, qr/^upstream fake: the remote ended the session \(Not Found\)$/, 'a start whose session ends fails'
+    or diag explain $s;
+  is_deeply posts_on($fake), ['initialize: none', 'tools/list: s4'], 'its tools/list is not sent again';
+  $up->stop;
+  Mojo::Promise->timer(0.1)->wait;
+  is_deeply $fake->{deletes}, ['s3'], 'and a stop does not end s4, which the remote ended';
+
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: a 404 on a request without a session id is only an error' => sub {
+  # A 404 means the remote ended the session only on a request that carried
+  # one: a remote that gives no session ids, or a URL that is wrong, answers
+  # 404 for its own reasons. That is an error, and opens no new session.
+  my $fake = fake_http(answer => pong_answer(sub ($req) {
+    $req->{params}{name} eq 'missing' ? {http_status => 404} : undef;
+  }));
+  $fake->{stateless} = 1;
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  is_deeply posts_on($fake), ['initialize: none', 'tools/list: none'], 'a remote that gives no session id';
+
+  for my $n (1 .. 2) {
+    my $r = _await_bounded($up->call_tool('missing', {}), 5);
+    ok $r->{isError}, "call $n: a 404 is an error result";
+    like _error_text($r), qr/^upstream fake: Not Found$/, "call $n: Not Found";
+    is_deeply posts_on($fake), ['tools/call: none'], "call $n: sent once, and no new session";
+    is $up->state, 'ready', "call $n: still ready";
+  }
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'a call it knows is answered';
+
+  (my $wrong = $fake->{url}) =~ s{/mcp$}{/wrong};
+  my $other = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $wrong, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  $other->log->level('fatal');
+  my $s = _await_bounded($other->start_p, 5);
+  like $s->{err}, qr/^upstream fake: Not Found$/, 'a wrong url: the start fails with Not Found' or diag explain $s;
+  is $other->state, 'stopped', 'stopped';
+
+  $up->stop;
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: requests that lose the same session share one new session' => sub {
+  # Calls in flight when the remote ends their session all come back 404. One
+  # new session serves them all -- with one handshake, which those that come
+  # back while it runs wait for. One that comes back after it went out on it at
+  # once.
+  my ($hold_init, $hold_call);
+  my $fake = fake_http(answer => sub ($req) {
+    my $answer = pong_answer()->($req);
+    my $hold   = ($req->{method} // '') eq 'initialize' ? $hold_init
+      : ($req->{params}{name} // '') eq 'held'         ? $hold_call
+      :                                                  undef;
+    return $hold ? $hold->then(sub { $answer }) : $answer;
+  });
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  posts_on($fake);
+
+  # Every 404 the upstream has read.
+  my $not_found = 0;
+  $up->req_ua->on(start => sub ($ua, $tx) {
+    $tx->on(finish => sub ($tx) { $not_found++ if ($tx->res->code // 0) == 404 });
+  });
+
+  # One call the remote holds on s1 until the new session is up.
+  $hold_call = Mojo::Promise->new;
+  my $late = $up->call_tool('held', {});
+  ok until_true(sub { grep { ($_->{params}{name} // '') eq 'held' } @{$fake->{posts}} }), 'one call runs on s1';
+
+  # The remote ends s1; three calls go out on it, and the new session's
+  # initialize waits until all three have come back.
+  delete $fake->{live}{s1};
+  $hold_init = Mojo::Promise->new;
+  my @calls = map { $up->call_tool('ping', {}) } 1 .. 3;
+  ok until_true(sub { $not_found == 3 && grep { ($_->{method} // '') eq 'initialize' } @{$fake->{posts}} }),
+    'three calls come back 404 while the new session opens';
+  Mojo::Promise->timer(0.05)->wait;
+  $hold_init->resolve;
+  undef $hold_init;
+
+  is _error_text(_await_bounded($_, 5)), 'pong', 'a call that came back 404 is answered' for @calls;
+  my $posts = posts_on($fake);
+  is scalar(grep { $_ eq 'initialize: none' } @$posts), 1, 'one new session for all of them';
+  is scalar(grep { $_ eq 'tools/call: s2' } @$posts), 3, 'each went out once more, on it';
+
+  # The held call comes back 404 now, with s2 up.
+  $hold_call->resolve;
+  is _error_text(_await_bounded($late, 5)), 'pong', 'the call held on s1 is answered too';
+  is_deeply posts_on($fake), ['tools/call: s2'], 'it went out once more, on s2 -- no new session for it';
+  is $up->state, 'ready', 'ready';
+  is_deeply $fake->{deletes}, [], 'no DELETE for s1';
+
+  $up->stop;
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: a stop calls off the new session, and opens none' => sub {
+  # A stop while the new session opens calls that start off, as any start: the
+  # request waiting for it fails as stopped. A stop before the 404 came back
+  # opens no new session at all -- what was stopped is not started again by a
+  # call that was left to finish. Neither ends the session the remote ended;
+  # the stop ends the new one if its initialize was answered.
+  for my $when ('during the initialize', 'during the tools/list', 'before the 404') {
+    my $hold = Mojo::Promise->new;
+    my $held = '';
+    my $fake = fake_http(answer => sub ($req) {
+      my $answer = pong_answer()->($req);
+      my $name   = ($req->{method} // '') eq 'tools/call' ? $req->{params}{name} : $req->{method};
+      return $name eq $held ? $hold->then(sub { $answer }) : $answer;
+    });
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+      cache_dir => tempdir->to_string,
+    );
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+    $up->log($log);
+    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$when: started";
+    posts_on($fake);
+
+    my ($call, $cut);
+    if ($when eq 'before the 404') {
+      # The call runs on s1 when the stop comes; the remote ends s1 after it.
+      $held = 'held';
+      $call = $up->call_tool('held', {});
+      ok until_true(sub { grep { ($_->{params}{name} // '') eq 'held' } @{$fake->{posts}} }), "$when: the call runs";
+      $up->stop;
+      delete $fake->{live}{s1};
+      $hold->resolve;
+    }
+    else {
+      $held = $when eq 'during the initialize' ? 'initialize' : 'tools/list';
+      delete $fake->{live}{s1};
+      $cut  = $fake->{cut};
+      $call = $up->call_tool('ping', {});
+      ok until_true(sub { grep { ($_->{method} // '') eq $held } @{$fake->{posts}} }),
+        "$when: the call came back 404, the new session opens";
+      $up->stop;
+    }
+
+    my $r = _await_bounded($call, 2);
+    ok $r->{isError}, "$when: the call is an error result" or diag explain $r;
+    like _error_text($r),
+      $when eq 'before the 404' ? qr/^upstream fake: the remote ended the session \(Not Found\)$/ : qr/^upstream fake: stopped$/,
+      "$when: that says why";
+    is $up->state, 'stopped', "$when: stopped";
+    ok until_true(sub { $fake->{cut} > $cut }, 1), "$when: the $held is cut off" if defined $cut;
+    my %sent = (
+      'during the initialize' => ['tools/call: s1', 'initialize: none'],
+      'during the tools/list' => ['tools/call: s1', 'initialize: none', 'tools/list: s2'],
+      'before the 404'        => ['tools/call: s1'],
+    );
+    Mojo::Promise->timer(0.1)->wait;
+    is_deeply posts_on($fake), $sent{$when}, "$when: nothing went out after the stop" ;
+    ok until_true(sub { @{$fake->{deletes}} }), "$when: the stop ends s2" if $when eq 'during the tools/list';
+    is_deeply $fake->{deletes}, $when eq 'during the tools/list' ? ['s2'] : [], "$when: and never s1";
+    is $up->error, undef, "$when: no failure reason";
+    is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$when: nothing logged as a failure"
+      or diag explain \@logged;
+
+    # Nor is it stuck: the next start opens a new session.
+    $held = '';
+    is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', "$when: the next call is answered";
+    my $posts = posts_on($fake);
+    is $posts->[0], 'initialize: none', "$when: on a new session" or diag explain $posts;
+    $up->stop;
+
+    weaken(my $gone = $up);
+    undef $up;
+    is $gone, undef, "$when: nothing holds the upstream";
     $fake->{daemon}->stop;
   }
 };
