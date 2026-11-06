@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-11-06T08:25:25Z
+created: 2026-11-06T06:49:00Z
+id: 101
+priority: low
+started: 2026-11-06T07:41:01Z
+status: done
+tags:
+- http
+- upstream
+- spec
+title: 'Streamable HTTP sessions left open on the remote: shutdown, failed start,
+  stop as the initialize goes out'
+updated: 2026-11-06T08:25:25Z
+---
+
+Found during k94. A stop now ends the session with a DELETE (k94), but three paths still leave a session open on the remote until its own timeout:
+1. Daemon shutdown: Http inherits a stopped_p that resolves at once, so the DELETE most likely never gets out before the process ends. Fix would be Http::stopped_p waiting for the DELETE, bounded -- but that can delay shutdown by up to the connect timeout on a dead remote. Needs a decision.
+2. A failed start whose initialize was answered (with a session id) never ends that session.
+3. A stop that lands as the initialize goes out: the hub ignores the answer, and the session it opened is never ended.
+
+Scope narrowed: item 1 (shutdown DELETE) split into k108 for a maintainer decision. This card covers items 2 (a failed start whose initialize was answered never ends that session) and 3 (a stop as the initialize goes out ignores the answer and never ends the session it opened).
+
+Items 2 and 3 fixed in lib/MCP/Hub/Upstream/Http.pm, worker tree, uncommitted. Item 1 (shutdown, stopped_p) was not touched; it is k108. Item 2: start_p's catch now ends, with the k94 _end_session DELETE, the session that a failed start's initialize was given (it deletes {session_id}). There is no DELETE when the remote handed out no session id (stateless), and none when the failure was the 404 of _session_gone (k100), which has already dropped the id. Item 3: in _http_send_p's called-off branch, an initialize answer that arrives after the stop is still turned away, but if it carries an Mcp-Session-Id that session is ended. If no connection was ever made, there is no answer and nothing to end. That branch relies on k106's explicit $of_start, so k101.patch applies on top of k106.patch. Tests, t/http.t, new subtest 'a start that fails, or that a stop calls off, ends the session it was given', six cases: a list fails (stateful: DELETE s1; stateless: none); the remote ended its session (404: none); stopped as the initialize goes out (stateful: DELETE s1; stateless: none); stopped during a held initialize at top level (none). Each case also checks the state, the error, that a later stop sends no second DELETE, the logs, and that nothing holds the upstream. Two existing assertions changed their claim on purpose, because they asserted the leak. The k91 'as the initialize goes out' case now expects exactly one DELETE where it expected none. 'a start opens a new session, a stop ends the old one' now also expects s3 to be ended. The new and changed assertions fail at HEAD and on the k106 state, and pass on the final state. Verified: t/http.t 5/5 under EV and 5/5 under Poll; full prove -lr t/ on a HEAD export with both files: PASS, 37 files, 409 tests; skipped only docker-live.t, npx.t and wiki-live.t (env-gated). Split patch: w-k101/k101.patch (k106 -> final); tree.sha1 matches the worker tree.
+
+k101 items 2+3 done (item 1 is k108, untouched): a failed start and a start that a stop calls off now end the session the remote gave them; no DELETE when stateless or on the k100 404. Tests in t/http.t fail at HEAD and on k106 and pass now; t/http.t 5x EV + 5x Poll; full prove -lr t/ PASS. Proposed subject: 'End the Streamable HTTP session of a start that fails or that a stop calls off (k101)'. Commit after k106 (w-k101/k101.patch applies on k106.patch).
+
+Committed as 788f4aa
