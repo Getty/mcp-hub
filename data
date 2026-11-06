@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-06T16:40:14Z
+created: 2026-11-06T14:41:04Z
+id: 138
+priority: low
+started: 2026-11-06T15:07:56Z
+status: done
+tags:
+- stdio
+title: 'Stdio: a request the child can no longer take waits out request_timeout instead
+  of failing at once'
+updated: 2026-11-06T16:41:20Z
+---
+
+Found during k130/k132 (worker). A stdio request sent when the child has no stream any more, or after it was sent EOF (k39: _send refuses it), is not rejected at once: its promise waits out request_timeout. This hits calls too (a call that comes upon a stopping child), not only refreshes (k132 now fails a bound refresh at once). Done: a request _send refuses is rejected at once with a reason (stopped / not connected); test in t/stdio-stop.t or t/stdio.t.
+
+Done (mcp-hub-worker): new Stdio::_refused ('not connected' with no stream, 'stopped' once EOF was sent), used by _send and _request_p: a call or refresh the child can no longer be sent fails at once; the k132 message is kept. A stop during a start fails it as stopped, neither counted nor signalled (worker's choice: otherwise stops would count toward the crash loop and a child in its EOF grace be killed). Stacked on k139 in start_p. Tests t/stdio-stop.t (red 2/3, 13/26) and t/stdio.t (red 4/8). Not committed.
+
+Committed as 62d6235
