@@ -10,6 +10,14 @@ use Mojo::JSON qw(decode_json encode_json);
 has root => sub { $ENV{CLAUDE_CONFIG_DIR} || ($ENV{HOME} ? "$ENV{HOME}/.claude" : '.claude') };
 has meta_cache => sub { {} };
 
+# Escapes that decode to a character a raw search needle can match: printable
+# ASCII, U+0130 and U+212A (see _raw_skip); and text, name and content values
+# that are not strings, which _text stringifies.
+my $ESCAPE        = qr/\\u(?:00[2-7][0-9a-fA-F]|0130|212[aA])/;
+my $TEXT_VALUE    = qr/"text"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\x20\t\r\n]/;
+my $NAME_VALUE    = qr/"name"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\x20\t\r\n]/;
+my $CONTENT_VALUE = qr/"content"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[\x20\t\r\n]/;
+
 sub new ($class, %args) {
   my $self = $class->SUPER::new(name => 'claude-history', version => $VERSION, %args);
   $self->instructions('Browse the local Claude Code conversation history.');
@@ -113,12 +121,13 @@ sub search_conversations ($self, $args) {
   my $limit = $args->{limit} // 30;
   my %roles = map { $_ => 1 } @{$args->{roles} // ['user']};
   my $needle = lc $query;
+  my $skip   = _raw_skip($needle);
 
   my @hits;
   my $sessions = $self->list_sessions({project => $args->{project}, since => $args->{since}, until => $args->{until}, limit => 1e9});
   for my $session (@$sessions) {
     last if @hits >= $limit;
-    for my $entry (@{$self->_entries($session->{_file})}) {
+    for my $entry (@{$self->_entries($session->{_file}, $skip)}) {
       next unless $roles{$entry->{role}};
       my $text = $entry->{text} // '';
       next unless (my $pos = index(lc $text, $needle)) >= 0;
@@ -217,10 +226,12 @@ sub _scan ($self, $file) {
   };
 }
 
-sub _entries ($self, $file) {
+# With a raw test, a line is decoded only if its raw bytes could hold a match.
+sub _entries ($self, $file, $skip = undef) {
   my @entries;
   for my $line (split /\n/, path($file)->slurp) {
     next unless length $line;
+    next if $skip && $skip->($line);
     my $rec = eval { decode_json($line) } or next;
     my $type = $rec->{type} // '';
     next unless $type eq 'user' || $type eq 'assistant';
@@ -246,6 +257,36 @@ sub _file_for_session ($self, $session_id) {
 }
 
 # --- helpers ---------------------------------------------------------------
+
+# For a search needle (already lowercased) that can be tested against the raw
+# JSON line, a test that is true for a line which cannot hold a match, so the
+# search need not decode it; undef for any other needle, which has every line
+# decoded. The needle must be printable ASCII without anything JSON escapes
+# ('"', '\'), so a match in the decoded text is one in the raw bytes, and must
+# not be able to match the markers _text adds: no '[' or ']', and not starting
+# inside "[tool_use " (e.g. "use bash"). A line still counts as a candidate if
+# it can decode to a match without holding the needle raw: an escaped printable
+# ASCII character, a slash escaped as \/ when the needle holds '/', KELVIN SIGN
+# (lowercase "k") or U+0130 (lowercase "i\x{307}") when it holds that letter,
+# or a non-string text, name or content value when the needle could be such a
+# value stringified (1e5 is "100000", true "1", an object "HASH(0x...)").
+sub _raw_skip ($needle) {
+  return undef unless $needle =~ /\A[\x20-\x7e]+\z/ && $needle !~ /["\\\[\]]/;
+  return undef if grep { index($needle, substr('[tool_use ', $_)) == 0 } 1 .. 9;
+
+  my $slash  = index($needle, '/') >= 0;
+  my $kelvin = index($needle, 'k') >= 0;
+  my $dot_i  = index($needle, 'i') >= 0;
+  my $scalar = $needle =~ /\A[0-9a-fhinrsxy().+\-]+\z/;
+  return sub ($line) {
+    return !(index(lc $line, $needle) >= 0
+      || (index($line, '\\u') >= 0 && $line =~ $ESCAPE)
+      || ($slash  && index($line, '\\/') >= 0)
+      || ($kelvin && index($line, "\xE2\x84\xAA") >= 0)
+      || ($dot_i  && index($line, "\xC4\xB0") >= 0)
+      || ($scalar && ($line =~ $TEXT_VALUE || $line =~ $NAME_VALUE || $line =~ $CONTENT_VALUE)));
+  };
+}
 
 sub _text ($message) {
   return '' unless ref $message eq 'HASH';

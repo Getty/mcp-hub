@@ -177,3 +177,6 @@ Revision history for MCP-Hub
     The same holds for either HTTP transport when the stop lands during a
     prompts/list or resources/list. A call in flight on a ready upstream is
     still left to finish.
+  - search_conversations tests an ASCII search word against the raw JSON line
+    and decodes only lines that can match (a rare word over 500 MB: 4.1 s ->
+    1.7 s; 114 s -> 1.8 s with pure-Perl JSON).
