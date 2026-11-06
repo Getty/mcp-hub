@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T11:43:57Z
+created: 2026-11-06T10:44:01Z
+id: 128
+priority: low
+started: 2026-11-06T10:44:38Z
+status: done
+tags:
+- test
+- stdio
+title: t/stdio-stop.t subtest 8 cannot fail under the Poll reactor
+updated: 2026-11-06T11:47:34Z
+---
+
+Found during the k39 re-verification. Subtest 8 ('a child reaped before its grace is over gets no signal') guards the 'unless $child->{reaped}' check in Upstream::Stdio::_terminate. With that guard removed in a scratch copy, EV catches it, Poll does not: without EV the exit status is collected only when the socket closes or at _kill_now, so at the 2 s TERM the child is still an unreaped zombie, its pid cannot be reused, and the guard does not matter. Done: the subtest asserts its precondition (the child was reaped before the TERM would go out) and skips with a reason where the reactor cannot reach it, or it is driven so that the reap happens before the grace ends under both reactors; a mutation without the guard fails wherever the subtest runs.
+
+t/stdio-stop.t subtest 8 now calls the child's collect right after the start (the poll the socket close would trigger; a no-op under EV), waits for the reap while the holder still holds the socket, and asserts the reap came before the stop, the stop outlasted EOF_GRACE, and no signal at all went to the pid. Without the guard in _terminate it is red under EV and Poll. Green 3x each. No lib change, no skip.
+
+Committed as dc06b54
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): dc06b54 is now 54d345a on local main.
