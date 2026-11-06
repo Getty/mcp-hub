@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-06T21:08:15Z
+created: 2026-11-06T18:52:14Z
+id: 151
+priority: low
+started: 2026-11-06T19:16:07Z
+status: done
+tags:
+- stdio
+- upstream
+- spec
+title: Stdio cancels a timed-out initialize, and its cancel carries no reason
+updated: 2026-11-06T21:08:20Z
+---
+
+Found by mcp-hub-worker during k147 (2026-11-06).
+Stdio::_request_p's timer sends notifications/cancelled {requestId} for every request it times out, the initialize included. MCP 2025-06-18 (Cancellation): "The initialize request MUST NOT be cancelled by clients". Its cancel also carries no reason; since k147 the HTTP transports send {requestId, reason}.
+Done when: Stdio sends no cancel for a timed-out initialize, and its cancel carries the reason the request was rejected with ("timed out after Ns"); Fork and Docker-stdio inherit it; test in t/stdio.t red on HEAD.
+
+Done (mcp-hub-worker): Stdio::_request_p's timer sends notifications/cancelled {requestId, reason => 'timed out after Ns'} via _notify, and none for initialize (MCP 2025-06-18). Fork inherits (probe run); Docker-stdio inherits by code (no docker test asserts the cancel). Worker's choice: the test spies on _send rather than an echo.pl hook (a failed start SIGKILLs its child, a child-side record would race). Test t/stdio.t, red 2/5 on HEAD. Stdio POD and runtime skill updated. Not committed.
+
+Committed as 07d9092
