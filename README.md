@@ -920,8 +920,8 @@ compiles against the OpenSSL and zlib development files, e.g. Debian's
 `libssl-dev` and `zlib1g-dev`), and the pure-Perl
 [`YAML::PP`](https://metacpan.org/pod/YAML::PP) (loaded only when a YAML config
 is read). No process-management dependencies; everything else is core. On a perl
-without TLS, an `https://` `url` upstream shows up as `failed`, with the fix in
-its reason.
+without TLS, an `https://` `url` upstream — or a compose entry with an
+`https://` `url` — shows up as `failed`, with the fix in its reason.
 
 ## License
 

@@ -2,12 +2,24 @@ package MCP::Hub::Upstream::Compose;
 our $VERSION = '0.001';
 use Mojo::Base 'MCP::Hub::Upstream::Docker', -signatures;
 
+use MCP::Hub::Upstream::Http;
 use Mojo::JSON qw(decode_json);
 use Mojo::Promise;
 
 # ABSTRACT: One service of a Docker Compose project as an MCP server
 
 use constant CLI_TIMEOUT => MCP::Hub::Upstream::Docker::CLI_TIMEOUT;
+
+# A `url` is in the entry from the start, as a url entry's is -- only the engine
+# of a start gets it. An https one needs TLS, which a running perl never gains,
+# so the entry is refused here, with the reason a url entry gives, instead of a
+# start bringing the service up only to wait out request_timeout on an address
+# it can never reach. The hub keeps it as a failed upstream that says so.
+sub new ($class, %args) {
+  my $self = $class->SUPER::new(%args);
+  if (my $reason = MCP::Hub::Upstream::Http->_tls_missing($self->config->{url})) { die "$reason\n" }
+  return $self;
+}
 
 sub status_row ($self) {
   my $row = $self->SUPER::status_row;
@@ -331,7 +343,10 @@ decided on every start, in this order:
 
 =over 4
 
-=item * C<url> given -- HTTP to exactly that URL.
+=item * C<url> given -- HTTP to exactly that URL. An C<https> one needs TLS in the
+perl the hub runs on, as a C<url> entry's does (L<MCP::Hub::Upstream::Http>):
+without it the entry is refused when it is built, and the hub keeps it as a
+C<failed> upstream with the same reason, before any compose command runs.
 
 =item * C<"stdio": true> -- stdio.
 

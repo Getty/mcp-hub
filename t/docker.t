@@ -883,6 +883,81 @@ subtest 'compose: ports and url decide' => sub {
   $daemon->stop;
 };
 
+subtest 'compose: an https url without TLS is a failed upstream that names the fix' => sub {
+  # A perl without IO::Socket::SSL 2.009+ (or with MOJO_NO_TLS) cannot speak
+  # https, and cannot learn to while it runs. A compose entry's url is in its
+  # config from the start, as a url entry's is; only its engine gets it late.
+  # Before the fix the start brought the service up and then asked that url
+  # until request_timeout ran out -- a "no MCP answer" that never said why.
+  # Nothing here connects anywhere.
+  my $fake  = fake_docker(images => \%IMAGES);
+  my $dir   = compose_project(%SERVICES);
+  my $https = 'https://127.0.0.1:9/mcp';
+  no warnings 'redefine';
+  local *Mojo::IOLoop::TLS::can_tls = sub { 0 };
+
+  my $built = eval { upstream($fake, {compose => $dir, service => 'mcp', url => $https}) };
+  is $built, undef, 'the upstream is not built';
+  like $@, qr/^an https url needs TLS\b.*IO::Socket::SSL 2\.009.*cpanm IO::Socket::SSL.*restart the daemon\n\z/,
+    'the reason says what is missing and how to fix it';
+
+  ok eval { upstream($fake, {compose => $dir, service => 'mcp', url => 'http://127.0.0.1:9/mcp'}) },
+    'an http url needs no TLS and is built as before' or diag $@;
+  ok eval { upstream($fake, {compose => $dir, service => 'mcp'}) },
+    'nor does a service reached where compose published it, over http' or diag $@;
+  is_deeply calls($fake), [], 'no docker command so far';
+
+  # In the hub: failed at once, with the reason a url entry with that url
+  # gives, word for word -- and the warm-up and a refresh run nothing.
+  my $cache = tempdir;
+  push @KEEP, $cache;
+  my $app = MCP::Hub->new(log => $LOG, hub_config_input => {
+    mcpServers => {svc => {compose => $dir, service => 'mcp', url => $https}, remote => {url => $https}},
+    hub        => {cache_dir => "$cache", docker_command => $fake->{command}, request_timeout => 2},
+  });
+  my %up = %{$app->upstreams_by_name};
+  $app->start_background_fetches;
+  my $reason = $up{remote}->error;
+  like $reason, qr/^an https url needs TLS\b/, 'the url entry is failed, as k32 made it';
+  is $up{svc}->state, 'failed', 'compose: failed, before any start';
+  is $up{svc}->error, $reason, 'with the same reason';
+  my $row = $up{svc}->status_row;
+  is $row->{type},  'compose', 'the status row keeps its type';
+  is $row->{error}, $reason,   'and carries the reason';
+
+  my $t = Test::Mojo->new($app);
+  $t->post_ok('/svc' => json => {jsonrpc => '2.0', id => 1, method => 'tools/list', params => {}})
+    ->status_is(503)->json_is('/error', "upstream 'svc' failed: $reason", 'the 503 gives the reason');
+
+  my ($ok, $res) = await($app->refresh_p('svc'), 10);
+  is $res->{svc}{state}, 'failed', 'a refresh cannot cure it: still failed';
+  is $res->{svc}{error}, $reason,  'and says why';
+  is_deeply commands($fake), [], 'nothing was run: no compose config, no up';
+  await($app->shutdown_p);
+
+  # The check keys on TLS, not on the scheme alone: with TLS the same entry is
+  # an ordinary compose upstream that waits for its first call.
+  local *Mojo::IOLoop::TLS::can_tls = sub { 1 };
+  my $up = upstream($fake, {compose => $dir, service => 'mcp', url => $https});
+  is $up->state, 'stopped', 'with TLS: built, nothing started yet';
+  ok !$up->placeholder, 'and no placeholder';
+};
+
+subtest 'docker: the hub builds the address, always http, so TLS is never needed' => sub {
+  # A docker entry has no url: the hub reaches the container where Docker
+  # published its port on the loopback (or by its name on hub.docker_network),
+  # over http, and `type` only picks Streamable HTTP or SSE.
+  my $fake = fake_docker(images => \%IMAGES);
+  no warnings 'redefine';
+  local *Mojo::IOLoop::TLS::can_tls = sub { 0 };
+  my $up = upstream($fake, {docker => 't/http', port => 8080});
+  my ($ok, $err) = await($up->start_p);
+  ok $ok, 'started without TLS' or diag $err;
+  like $up->{engine}->url, qr{^http://127\.0\.0\.1:\d+/mcp$}, 'at an http address on the loopback';
+  ok echo_ok($up, 'plain'), 'and a tool call goes through';
+  stop_and_settle($up);
+};
+
 subtest 'compose: a service that already runs is used as it is, and left running' => sub {
   my $fake = fake_docker;
   my $dir  = compose_project(%SERVICES);
