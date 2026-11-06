@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-06T13:16:15Z
+created: 2026-11-06T11:49:34Z
+id: 129
+priority: low
+started: 2026-11-06T11:49:56Z
+status: done
+tags:
+- stdio
+- idle
+title: A manifest refresh of a ready child is not counted as in flight, so an idle
+  stop can cut it off
+updated: 2026-11-06T13:16:19Z
+---
+
+Found during k123. Since k123 only tools/call, prompts/get and resources/read count as requests in flight (Upstream::_forward_p); the requests of a manifest refresh (refresh_p -> _list_all_p) do not. If the idle countdown ends during a paginated refresh of a ready child, the stop sends EOF, _send then refuses the next page (child sent EOF, k39), and that request waits for request_timeout. Low impact, pre-existing. Done: a refresh of a running upstream holds the idle countdown off like a call does, and a test shows a refresh across the idle_timeout completes.
+
+Fixed: new _held_p (in_flight + touch on end); _forward_p, Stdio/Http refresh_p use it; Docker engines delegate to the owner. Partly reverses k123 (only calls count). Consequence: a chatty list_changed child keeps itself alive — decision card k135. Tests t/idle.t (stdio) + t/docker.t (stdio+http), red on HEAD 5/9 and 6/22. Committed as 001eb40.
