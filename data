@@ -1,0 +1,44 @@
+---
+class: standard
+completed: 2026-11-06T03:20:12Z
+created: 2026-11-03T05:08:40Z
+id: 23
+priority: medium
+started: 2026-11-06T02:12:44Z
+status: done
+tags:
+- bug
+- stdio
+- ioloop
+title: 'Upstream::Stdio::_on_close: blocking waitpid loses the exit status under EV
+  and can stall the loop'
+updated: 2026-11-06T03:20:16Z
+---
+
+Found by the k21 worker on 2026-11-03 while building the Docker upstreams.
+
+`MCP::Hub::Upstream::Stdio::_on_close` calls a blocking `waitpid($pid, 0)`. Two consequences:
+- Under EV (Mojo picks it when installed) EV reaps every child itself, so `waitpid` often gets ECHILD and the exit reason in the warning is lost ("exit status unknown").
+- A child that closes stdout but keeps running blocks the single IOLoop in `waitpid` until it exits -- every other upstream and every request stalls.
+
+k21 solved the same problem for the docker CLI calls in `MCP::Hub::Docker::run_p` (EV child watcher when EV runs, non-blocking poll otherwise); that approach may be reusable here.
+
+## Done
+- No blocking `waitpid` in the stdio close path; exit status reported correctly under EV and Mojo::Reactor::Poll.
+- Regression test: a child that closes stdout but stays alive does not block the loop.
+
+From k42 (2026-11-04): confirmed and broader. Under Mojo::Reactor::EV libev reaps every child itself, so the hub's waitpid finds nothing and logs 'exited (unknown)' at random; the exit-127 'is it installed and executable?' hint is lost the same way. Hits stdio, the docker CLI and forked class workers alike. t/fork.t works around it with local $SIG{CHLD} = 'DEFAULT'.
+
+Seen again during k48 (2026-11-06): EV is installed, so it is Mojo's default loop here, and it reaps stdio children before Upstream::Stdio::_on_close can -- the status then sometimes reads 'exited (unknown)' and the exit-127 'is it installed and executable?' hint never shows. The k48 tests accept both forms; tighten them when this is fixed.
+
+Seen during k58 (2026-11-06): t/reload.t 'a changed entry is rebuilt and only that one' failed once under host load with 'upstream echo: exited (unknown)' -- the same EV reaping race; passed 3/3 alone. When k23 is fixed, this flake should go too.
+
+2026-11-06 02:21 Started (mcp-hub-worker). Plan: one exit-status collector in MCP::Hub::Child (EV::child watcher installed right after the fork, plus a WNOHANG poll from the moment the child's output closed -- the poll is the only way under Poll and the fallback under EV once anything assigned $SIG{CHLD}, which replaces libev's handler for good; local $SIG{CHLD} in t/fork.t does exactly that). Docker::run_p and Upstream::Stdio both use it. Stdio splits _on_close (socket EOF) from _on_exit (EOF and status both in); Fork/Docker::Stdio overrides move to _on_exit.
+
+2026-11-06 02:25 Reproduced on HEAD (scratch script, both reactors): (1) a child that exits while something of its own still holds the socket (perl -e 'exit 5 if fork; sleep 1') reads 'exited (unknown)' under EV every time, 'exited (code 5)' under Poll -- the EV reaping race made deterministic. (2) A call that arrives while the child is being stopped (idle stop, warm-up's lazy stop) takes start_p's ready fast path, goes to the dying child and fails with 'exited (signal 15)' under BOTH reactors -- that, not EV, is why t/reload.t 'a changed entry is rebuilt' flaked (its 'after' call races the background warm-up's stop; EV only turned the text into 'unknown'). Fixing (2) too: start_p waits for a child on its way out and starts the next one, one child at a time -- which the async exit needs anyway, or a new child could be attached before the old one's exit is handled.
+
+2026-11-06 02:46 Fix in place: MCP::Hub::Child::watch_exit (EV::child watcher at fork + WNOHANG poll once the output closed; Docker::run_p now uses it too). Upstream::Stdio: _on_close only marks the socket closed and starts collecting; _on_exit($status) does the old bookkeeping once close+status are both in (Fork/Docker::Stdio overrides moved there, Docker::Stdio takes the status as an argument instead of stashing it in _exit_hint). Per-child state lives in $self->{child} {collect, closed, reaped, status, killed, linger}. Decisions (mine): a child that closed its socket but still runs is SIGKILLed after KILL_GRACE (5s) with a warn line -- it can never answer again; a stop is bounded: after the grace it is killed, or -- reaped already while a process it started holds the socket -- the hub hangs up its socket end; start_p waits for a child on its way out (stopping / socket closed / failed start) and then starts the next, so a call during an idle stop is served instead of failing. Tests red on HEAD (run against a git-archive of HEAD lib), green now under EV and Poll: 6 subtests in t/stdio.t.
+
+Done, commit-ready (uncommitted). Root cause: Stdio::_on_close did a blocking waitpid(pid,0) once the socket closed. Under EV, libev reaps every child via its SIGCHLD handler, so the status was lost ('exited (unknown)'). A child that closed stdout and lived on held the whole loop: 0 ticks on HEAD. The t/reload.t flake is a call racing a stop (red under EV and Poll; EV only turned the text into 'unknown'), not the k58 diagnosis. Fix: MCP::Hub::Child::watch_exit(pid, cb) puts an EV::child watcher in place right after fork, plus a WNOHANG poll every 50 ms once the output is closed. Docker::run_p uses it too, replacing its own EV/Poll branches. In Stdio, exit is two-phase: _on_close (socket) + _on_reaped (status) -> _on_exit (bookkeeping, crash-loop count, k48 fail reasons). A stop is bounded and pid-bound (TERM, then _kill_now after 5 s; hang up if already reaped while a grandchild holds the socket). A child that closes stdout and keeps running is SIGKILLed after 5 s with a warn line. start_p waits for a leaving child (_gone_p), one child at a time. Fork/Docker::Stdio now hook _on_exit. Removed local SIG{CHLD}='DEFAULT' from t/fork.t. Tightened t/hub.t / t/fork-lifecycle.t to exact statuses. 5 new t/stdio.t subtests, all red on HEAD lib. Verified: the 7 affected suites pass under EV and MOJO_REACTOR=Mojo::Reactor::Poll. prove -lr t/ PASS (Files=28 Tests=258). The k23-only tree (k56+k22 reversed) passes t/stdio.t t/hub.t t/fork.t. Split: reverse-apply scratchpad w-k23/k56.patch and k22.patch to commit k23 alone.
+
+Committed as a45b061.
