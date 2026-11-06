@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-06T06:45:31Z
+created: 2026-11-06T04:47:09Z
+id: 85
+priority: medium
+started: 2026-11-06T04:49:44Z
+status: done
+tags:
+- native
+- performance
+- memory
+title: 'ClaudeHistory: read line by line and rescan only what was appended'
+updated: 2026-11-06T06:45:31Z
+---
+
+From k40 research (2026-11-06, results: /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/results.md). Each file is read whole into memory: peak RSS 275-318 MB on a 1.9 GB history, ~240 MB stays resident in the hub. A cold search reads every file twice; get_conversation with a cold cache scans files until it finds the session (15 s on L). Done: peak RSS bounded by the largest line; the metadata cache keeps device, inode, size and offset; a list after appending to a 73 MB session costs only the appended bytes; a cold search reads each file once.
+
+Done, commit-ready, not committed. ClaudeHistory reads session files a line at a time. meta_cache keeps dev, ino, size, mtime, the offset after the last whole line, and the scan state at that offset. Unchanged file: not read. Grown file (same dev/ino, larger, decided on the opened handle's stat, not the path's): read from the offset. Shrunk, replaced or same-size rewrite: read from 0. An unterminated last line counts, but is read again next time. A search reads an out-of-date file once, for metadata and matches together; get_conversation reads line by line too. Numbers, XS, n=3: a list after appending 20 KB to a 73 MB session: 0.55 s / 13105 lines decoded / peak 265 MB -> 0.002 s / 35 lines / 56 MB. Cold list: M (504 MB) 3.67 -> 3.22 s, peak 144 -> 59 MB; X (8 x 73 MB) 4.49 -> 3.98 s, peak 266 -> 59 MB. Cold search, rare word: M 7.85 -> 3.86 s (k84 alone 4.97); X 10.21 -> 4.78 s; cold disk M 13.10 s wall / 11.84 s CPU -> 6.28 / 6.02 s. Warm search M 4.38 -> 1.58 s. get_conversation on 73 MB: 1.60 -> 0.95 s, peak 273 -> 65 MB. Trade-off: a cold search for a common word on many small files, M 3.74 -> 4.05 s, because HEAD stopped after the newest few files while one pass has to read them all; on X 5.04 -> 4.03 s. Behaviour change: an in-place rewrite that grows a file without a new inode is taken for an append (Claude Code only appends; HEAD read it again). Wire output identical for 51 calls of all four tools on t/fixtures/claude, S, M and X. Test t/native/claude-history-incremental.t (21): red on the k84 code in 5 places; 10 mutants caught. Commit split: scratchpad/w-natives/k85.patch on top of k84 (or simply the final file) + the test. Subject: 'Read history files line by line and rescan only what was appended (k85)'.
+
+Drift for the main agent to file, not fixed here. (1) docs/superpowers/specs/2026-08-25-mcp-hub-design.md line 286 still says the meta cache is keyed by (path, mtime, size). (2) For k57: .claude/skills/mcp-hub-runtime/SKILL.md lines 177-178 say search_conversations 'streamt und filtert'. Before this work it slurped every file. Now it reads line by line, tests the raw line first and keeps an incremental cache; ClaudeSessions reads only head and tail. (3) get_conversation on a cold cache still scans files until it finds the session (k40: 15 s on L); trying <session_id>.jsonl first would be cheap. (4) Pre-existing: a JSON line that is not an object ([1], 42) makes list/search/get die with 'Not a HASH reference'. (5) Pre-existing: a same-size rewrite within the same second is missed (mtime has 1 s resolution). (6) From k40: subagent files and history.jsonl are not read.
+
+Committed as f8d6d62
