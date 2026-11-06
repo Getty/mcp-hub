@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T04:46:51Z
+id: 83
+priority: high
+status: backlog
+tags:
+- docs
+- native
+- fork
+title: Recommend hub.fork for ClaudeHistory and ClaudeSessions in the README
+updated: 2026-11-06T04:46:51Z
+---
+
+From k40 research (2026-11-06, results: /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/results.md). In-process, a call stalls the hub's loop for its whole duration: on a 1.9 GB history (this machine's size) a cold list_sessions is ~16 s CPU / 37-52 s wall, every search ~20 s CPU; past 30 s the caller loses the response (Mojo::Server::Daemon inactivity timeout fires when the loop resumes). Forked: hub stall 54-109 ms at every size, hub RSS flat at 67 MB, worker freed on idle. Done: README example and natives section show both with "hub": {"fork": true} and why (Linux only; macOS stays in-process); a test drives forked ClaudeHistory against t/fixtures/claude with the same results as in-process. Lanes: README (main agent), test (mcp-hub-test-writer). Maintainer: whether fork becomes the recommended default for these two.
