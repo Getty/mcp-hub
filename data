@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-11-06T02:07:05Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T02:07:05Z
+created: 2026-11-05T23:45:28Z
+id: 55
+priority: low
+started: 2026-11-06T01:25:36Z
+status: done
+tags:
+- binary
+- fork
+- test
+title: Binary verify fixture has no hub.fork entry
+updated: 2026-11-06T02:07:05Z
+---
+
+Found by mcp-hub-binary-worker during k44. t/fixtures/binary/config.* has no hub.fork entry, so verify never compares `mcp-hub config` output for a fork entry between the packed binary and perl -Ilib. Add one. Lane: mcp-hub-binary-worker.
+
+2026-11-06 01:32 Started. Decision (mine): not into t/fixtures/binary/config.{json,yaml} — a fork entry fails to build off Linux ('failed to build upstream forked: hub.fork needs Linux', checked with _has_proc_fd stubbed to 0), and verify, smoke and t/binary.t all treat any 'failed to build upstream' as failure; that would break the macOS verify/smoke cells and t/binary.t on non-Linux CPAN testers. Instead verify writes a one-entry fork config (like its clients.json) and compares 'config' binary vs perl -Ilib: on Linux with no build failure allowed, elsewhere both must report 'hub.fork needs Linux'.
+
+2026-11-06 01:50 Built: scripts/verify-binary.sh writes $work/fork.json (forked = MCP::Hub::Native::ClaudeHistory on t/fixtures/claude, hub.fork) and runs same_as_perl 'config (hub.fork entry)' — STDOUT and exit code binary vs perl -Ilib, and no 'failed to build upstream' from the binary; off Linux it requires 'hub.fork needs Linux' on STDERR of both instead. Fixture comment says the forked kind is the one not in config.json/yaml. Verified on a dev-box build from a git-archive of b4c3b0b + these scripts: verify: OK (292 modules). Falsified: with the class swapped to MCP::Hub::Native::NoSuch, verify FAILs at 'config (hub.fork entry): … failed to build upstream forked: cannot load class MCP::Hub::Native::NoSuch'. Not run: the off-Linux branch (no macOS here).
+
+2026-11-06 01:57 Done, commit-ready, not committed. Changed: scripts/verify-binary.sh only — a one-entry hub.fork config ($work/fork.json, ClaudeHistory on t/fixtures/claude) compared binary vs perl -Ilib via same_as_perl; Linux: no 'failed to build upstream' allowed; elsewhere both must report 'hub.fork needs Linux'. Not in t/fixtures/binary/config.{json,yaml}: off Linux that entry fails to build by design, and verify, smoke and t/binary.t all fail on any build failure (macOS verify/smoke cells, non-Linux CPAN testers). Fixture comment updated. Verified: verify: OK on a dev-box build of b4c3b0b; red with the class swapped to a missing one (FAIL at 'config (hub.fork entry)'). Not run: the off-Linux branch.
+
+Committed as 7b9b902
