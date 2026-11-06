@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-11-06T01:17:36Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T01:17:29Z
+created: 2026-11-05T23:45:15Z
+id: 52
+priority: medium
+started: 2026-11-06T00:47:06Z
+status: done
+tags:
+- bug
+- stdio
+- upstream
+title: Mojo's listen socket leaks into stdio children (no close-on-exec)
+updated: 2026-11-06T01:17:36Z
+---
+
+Found by mcp-hub-binary-worker during k44; affects the CPAN install too (lane: mcp-hub-worker). Mojo creates the listen socket under local $^F = 1023, so it has no FD_CLOEXEC, and Upstream::Stdio does not close fds above 2 before exec. Observed: t/upstream/echo.sh held the listen socket of :28733 as fd 4. A child that outlives a crashed hub keeps the port bound. In the packed binary the child also holds fd 3 on the mcp-hub binary. Check Docker/Compose child execs for the same. Done: exec'd children hold only 0-2 (plus what they need); regression test inspects /proc/PID/fd of a stdio child.
+
+2026-11-06 00:54 Root cause confirmed: Mojo::IOLoop::Server creates the listen socket under local $^F = 1023 (Mojo 9.49, line 39 -- for MOJO_REUSE hot deploy), so it has no FD_CLOEXEC; Perl's own socketpair/pipe/open set CLOEXEC above $^F, so those did not leak. The two exec sites -- Upstream::Stdio::_spawn (also Docker::Stdio's long-lived 'docker run -i'/compose stdio children, same _spawn) and MCP::Hub::Docker::run_p (every docker/compose CLI run) -- close nothing above fd 2. New t/exec-fds.t red on HEAD: a stdio child started by tools/call is exec'd with 0,1,2,3,4 (3/4 = the Test::Mojo daemon's listen sockets) and the running child holds the listening socket's inode; a run_p child also has 3,4. Upstream::Fork (no exec) is not affected -- its _isolate_fds already dup2s /dev/null over them.
+
+2026-11-06 01:01 Fix: close in the child, not FD_CLOEXEC on the hub's fds. New lib/MCP/Hub/Child.pm (exported functions, no class): inherited_fds() lists fds >2 from /proc/self/fd (skipping the dir's own), undef where unreadable; close_inherited_fds() POSIX::closes them, falling back to 3..sysconf(_SC_OPEN_MAX)-1 capped at 65536 off Linux (measured: 65k closes ~100ms, and it runs in the child, never in the hub's loop). Called in Upstream::Stdio::_spawn and Docker::run_p right after 0-2 are dup'd from the socket/pipes, before env/chdir/exec -- so the pipes are already on 0-2, and the exec-failure path (exit 127, Perl's 'Can't exec' warning / 'mcp-hub: cannot exec' on fd 2) is unchanged. Why close-in-child: covers every fd opened without CLOEXEC (Mojo listener, PAR archive fd 3 in the binary, anything a module opens), not just the ones we know about. Upstream::Fork::_isolate_fds now uses inherited_fds() instead of its own /proc lister (no behaviour change: it still dup2s /dev/null / reopens files, since it runs no exec).
+
+2026-11-06 01:01 Drift (for the dispatcher to file, this board): (1) Mojo::IOLoop::Server appends addr:port:fd to $ENV{MOJO_REUSE}, and every exec'd child still inherits it (checked: a run_p child sees MOJO_REUSE=127.0.0.1:44483:3,127.0.0.1:35871:4). After k52 those fds are closed in the child, so a child Mojo app listening on exactly the hub's addr:port would new_from_fd a dead/foreign fd (before k52 it silently shared the hub's listen socket). Candidate: delete MOJO_REUSE from the child env in _spawn/run_p. (2) mcp-hub-binary-worker: scripts/smoke-binary.sh could assert the echo.sh child (pid from the marker) holds no fd on the binary and not the listen socket -- the packed-binary half of k52; nothing in bin/ or scripts/ relies on an exec'd child inheriting fds (only the forked worker's archive-fd checks, unaffected). (3) skill mcp-hub-runtime, Stdio section: could say fds >2 are closed before exec (MCP::Hub::Child).
+
+2026-11-06 01:05 Done: exec'd children (stdio upstreams incl. docker/compose stdio engines, every docker/compose CLI run) now hold only fds 0-2. New lib/MCP/Hub/Child.pm (close_inherited_fds/inherited_fds), called in Upstream::Stdio::_spawn and Docker::run_p after 0-2 are set up; Upstream::Fork::_isolate_fds reuses inherited_fds. Regression t/exec-fds.t: red on HEAD (stdio child exec'd with 0-4, running child holds the listen socket inode; run_p child 0-4), green now; a third subtest forces the non-/proc fallback and fails when its range is broken (mutation-checked). prove -lr t/: Files=23, Tests=221, Result: PASS; skipped by design: docker-live.t (MCP_HUB_TEST_DOCKER), npx.t (MCP_HUB_TEST_NPX), wiki-live.t (MCP_HUB_TEST_WIKI). New files lib/MCP/Hub/Child.pm and t/exec-fds.t are untracked -- need git add before dzil build. Not committed.
+
+Committed as b4c3b0b
