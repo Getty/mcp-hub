@@ -324,7 +324,8 @@ nach der letzten ganzen Zeile: unverändert → nicht gelesen, nur gewachsen →
 Offset, sonst von vorn. `Native::ClaudeSessions` findet laufende
 `claude`-Prozesse über `/proc/*/comm` (plus `cwd`) und liest von deren Session-Datei nur
 Kopf und Ende — **Linux-only**, andernfalls
-ein Error-Result (`proc_root` ist testbar überschreibbar). `Native::Status`
+ein Error-Result (`proc_root` ist testbar überschreibbar). Kein `pgrep`: der läse
+dieselben Namen, `hidepid` verbirgt ihm dasselbe. `Native::Status`
 liefert `hub_status` und `hub_refresh` (letzteres braucht in clients mode ein
 `admin`-Profil). `rss_kb` (Resident set size) ist **kein** Tool, sondern ein
 Stat-Attribut am Upstream — es steckt im Status-Report.

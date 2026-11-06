@@ -55,6 +55,9 @@ sub list_running_sessions ($self) {
   return [sort { $a->{pid} <=> $b->{pid} } @sessions];
 }
 
+# The processes named `claude` in proc_root. `pgrep -x claude` would find no
+# more: it reads the same name of the same processes (from /proc/PID/stat),
+# and a /proc mounted with hidepid hides from it whatever it hides here.
 sub _claude_pids ($self) {
   my $proc = path($self->proc_root);
   my @pids;
@@ -67,12 +70,6 @@ sub _claude_pids ($self) {
       chomp $comm;
       push @pids, $pid if $comm eq 'claude';
     }
-  }
-
-  # Fallback for the real /proc if the scan turned up nothing.
-  if (!@pids && $self->proc_root eq '/proc') {
-    my $out = eval { `pgrep -x claude 2>/dev/null` } // '';
-    @pids = ($out =~ /(\d+)/g);
   }
 
   return @pids;
@@ -203,10 +200,11 @@ sub _json ($tool, $data) {
 
 L<MCP::Hub::Native::ClaudeSessions> is a native Perl replacement for live Claude
 Code session discovery. Its one tool, C<list_running_sessions>, finds the
-C<claude> processes on the machine, reads each one's working directory from
-C</proc>, matches it to the newest session file in the history, and reports the
-most recent user prompt. Only the head and the tail of a session file are read,
-so the call costs the same for a session of any size.
+C<claude> processes on the machine by the name in their C</proc/PID/comm>,
+reads each one's working directory from C</proc>, matches it to the newest
+session file in the history, and reports the most recent user prompt. Only the
+head and the tail of a session file are read, so the call costs the same for a
+session of any size. It runs no program -- no C<pgrep> -- and starts no process.
 
 Linux only: on other systems the tool returns an error result saying so.
 
