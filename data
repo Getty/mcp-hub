@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-06T08:40:24Z
+id: 119
+priority: low
+status: backlog
+tags:
+- native
+- wire
+- decision
+title: 'Decide: should a native message''s text / last_prompt always be a string (null
+  content → "")?'
+updated: 2026-11-06T08:40:24Z
+---
+
+Split from k117 item 2. In both natives' _text a message that is not an object gives "", but null or missing message.content gives null; k109 kept null as null so that first_prompt //= keeps picking the first user message with content. Making it always a string changes first_prompt semantics (an empty first message would win). Maintainer decision.
