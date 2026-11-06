@@ -47,14 +47,19 @@ Stop: `shutdown` SHUT_WR (EOF) → nach `EOF_GRACE` (2 s) `SIGTERM` → nach `KI
 (5 s) `SIGKILL`; wer auf EOF endet, sieht nie ein Signal. Ein Kind, das stdout schließt
 und weiterlebt, wird nach `KILL_GRACE` gekillt. Es läuft immer höchstens ein Kind: ein
 Call während eines Stops wartet auf dessen Ende (`_gone_p`) und startet das nächste.
+Was das Kind nicht mehr erreicht (`_refused`: kein Stream — Kind weg oder stdout zu —
+oder EOF geschickt), geht nicht raus und scheitert sofort als `upstream NAME: not
+connected` bzw. `stopped`, statt den Request-Timeout abzuwarten. Ein Stop während des
+Starts lässt ihn sofort als `stopped` scheitern — nicht gezählt, das Kind bleibt dem Stop
+(kein Signal, wenn es auf EOF endet).
 
 Ein Refresh (`refresh_p`, nur bei `ready` mit pid) ist an das Kind gebunden, auf dem er
 begann: `_list_all_p(0, $self->{child})` reicht es als `$on` bis `_request_p`, und jeder
 seiner Requests scheitert sofort (`the child the refresh began on is gone`), sobald das
 Kind nicht mehr das laufende ist oder EOF bekam. Zwischen zwei Listen kann die Loop den
 Exit und einen Call samt neuem Kind abwickeln — ungebunden nähme der Refresh dessen Listen
-für die alten oder wartete ohne Kind den Request-Timeout ab. Fork und Docker-stdio erben
-das. Http bindet nicht (unten); die Transporte unterscheiden sich vorerst mit Absicht.
+für die alten. Fork und Docker-stdio erben das. Http bindet nicht (unten); die Transporte
+unterscheiden sich vorerst mit Absicht.
 
 ### Http — Streamable HTTP oder HTTP+SSE
 

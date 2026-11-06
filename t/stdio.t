@@ -7,6 +7,7 @@ use Mojo::IOLoop;
 use Mojo::Promise;
 use MCP::Hub::Upstream::Stdio;
 use POSIX ();
+use Time::HiRes ();
 
 my $ECHO = curfile->sibling('upstream', 'echo.pl');
 
@@ -289,7 +290,8 @@ subtest 'a child that dies at startup is counted once' => sub {
 # A peer that answers initialize -- with prompts and resources among its
 # capabilities -- and tools/list, then exits: right after its answer to
 # tools/list ('answered'), or once it is asked for its prompts
-# ('prompts/list').
+# ('prompts/list'). Any other $at, and it lists on; a tools/call has it close
+# its stdin and stdout and live on, never to answer again.
 my $BRIEF = <<~'CODE';
   use Mojo::JSON qw(decode_json encode_json);
   my $at = shift;
@@ -298,6 +300,7 @@ my $BRIEF = <<~'CODE';
     my $msg = eval { decode_json($line) } // next;
     next unless defined $msg->{id};
     exit 0 if $msg->{method} eq $at;
+    if ($msg->{method} eq 'tools/call') { close STDIN; close STDOUT; sleep 30; exit 0 }
     my $result = $msg->{method} eq 'initialize'
       ? {protocolVersion => '2025-06-18', serverInfo => {name => 'brief', version => '1'},
          capabilities => {tools => {}, prompts => {}, resources => {}}}
@@ -335,6 +338,33 @@ subtest 'a child that exits in the middle of the handshake fails the start' => s
     }
     is $up->error, "3 exits within ${WINDOW}s", "$at: the crash loop names the count";
   }
+};
+
+subtest 'a request with no stream to the child fails at once' => sub {
+  # Unsent, it waited out the request timeout for an answer that cannot come
+  # -- or, with the child still there, for its exit.
+  my $up = brief('prompts/list', request_timeout => 30);
+  my $t0 = time;
+  my $r  = _await_bounded($up->start_p, 20);
+  is ref $r eq 'HASH' ? $r->{err} : 'ready', 'upstream brief: exited (code 0)',
+    'the start whose child is gone before its resources are listed fails';
+  cmp_ok time - $t0, '<', 5, 'at once, not once that list has timed out';
+
+  # The child closes its stdout and lives on; a refresh of it is not sent.
+  $up = brief('none', request_timeout => 30);
+  is _await_bounded($up->start_p, 30), $up, 'started';
+  my $call     = $up->call_tool('echo', {});
+  my $deadline = time + 10;
+  settle(0.02) while $up->{stream} && time < $deadline;
+  ok !$up->{stream}, 'its stdout is closed';
+  ok $up->stats->{pid}, 'it is still there';
+  my $t1      = Time::HiRes::time();
+  my $refresh = _await_bounded($up->refresh_p, 20);
+  is ref $refresh eq 'HASH' ? $refresh->{err} : 'through', 'upstream brief: not connected', 'the refresh fails';
+  cmp_ok Time::HiRes::time() - $t1, '<', 1, 'at once';
+  $up->stop;
+  _await_bounded($up->stopped_p, 20);
+  like _error_text(_await_bounded($call, 20)), qr/^upstream brief: exited/, 'the call fails as the child goes';
 };
 
 # These come before anything here assigns $SIG{CHLD}: the first one is about

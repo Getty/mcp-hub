@@ -282,3 +282,8 @@ Revision history for MCP-Hub
   - A stdio start whose child exits during the handshake fails with the
     reason of the exit, and the exit counts toward the crash loop, instead
     of coming up ready with no child.
+  - stdio: a request the child can no longer be sent -- it closed its
+    stdout, or a stop has sent it EOF -- fails at once as `not connected`
+    or `stopped` instead of waiting out request_timeout or the child's
+    exit; a stop during a start fails the start as stopped without counting
+    toward the crash loop.

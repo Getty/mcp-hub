@@ -211,6 +211,59 @@ subtest 'a call during the grace goes to the next child' => sub {
   await_bounded($up->stopped_p, 20);
 };
 
+subtest 'a call that comes upon a stop fails at once' => sub {
+  # It is let through on the ready child, and the stop comes before its
+  # request goes out: the child has been sent its EOF, and nothing more can
+  # reach it. The request is not sent, and fails at once -- unsent, it waited
+  # for the child's exit, or with the child gone out the request timeout.
+  my ($up, $signals) = upstream('--ignore-eof');
+  $up->request_timeout(30);
+  await_bounded($up->start_p, 30);
+  my $t0   = Time::HiRes::time();
+  my $call = $up->call_tool('echo', {msg => 'too late'});
+  $up->stop;
+  my $r    = await_bounded($call, 20);
+  my $took = Time::HiRes::time() - $t0;
+  is ref $r eq 'HASH' && ref $r->{content} eq 'ARRAY' ? $r->{content}[0]{text} : undef, 'upstream echo: stopped',
+    'the call fails as stopped' or diag explain $r;
+  cmp_ok $took, '<', 1, sprintf 'at once (%.2fs)', $took;
+  await_bounded($up->stopped_p, 20);
+  is scalar(terms($signals, $t0)), 1, 'and the stop goes on as it would: SIGTERM once the grace is over';
+};
+
+subtest 'a stop during the start is no failed start' => sub {
+  # It comes as the start asks for its tools, or for its prompts -- which a
+  # start takes for an empty list when they are not answered. The request is
+  # not sent and the start fails as stopped, at once; it is not counted toward
+  # the crash loop, and the child is left to the stop: it ends on its EOF,
+  # never signalled.
+  for my $at ('tools/list', 'prompts/list') {
+    my ($up, $signals) = upstream('--eof-delay=1');
+    $up->fail_window(60);
+    $up->request_timeout(30);
+    my $t0;
+    no warnings 'redefine';
+    my $request = \&MCP::Hub::Upstream::Stdio::_request_p;
+    local *MCP::Hub::Upstream::Stdio::_request_p = sub ($self, $method, @rest) {
+      if ($method eq $at) { $t0 = Time::HiRes::time(); $self->stop }
+      return $request->($self, $method, @rest);
+    };
+    for my $n (1 .. 3) {
+      undef $t0;
+      my $start = $up->start_p;
+      my $pid   = $up->stats->{pid};
+      my $r     = await_bounded($start, 20);
+      my $took  = Time::HiRes::time() - ($t0 // 0);
+      is ref $r eq 'HASH' ? $r->{err} : 'ready', 'upstream echo: stopped', "$at, attempt $n: the start fails as stopped";
+      cmp_ok $took, '<', 0.5, sprintf "$at, attempt $n: at once, not once the child is gone (%.2fs)", $took;
+      await_bounded($up->stopped_p, 20);
+      is exit_of($pid), 'code 0', "$at, attempt $n: the child ends on its EOF";
+      is_deeply [grep { $_->[1] == $pid } @KILLS], [], "$at, attempt $n: unsignalled";
+    }
+    is $up->state, 'stopped', "$at: none of the stops counted";
+  }
+};
+
 subtest 'a child reaped before its grace is over gets no signal' => sub {
   # Its pid may be another process's by then. The child exits at once; the
   # server it started answers, a process of its own holds the socket on. The

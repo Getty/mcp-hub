@@ -80,10 +80,12 @@ sub start_p ($self) {
   # reason of its exit: a list it no longer answered was taken for an empty
   # one (_list_all_p), and the upstream would be ready with no child to call.
   # One that has only closed its stdout so far is waited for, as a request it
-  # leaves unanswered is (_on_close, _on_exit).
+  # leaves unanswered is (_on_close, _on_exit). One that a stop has sent EOF
+  # fails it as stopped.
   my $child = $self->{child};
   $self->_handshake_p->then(sub ($manifest) {
-    return $manifest unless $child->{closed};
+    return $manifest unless $child->{closed} || $child->{eof};
+    return Mojo::Promise->reject("upstream @{[$self->name]}: stopped") if $child->{eof};
     my $exited = sub { Mojo::Promise->reject("upstream @{[$self->name]}: $child->{exited}") };
     return defined $child->{exited} ? $exited->() : $self->_gone_p->then($exited);
   })->then(sub ($manifest) {
@@ -101,7 +103,11 @@ sub start_p ($self) {
     # Counting it a second time here would lock the upstream out after two
     # attempts instead of three. The exit is only ours to record when the child
     # is still there -- a handshake timeout, say, which we kill ourselves.
-    $self->_record_exit unless ($self->{exited_pid} // 0) == $pid;
+    # Not so for a child a stop has sent EOF, whose next request failed at
+    # once (_request_p): the stop is no failed start, and goes on as any stop
+    # -- a child that ends on its EOF is never signalled.
+    my $stopped = $child->{eof};
+    $self->_record_exit unless ($self->{exited_pid} // 0) == $pid || $stopped;
 
     # The stopping flag means "this exit is deliberate" -- it may only be set
     # while there is a child to stop. Set for a child that is already gone, it
@@ -109,7 +115,7 @@ sub start_p ($self) {
     # exit recorded.
     $self->{stopping} = 1 if $self->{pid};
 
-    $self->_kill_now;
+    $self->_kill_now unless $stopped;
     $self->state($self->{failed} ? 'failed' : 'stopped');
     delete $self->{start_promise};
     $done->reject("$err");
@@ -181,11 +187,15 @@ sub _hash ($self) {
 # may handle the child's exit -- and a call that starts the next child --
 # between the answer to one list and the request for the next. Unbound, the
 # rest of the refresh would go to the next child, and its lists be taken for
-# those of the one before -- or, with no child at all, wait out the request
-# timeout.
+# those of the one before.
+#
+# Any request the child can no longer be sent (_refused) fails at once, with
+# the reason. Unsent, it would wait for an answer that cannot come: out the
+# request timeout, or -- with the child still there -- until its exit.
 sub _request_p ($self, $method, $params = {}, $of_start = 0, $child = undef) {
   return Mojo::Promise->reject("upstream @{[$self->name]}: the child the refresh began on is gone")
     if $child && !($self->{child} && $self->{child} == $child && !$child->{eof});
+  if (defined(my $why = $self->_refused)) { return Mojo::Promise->reject("upstream @{[$self->name]}: $why") }
 
   my $id      = ++$self->{id};
   my $promise = Mojo::Promise->new;
@@ -209,13 +219,19 @@ sub _notify ($self, $method, $params = {}) {
 }
 
 sub _send ($self, $obj) {
-  my $stream = $self->{stream} or return undef;
-
-  # Not to a child that has been sent EOF: the write would fail, and the error
-  # close the socket -- with whatever the child still has to say unread.
-  return undef if $self->{child} && $self->{child}{eof};
-  $stream->write(encode_json($obj) . "\n");
+  return undef if defined $self->_refused;
+  $self->{stream}->write(encode_json($obj) . "\n");
   return 1;
+}
+
+# Why nothing can be sent to the child now, or undef when it can be: there is
+# no stream to it -- no child, or one that closed its stdout -- or it has been
+# sent EOF. Not to a child that has: the write would fail, and the error close
+# the socket -- with whatever the child still has to say unread.
+sub _refused ($self) {
+  return 'not connected' unless $self->{stream};
+  return 'stopped' if $self->{child} && $self->{child}{eof};
+  return undef;
 }
 
 # --- reading ---------------------------------------------------------------
@@ -595,6 +611,13 @@ that closes its stdout but goes on running can never answer again, and is
 killed after five seconds. Its exit status is collected without blocking the
 event loop, under L<Mojo::Reactor::EV> too (L<MCP::Hub::Child/watch_exit>).
 
+A request that can no longer reach the child -- a call let through just before
+a stop sent it EOF, or one after its stdout closed -- is not sent: it fails at
+once, as C<upstream NAME: stopped> or C<upstream NAME: not connected>, instead
+of waiting out the request timeout. A stop during a start fails the start as
+C<stopped>, at once; it does not count toward the crash loop, and the child is
+left to the stop -- one that ends on its EOF is never signalled.
+
 Three exits within five seconds mark it C<failed>, with the reason in
 L<MCP::Hub::Upstream/error>. A failed upstream stays failed until it is
 refreshed: further calls are answered with that reason rather than spawning the
@@ -619,9 +642,10 @@ it for an empty list (L<MCP::Hub::Upstream/refresh_p>). But a child that is gone
 by the end of the handshake fails the start all the same, with the reason of its
 exit -- one that has only closed its stdout is waited for -- and the exit counts
 toward the crash loop like any other: the upstream never comes up C<ready>
-without a child. A refresh asks every list of the child it began on: once that
-child is stopped or gone -- whether or not a call has started the next one --
-the refresh fails at once, and asks the next child nothing.
+without a child. A stop that has sent the child EOF by then fails the start as
+C<stopped> (see L</Lifecycle>). A refresh asks every list of the child it began
+on: once that child is stopped or gone -- whether or not a call has started the
+next one -- the refresh fails at once, and asks the next child nothing.
 
 =head1 ATTRIBUTES
 
