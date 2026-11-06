@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T17:54:02Z
+created: 2026-11-06T16:14:46Z
+id: 144
+priority: low
+started: 2026-11-06T16:42:27Z
+status: done
+tags:
+- http
+- sse
+- upstream
+- drift
+title: 'SSE: a failed POST is ignored and its request waits out request_timeout'
+updated: 2026-11-06T17:54:07Z
+---
+
+Found by mcp-hub-worker during k137/k138 (2026-11-06).
+HTTP+SSE: _sse_post (lib/MCP/Hub/Upstream/Http.pm) posts with an empty callback, so a POST that fails -- refused, a 4xx/5xx from the remote, a timeout -- is never looked at. The request it carries stays in {pending} and waits out request_timeout (60 s by default), then fails "timed out after 60s" instead of at once with the reason of the failed POST.
+Done when: a failed POST rejects its pending request at once with "upstream NAME: ..." and the reason (as Streamable HTTP does since k137); a POST the remote accepts (202) is still answered on the SSE stream; a regression test in t/http.t fails on HEAD.
+
+Done (mcp-hub-worker): _sse_post looks at the POST; on $tx->error a pending request of the hub's (method + id) is rejected at once as 'upstream NAME: <reason>' (k137 wording: reason phrase, e.g. 'Internal Server Error', 'Connection refused'); answers, notifications and settled requests are only logged at debug. 2xx is answered on the stream as before. The callback holds the upstream weakly (required; a strong-$self mutant fails two existing t/http.t subtests). Worker's choices: failed notification POSTs now logged at debug; connect-failure counting unchanged (a failed start counts, a failed call on a ready upstream does not). k112 lines untouched. Regression test in t/http.t, red 14/25 on HEAD. POD and runtime skill updated. Found on the way: k147 (no notifications/cancelled over HTTP), k149 (status code in the error text, decision). Not committed.
+
+Committed as f36796c
