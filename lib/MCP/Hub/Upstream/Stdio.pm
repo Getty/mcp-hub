@@ -76,7 +76,17 @@ sub start_p ($self) {
     return $done;
   }
 
+  # A child that is gone by the end of the handshake fails the start, with the
+  # reason of its exit: a list it no longer answered was taken for an empty
+  # one (_list_all_p), and the upstream would be ready with no child to call.
+  # One that has only closed its stdout so far is waited for, as a request it
+  # leaves unanswered is (_on_close, _on_exit).
+  my $child = $self->{child};
   $self->_handshake_p->then(sub ($manifest) {
+    return $manifest unless $child->{closed};
+    my $exited = sub { Mojo::Promise->reject("upstream @{[$self->name]}: $child->{exited}") };
+    return defined $child->{exited} ? $exited->() : $self->_gone_p->then($exited);
+  })->then(sub ($manifest) {
     $self->_apply_manifest($manifest);
     delete $self->{failed};    # a running child is never failed
     $self->error(undef);
@@ -362,9 +372,10 @@ sub _on_exit ($self, $status) {
 
   # The reason the requests it leaves unanswered fail with -- a failed start's
   # among them, which a 503 and the status show -- carries the hint for an
-  # exec that failed, like the log line.
+  # exec that failed, like the log line. A start whose lists it was gone for
+  # fails with it too (start_p).
   my $reason = _exit_reason($status);
-  my $why    = "exited ($reason)" . $self->_exec_hint($status);
+  my $why    = $child->{exited} = "exited ($reason)" . $self->_exec_hint($status);
   for my $id (keys %{$self->{pending}}) {
     my $pending = delete $self->{pending}{$id};
     Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
@@ -604,10 +615,13 @@ background refresh.
 A C<prompts/list> or C<resources/list> the child answers with an error is an
 empty list. One it does not answer -- it times out, a stop cuts it off, the
 child exits -- fails a refresh, and the manifest stays as it was; a start takes
-it for an empty list (L<MCP::Hub::Upstream/refresh_p>). A refresh asks every
-list of the child it began on: once that child is stopped or gone -- whether or
-not a call has started the next one -- the refresh fails at once, and asks the
-next child nothing.
+it for an empty list (L<MCP::Hub::Upstream/refresh_p>). But a child that is gone
+by the end of the handshake fails the start all the same, with the reason of its
+exit -- one that has only closed its stdout is waited for -- and the exit counts
+toward the crash loop like any other: the upstream never comes up C<ready>
+without a child. A refresh asks every list of the child it began on: once that
+child is stopped or gone -- whether or not a call has started the next one --
+the refresh fails at once, and asks the next child nothing.
 
 =head1 ATTRIBUTES
 

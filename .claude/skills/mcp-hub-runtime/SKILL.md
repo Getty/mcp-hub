@@ -27,7 +27,10 @@ Handshake: `initialize` mit Protokoll `2025-06-18` (der Server antwortet, was er
 will — seine Version wird übernommen) → `notifications/initialized` →
 `tools/list` **mit Cursor-Pagination** (`nextCursor` wird verfolgt) →
 `prompts/list`/`resources/list` nur, wenn die Capabilities sie deklarieren; jeder
-Fehler darauf ist beim Start eine leere Liste (beim Refresh nicht, siehe Façade).
+Fehler darauf ist beim Start eine leere Liste (beim Refresh nicht, siehe Façade). Ist
+das Kind am Ende des Handshakes weg, scheitert der Start trotzdem, mit dessen
+Exit-Grund (`$child->{exited}`; nur stdout zu → auf den Exit warten) — nie `ready` ohne
+Kind; der Exit zählt einmal zur Crash-Loop.
 
 stdout wird an Newlines gesplittet, jede Zeile als JSON dekodiert; eine kaputte
 Zeile wird übersprungen (debug). Der Line-Buffer ist bei 16 MB gekappt — dann
@@ -214,7 +217,8 @@ Kind oder Verbindung weg, HTTP-Fehlerstatus — mit einem String. Unterschieden 
 `prompts/list`/`resources/list` eine leere Liste; keine Antwort lässt einen Refresh
 scheitern: das alte Manifest bleibt, nichts gespeichert, niemand benachrichtigt
 (`Http::refresh_p` fängt das selbst und loggt debug, Stdio lehnt ab). Ein Start nimmt
-beides als leer — offene Maintainer-Entscheidung. Ein Fehler auf `tools/list` lässt beide
+beides als leer — offene Maintainer-Entscheidung (k143); nur ein stdio-Kind, das bis zum
+Ende des Handshakes weg ist, lässt ihn scheitern. Ein Fehler auf `tools/list` lässt beide
 scheitern.
 
 Ein Upstream, den ein Reload ersetzt oder entfernt hat, ist gestoppt, aber ein laufender

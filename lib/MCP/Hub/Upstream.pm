@@ -297,8 +297,9 @@ sub _handshake_p ($self) {
 # answer -- it timed out, a stop cut it off, the child or the connection went --
 # says nothing about the list. A refresh fails there, and the manifest it was to
 # replace stays (refresh_p). A start takes either for an empty list, as it
-# always has: it has no manifest of its own to keep. Each request is handed
-# $on, what the refresh is bound to (_request_p).
+# always has: it has no manifest of its own to keep -- though a stdio start
+# whose child is gone by then fails (MCP::Hub::Upstream::Stdio::start_p). Each
+# request is handed $on, what the refresh is bound to (_request_p).
 sub _list_all_p ($self, $of_start = 0, $on = undef) {
   my $caps  = $self->{capabilities} // {};
   my $empty = sub ($err, @) { return $of_start || $self->_answered($err) ? [] : Mojo::Promise->reject($err) };
@@ -583,7 +584,9 @@ A C<prompts/list> or C<resources/list> the upstream answers with a JSON-RPC
 error is taken for an empty list: it declares the capability and has nothing to
 list. One that gets no answer -- it times out, a stop cuts it off, the child or
 the connection goes -- fails the refresh of a running upstream, which keeps the
-manifest it had and notifies nobody. A start takes either for an empty list.
+manifest it had and notifies nobody. A start takes either for an empty list,
+unless the stdio child it started is gone by the end of its handshake (see
+L<MCP::Hub::Upstream::Stdio/Handshake and manifest>).
 
 Agents listening on the upstream's endpoint are sent a
 C<notifications/tools/list_changed>, C<prompts/list_changed> or

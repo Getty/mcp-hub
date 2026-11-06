@@ -279,3 +279,6 @@ Revision history for MCP-Hub
     stopped or gone, the refresh fails at once instead of asking the next
     child for the rest of its lists, or waiting out request_timeout when
     none runs.
+  - A stdio start whose child exits during the handshake fails with the
+    reason of the exit, and the exit counts toward the crash loop, instead
+    of coming up ready with no child.

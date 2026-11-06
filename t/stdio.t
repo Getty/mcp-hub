@@ -286,6 +286,57 @@ subtest 'a child that dies at startup is counted once' => sub {
   settle;
 };
 
+# A peer that answers initialize -- with prompts and resources among its
+# capabilities -- and tools/list, then exits: right after its answer to
+# tools/list ('answered'), or once it is asked for its prompts
+# ('prompts/list').
+my $BRIEF = <<~'CODE';
+  use Mojo::JSON qw(decode_json encode_json);
+  my $at = shift;
+  $| = 1;
+  while (my $line = <STDIN>) {
+    my $msg = eval { decode_json($line) } // next;
+    next unless defined $msg->{id};
+    exit 0 if $msg->{method} eq $at;
+    my $result = $msg->{method} eq 'initialize'
+      ? {protocolVersion => '2025-06-18', serverInfo => {name => 'brief', version => '1'},
+         capabilities => {tools => {}, prompts => {}, resources => {}}}
+      : {tools => [{name => 'echo', inputSchema => {type => 'object'}}]};
+    print encode_json({jsonrpc => '2.0', id => $msg->{id}, result => $result}), "\n";
+    exit 0 if $msg->{method} eq 'tools/list' && $at eq 'answered';
+  }
+  CODE
+
+sub brief ($at, %attr) {
+  return MCP::Hub::Upstream::Stdio->new(
+    name        => 'brief',
+    config      => {type => 'stdio', command => $^X, args => ['-e', $BRIEF, $at]},
+    cache_dir   => tempdir->to_string,
+    fail_window => $WINDOW,
+    log         => log_to([]),
+    %attr,
+  );
+}
+
+subtest 'a child that exits in the middle of the handshake fails the start' => sub {
+  # It is gone before its prompts and resources are listed. A list it no
+  # longer answered is taken for an empty one at a start, and so the start
+  # came up ready with no child: no pid, and a call to it waited out the
+  # request timeout. The start fails with its exit instead, and the exit
+  # counts toward the crash loop -- once.
+  for my $at ('answered', 'prompts/list') {
+    my $up = brief($at, request_timeout => 1);
+    for my $n (1 .. 3) {
+      my $r = _await_bounded($up->start_p, 30);
+      is ref $r eq 'HASH' ? $r->{err} : 'ready', 'upstream brief: exited (code 0)',
+        "$at, attempt $n: the start fails with the exit";
+      is $up->state, $n < 3 ? 'stopped' : 'failed', "$at, attempt $n: $n exit(s) counted";
+      is $up->stats->{pid}, undef, "$at, attempt $n: no child";
+    }
+    is $up->error, "3 exits within ${WINDOW}s", "$at: the crash loop names the count";
+  }
+};
+
 # These come before anything here assigns $SIG{CHLD}: the first one is about
 # libev reaping children, and an assignment ends that for the whole process.
 subtest 'the exit status is read under EV too' => sub {
