@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-06T06:45:05Z
+created: 2026-11-06T04:47:01Z
+id: 84
+priority: medium
+started: 2026-11-06T04:49:32Z
+status: done
+tags:
+- native
+- performance
+title: 'ClaudeHistory search: test the raw line before decoding it'
+updated: 2026-11-06T06:45:05Z
+---
+
+From k40 research (2026-11-06, results: /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/results.md). Decoding is 44-50% of search time with XS and 96-97% in pure Perl; only 3.3% of the bytes are searchable text. Pre-checking the raw line gave identical hits: pure Perl on S 41.8 s -> 0.7 s, XS on M 10.4 s -> 5.3 s (scratch prefilter.pl). Done: for a printable-ASCII search word without '"' or '\\', non-matching lines are not decoded; every other word takes today's path; results identical on fixtures with escaped quotes, newlines and non-ASCII text; speed-up measured.
+
+Done, commit-ready, not committed. search_conversations tests the raw JSON line before decoding when the lowercased word is printable ASCII without " \ [ ] and does not start inside '[tool_use '; every other word takes today's path. The card's bare rule is not exact, so a line also stays a candidate when it holds a \u escape of printable ASCII, \/ (Mojo writes it) for a word with '/', U+212A/U+0130 (lowercase to k / i+dot) for a word with k / i, or a non-string text/name/content value for a word that could be one stringified (1e5 -> 100000). The naive card rule fails 16 tests. Numbers, warm metadata, rare word, Cpanel::JSON::XS, medians n=3: S 54 MB 0.41 -> 0.18 s CPU; M 504 MB 4.08 -> 1.72 s (both roles 4.34 -> 1.71); pure-Perl JSON S 12.7 -> 0.19 s, M 113.7 -> 1.8 s. The common word 'the' (stops after 30 hits): M 0.23 -> 0.17 s. Wire output byte-identical to HEAD. Test t/native/claude-history-search.t (66): an every-line oracle for about 33 words x 2 role sets plus decode counts; red on HEAD only in the decode-count subtest; dropping any one clause of the raw test is caught. Commit split: this card's ClaudeHistory.pm state is scratchpad/w-natives/k84.patch (git apply --cached on HEAD) + t/native/claude-history-search.t. Subject: 'Test a search word against the raw line before decoding it (k84)'.
+
+Committed as d5f9b64
