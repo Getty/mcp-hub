@@ -148,10 +148,13 @@ subtest 'error results' => sub {
 subtest 'a non-object error is reported, not swallowed' => sub {
   # An upstream that answers "error": "text" or "error": [..] -- shapes that
   # are out there in the wild. Reading ->{message} from them dies under strict
-  # refs, and the request it belongs to then stays pending forever.
+  # refs, and the request it belongs to then stays pending forever. The bound
+  # only stands in for "forever": spawn, handshake and call get 30 seconds, so
+  # that a loaded machine cannot trip it, and a swallowed error still fails --
+  # within the bound and before the request's own 60-second timeout.
   for my $shape (qw(string array)) {
     my $up = upstream(args => ['-Ilib', "$ECHO", "--bad-error=$shape"]);
-    my $r  = _await_bounded($up->call_tool('boom', {}), 5);
+    my $r  = _await_bounded($up->call_tool('boom', {}), 30);
     ok $r->{isError}, "$shape error is an error result" or diag explain $r;
     like _error_text($r), qr/^upstream echo:/, "$shape error names the upstream";
     like _error_text($r), qr/nope/, "$shape error carries the upstream message";
