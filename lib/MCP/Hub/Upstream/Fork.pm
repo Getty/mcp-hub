@@ -113,8 +113,10 @@ sub _handle_list ($self, $server, $method, $key) {
 sub _hash ($self) { return undef }
 
 # A worker's handshake refreshes the facade in memory only, never on disk. Its
-# instructions are always empty (see _class_manifest), so the class's stay.
+# instructions are always empty (see _class_manifest), so the class's stay. An
+# upstream a reload let go of applies nothing (MCP::Hub::Upstream::_dropped).
 sub _apply_manifest ($self, $manifest) {
+  return $self if $self->_dropped;
   $manifest->{instructions} //= $self->{class_instructions};
   $self->{instructions}        = $manifest->{instructions};
   $self->{manifest_fetched_at} = $manifest->{fetched_at};

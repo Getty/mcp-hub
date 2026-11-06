@@ -995,6 +995,12 @@ fetch failed -- is left alone; L</refresh_p> is the way back from that.
 
 =back
 
+An upstream that a reload replaced or removed is let go of for good. A start of
+it that was under way, or a refresh, goes on to its end, but what it finds is
+not applied: it goes neither into the manifest cache -- which the new upstream
+shares when only the entry's C<env> changed -- nor to any listener, on the
+server's endpoint or on C</all>.
+
 C<profiles>, C<clients> and C<public_profile> are swapped in one step before any
 of that, so from a request's point of view the new access rules -- including a
 flip between open and clients mode -- take effect all at once, without a single

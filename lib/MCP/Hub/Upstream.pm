@@ -11,7 +11,7 @@ use Mojo::JSON   qw(encode_json);
 use Mojo::Loader qw(load_class);
 use Mojo::Log;
 use Mojo::Promise;
-use Scalar::Util qw(blessed);
+use Scalar::Util qw(blessed refaddr);
 
 # ABSTRACT: Base class for an upstream MCP server mounted in the hub
 
@@ -215,7 +215,10 @@ sub _manifest_from ($self, $lists) {
   };
 }
 
+# A manifest goes into the cache and into the facade -- unless the hub has let
+# go of this upstream (_dropped).
 sub _apply_manifest ($self, $manifest) {
+  return $self if $self->_dropped;
   $self->{manifest}->store($manifest);
   $self->{manifest_fetched_at} = $manifest->{fetched_at};
   return $self->_show_manifest($manifest);
@@ -234,6 +237,22 @@ sub _show_manifest ($self, $manifest) {
   $self->server->notify_list_changed($_) for @changed;
   $self->hub->rebuild_aggregate(@changed) if $self->hub && $self->hub->can('rebuild_aggregate');
   return $self;
+}
+
+# Whether the hub has let go of this upstream: a reload replaced it with one
+# built from the changed entry, or removed it. It was stopped, but a start of
+# it under way -- or a refresh -- goes on, and when it is through, what it found
+# is not applied: not written to the cache, which the new upstream may share
+# (the hash leaves env out), nor told to anybody. It came from a child being
+# stopped, too. An upstream no hub holds -- built on its own -- is let go of by
+# nobody.
+sub _dropped ($self) {
+  my $hub = $self->hub;
+  return 0 unless $hub && $hub->can('upstreams_by_name');
+  my $held = $hub->upstreams_by_name->{$self->name};
+  return 0 if $held && refaddr $held == refaddr $self;
+  $self->log->debug("[@{[$self->name]}] no longer mounted, the manifest it found is not applied");
+  return 1;
 }
 
 # Each list of the facade as its endpoint renders it, title, icons and _meta

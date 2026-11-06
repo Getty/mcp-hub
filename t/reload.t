@@ -12,6 +12,7 @@ use Mojo::UserAgent;
 use POSIX             ();
 use Scalar::Util      qw(refaddr);
 use MCP::Hub;
+use MCP::Hub::Manifest;
 use MCP::Client;
 
 use lib curfile->sibling('lib')->to_string;
@@ -207,6 +208,76 @@ subtest 'a changed entry is rebuilt and only that one' => sub {
     'and the endpoint works';
 
   $_->stop for @{$app->upstreams};
+  settle;
+};
+
+subtest 'the late start of an upstream a reload replaced changes nothing' => sub {
+  # A reload that rebuilds an entry stops the upstream it had and drops it. A
+  # start of the old one that was under way went on all the same: once its
+  # handshake was through, it put the lists it found -- from a child being
+  # stopped: no prompts, no resources -- in the old facade, told the listeners
+  # on the endpoint and on /all that they had changed, and wrote them to the
+  # cache. An entry whose env is all that changed has the same manifest hash
+  # (env is not hashed), so the new upstream lists from that file. An upstream
+  # the hub no longer holds applies no manifest.
+  my $dir   = tempdir;
+  my $cache = $dir->child('cache');
+  my $file  = $dir->child('config.json');
+  my $data  = sub ($stamp) {
+    return {mcpServers => {echo => {%{echo_entry()}, env => {STAMP => $stamp}}}};
+  };
+  my $app  = hub_for($file, $cache, $data->('one'));
+  my $old  = $app->upstreams_by_name->{echo};
+  my $hash = $old->_hash;
+  is_deeply [map { $_->name } @{$old->server->prompts}], ['greet'], 'the cache lists the prompts';
+
+  # The old upstream starts; the answer to its tools/list is held back.
+  my ($asked, $gate) = (0, Mojo::Promise->new);
+  no warnings 'redefine';
+  my $request_p = \&MCP::Hub::Upstream::Stdio::_request_p;
+  local *MCP::Hub::Upstream::Stdio::_request_p = sub ($self, $method, @rest) {
+    my $p = $request_p->($self, $method, @rest);
+    return $p unless refaddr $self == refaddr $old && $method eq 'tools/list';
+    $asked++;
+    return $p->then(sub ($res) { $gate->then(sub { $res }) });
+  };
+  my $notify = \&MCP::Server::notify_list_changed;
+  my @notified;
+  local *MCP::Server::notify_list_changed = sub ($server, $kind) {
+    push @notified, $kind;
+    return $notify->($server, $kind);
+  };
+  my $started;
+  $old->start_p->then(sub { $started = 'started' }, sub ($err) { $started = "$err" });
+  my $deadline = time + 10;
+  Mojo::Promise->timer(0.05)->wait until $asked || time > $deadline;
+  ok $asked, 'the old upstream asks its child for the tools';
+  # What it asks from here on goes to a child being stopped: it times out in a
+  # second, not in a minute.
+  $old->request_timeout(1);
+
+  # The reload: only the env changed.
+  write_config($file, {%{$data->('two')}, hub => {cache_dir => "$cache"}});
+  is_deeply $app->reload->{changed}, ['echo'], 'the reload counts the entry as changed';
+  my $new = $app->upstreams_by_name->{echo};
+  isnt refaddr $new, refaddr $old, 'and rebuilds it';
+  is $new->_hash, $hash, 'under the same manifest hash';
+  is_deeply [map { $_->name } @{$new->server->prompts}], ['greet'], 'the new one lists the prompts from the cache';
+
+  # The old start is let go on.
+  @notified = ();
+  $gate->resolve;
+  $deadline = time + 10;
+  Mojo::Promise->timer(0.05)->wait until defined $started || time > $deadline;
+  ok defined $started, 'the old start is over';
+  is_deeply \@notified, [], 'nobody is told anything changed';
+  is_deeply [map { $_->name } @{$old->server->prompts}], ['greet'], 'the old facade is as it was';
+  my $cached = MCP::Hub::Manifest->new(cache_dir => "$cache")->load('echo', $hash) // {};
+  is_deeply [map { $_->{name} } @{$cached->{prompts} // []}], ['greet'], 'the cache keeps the prompts';
+  is_deeply [map { $_->name } @{$new->server->prompts}], ['greet'], 'and so does the new upstream';
+  is $new->stats->{pid}, undef, 'which has started nothing';
+
+  $_->stop for $old, @{$app->upstreams};
   settle;
 };
 

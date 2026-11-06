@@ -271,3 +271,7 @@ Revision history for MCP-Hub
   - Streamable HTTP: a request that finds the upstream stopped, with no
     start after the stop, fails at once as stopped instead of going out
     without a session id.
+  - An upstream a reload replaced or removed no longer applies a manifest
+    its start or refresh found afterwards: it goes neither into the cache,
+    which the new upstream shares when only env changed, nor to any
+    listener.
