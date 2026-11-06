@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-06T19:14:53Z
+created: 2026-11-06T17:32:22Z
+id: 148
+priority: low
+started: 2026-11-06T17:54:53Z
+status: done
+tags:
+- stdio
+- upstream
+- drift
+title: 'Stdio: a start a stop called off can fail as ''exited'' instead of ''stopped'''
+updated: 2026-11-06T19:14:58Z
+---
+
+Found by mcp-hub-worker during k145 (2026-11-06). Low.
+Stdio: a stop sends EOF during a start; if the child exits on that EOF before it answers the handshake request in flight, _on_exit rejects the pending request first, so the start fails as "upstream NAME: exited (...)" rather than "upstream NAME: stopped". Logging and counting are right already (eof is set -> debug, not counted). Http always rejects a start a stop called off as "stopped" (Http::start_p catch, k106).
+Done when: Stdio's start_p rejects as "upstream NAME: stopped" whenever $child->{eof} is set, whatever error the handshake ended with; a test in t/stdio-stop.t with a child that exits at once on EOF while holding a handshake answer back, red on HEAD.
+
+Done (mcp-hub-worker): start_p rejects 'upstream NAME: stopped' whenever $child->{eof} is set, whatever the handshake ended with (before: 'exited (code 0)' when the child ended on its EOF before answering). Status afterwards: stopped, error undef, debug 'start called off by a stop' -- consistent with the rejection. Fork inherits it (checked ad hoc); Docker-stdio already said 'stopped while starting' (checked by reading; see k153). Regression subtest in t/stdio-stop.t (child holds back one handshake answer, stop fired on its stderr line, so not racy), red 6/39 on HEAD. POD and runtime skill updated. Not committed.
+
+Committed as 47c3b46
