@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-06T16:40:27Z
+created: 2026-11-06T14:40:59Z
+id: 137
+priority: low
+started: 2026-11-06T15:08:01Z
+status: done
+tags:
+- http
+title: 'Streamable HTTP: a connection error reaches the agent without the upstream
+  NAME prefix'
+updated: 2026-11-06T16:41:25Z
+---
+
+Found during k130 (worker). Over Streamable HTTP, a connection error ("Request timeout", "Connection refused") reaches the agent without the "upstream NAME: " prefix every other rejection carries: Mojo's promisify rejects start_p's promise directly, so Http's $fail wrapper in _http_send_p is skipped for it. Done: every rejection of an Http request reads "upstream NAME: ...", a test in t/http.t for a refused connection and a timeout.
+
+Done (mcp-hub-worker): in _http_send_p, $fail is the reject handler of the first then on start_p, so Mojo's own rejection reads 'upstream NAME: Connection refused' / 'upstream NAME: Request timeout'; nothing is prefixed twice, the stored error stays bare (503/status unchanged). SSE was already prefixed. Test t/http.t (http and sse refused, 1 s timeout), red 3/8. Not committed.
+
+Committed as fdef37e
