@@ -79,7 +79,9 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
 - **Die Façade darf `extra` nicht verlieren.** `MCP::Server` rendert in `tools/list` nur
   name/description/inputSchema/outputSchema/annotations. `title`, `icons` und `_meta` (z. B.
   `anthropic/maxResultSizeChars`) sind keine Spezifikations-Felder und hängen an
-  `Facade::Tool`; wer das `tools/list`-Rendering anfasst, muss sie weiterreichen.
+  `Facade::Tool`; wer das `tools/list`-Rendering anfasst, muss sie weiterreichen. Das
+  gilt auch für `/all`: `Aggregate` ist ein `Facade::Server` und trägt sie an jedem
+  `<u>__<t>`-Tool und -Prompt.
 - **`Facade::Tool->validate_input` gibt `0` zurück — mit Absicht.** Der Upstream
   validiert selbst; `JSON::Schema::Tiny` weist manche `$ref`-lastigen Schemata ab. Nicht
   „reparieren"; structured content auch nicht gegen das Output-Schema re-validieren.

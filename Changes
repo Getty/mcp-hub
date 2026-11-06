@@ -116,3 +116,5 @@ Revision history for MCP-Hub
     list no longer offers them or Mojolicious' generate/inflate/cpanify.
   - The global --config/-c is only read before the command name, so
     get -c JSON and daemon -c N keep their own -c.
+  - /all keeps the title, icons and _meta of every tool and prompt, as the
+    server's own endpoint lists them; they were dropped since v1.

@@ -53,9 +53,10 @@ sub _merge ($info, $extra) {
 =head1 DESCRIPTION
 
 L<MCP::Hub::Facade::Server> is the L<MCP::Server> the hub mounts for each stdio
-upstream. It is a plain server in every respect except that its C<tools/list>,
-C<prompts/list> and C<resources/list> rendering merges the C<title>, C<icons>
-and C<_meta> fields the upstream reported back into each entry.
+upstream, and the base of L<MCP::Hub::Aggregate> at C</all>. It is a plain
+server in every respect except that its C<tools/list>, C<prompts/list> and
+C<resources/list> rendering merges the C<title>, C<icons> and C<_meta> fields
+the upstream reported back into each entry.
 
 L<MCP::Server> renders only the specification's own fields, so without this an
 upstream's C<title> or a Claude Code-specific C<_meta> annotation would be
@@ -76,6 +77,6 @@ holding the C<title>, C<icons> and C<_meta> fields of prompts and resources.
 
 =head1 SEE ALSO
 
-L<MCP::Hub::Facade>, L<MCP::Hub::Facade::Tool>, L<MCP::Server>.
+L<MCP::Hub::Facade>, L<MCP::Hub::Facade::Tool>, L<MCP::Hub::Aggregate>, L<MCP::Server>.
 
 =cut

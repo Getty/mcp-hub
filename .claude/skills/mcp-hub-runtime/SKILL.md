@@ -124,6 +124,13 @@ Upstream-Instructions, jeder Block mit `## <name>` überschrieben. Resources
 werden **nicht** aggregiert (opake URIs würden kollidieren). Der Tool-Filter des
 Profils benutzt das Präfix, um `servers`- und `tools`-Regeln anzuwenden.
 
+Extras: `Aggregate` ist ein `Facade::Server`. `rebuild` liest `title`/`icons`/`_meta`
+aus dem **eigenen Rendering** jedes Upstream-Servers (`_handle_tools_list` /
+`_handle_prompts_list` mit leerem Context, also ohne Profil-Filter) — nicht aus den
+Objekten: ein In-process-Server hat plain `MCP::Tool`s ohne `extra` und rendert sie
+selbst. Sie landen am gewrappten `Facade::Tool->extra` bzw. in
+`extra->{prompts}{<u>__<p>}` und werden nach dem Filter zurückgemischt.
+
 ## Server-initiierter Verkehr
 
 Der Hub terminiert alles, was der Upstream anfordert:
