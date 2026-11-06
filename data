@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-06T09:21:22Z
+created: 2026-11-06T08:29:18Z
+id: 117
+priority: low
+started: 2026-11-06T08:40:44Z
+status: done
+tags:
+- native
+- wire
+title: 'Native _text: object/array text or name still renders as HASH(0x...); null
+  vs empty content'
+updated: 2026-11-06T09:21:22Z
+---
+
+Found during k109 (follow-up to it).
+1. A text block whose "text", or a tool_use whose "name", is an object or array still renders as HASH(0x...)/ARRAY(0x...) -- a memory address on the wire, different on every decode. Applying k109's "an object becomes no text" rule there would also let _raw_skip's $scalar rule (k84) shrink.
+2. In _text a message that is not an object gives "", but null or missing content gives null (k109 kept null as null so first_prompt //= keeps working). Decide whether text/last_prompt should always be a string.
+
+Scope narrowed: item 2 (null vs empty content) split into k119 for a maintainer decision. This card covers item 1: an object/array text or tool_use name renders as HASH(0x...)/ARRAY(0x...).
+
+Done (item 1; item 2 stays in k119, null content still null): new _string in both natives -- an object or array as block text gives no text, as tool_use name renders as [tool_use]; numbers/booleans as their string, as before. _raw_skip's $scalar class shrinks from [0-9a-fhinrsxy().+\-] to [0-9efin.+\-]; mutation run: dropping any of e f i n . + - fails the k84 equivalence test (4-7 tests each), the old class still passes. Equivalence test gains object/array text+name lines and number lines (1e20, 15e-1, 1e-7, 1e999, -1e999 name) plus queries; claude-text-values.t gains 8 block-text and 7 name cases. New cases red at HEAD (HASH(0x...) differs per decode). Wire over t/fixtures/claude byte-identical before/after. Comments say what really stringifies. prove -lr t/ green under EV and Poll. Patch: w-native5/k117.patch.
+
+Ready for commit: k117.patch (both natives + claude-history-search.t + claude-text-values.t). Wire unchanged over fixtures; only object/array text or name changes.
+
+Committed as 296ec04
