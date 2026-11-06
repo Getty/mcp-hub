@@ -50,10 +50,13 @@ Call während eines Stops wartet auf dessen Ende (`_gone_p`) und startet das nä
 Was das Kind nicht mehr erreicht (`_refused`: kein Stream — Kind weg oder stdout zu —
 oder EOF geschickt), geht nicht raus und scheitert sofort als `upstream NAME: not
 connected` bzw. `stopped`, statt den Request-Timeout abzuwarten. Ein Stop während des
-Starts lässt ihn sofort als `stopped` scheitern — nicht gezählt, das Kind bleibt dem Stop
+Starts lässt ihn als `stopped` scheitern, welchen Schritt er auch abschneidet (wie Http):
+sofort, wenn der nächste Request nicht rausgeht, sonst mit der Antwort oder dem Ende des
+Kinds — endet es auf den EOF, bevor es den Request in flight beantwortet, lehnt der Start
+trotzdem als `stopped` ab, nicht als `exited (…)`. Nicht gezählt, das Kind bleibt dem Stop
 (kein Signal, wenn es auf EOF endet), geloggt auf debug (`start called off by a stop`, wie
 Http), nie als `handshake failed` auf error; Kriterium ist `$child->{eof}`. Fork und
-Docker-stdio erben das mit `start_p`.
+Docker-stdio erben das mit `start_p` (Docker lehnt ohnehin als `stopped while starting` ab).
 
 Ein Refresh (`refresh_p`, nur bei `ready` mit pid) ist an das Kind gebunden, auf dem er
 begann: `_list_all_p(0, $self->{child})` reicht es als `$on` bis `_request_p`, und jeder

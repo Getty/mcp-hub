@@ -20,6 +20,7 @@ use Mojo::IOLoop;
 use Mojo::Promise;
 use MCP::Hub;
 use MCP::Hub::Upstream::Stdio;
+use Scalar::Util qw(weaken);
 use Time::HiRes ();
 
 # How a stop ends a stdio child (MCP::Hub::Upstream::Stdio, "Lifecycle"): its
@@ -270,6 +271,67 @@ subtest 'a stop during the start is no failed start' => sub {
       or diag explain \@logged;
     is scalar(grep { $_ eq 'debug [echo] start called off by a stop' } @logged), 3,
       "$at: each start the stop called off is logged at debug, as such";
+  }
+};
+
+subtest 'a start whose child ends on the EOF of a stop, with an answer held back, fails as stopped' => sub {
+  # The stop comes after the request went out: the child has it, and holds
+  # its answer back. It ends at once on its EOF, and its exit fails the request
+  # first -- the start failed as "upstream holder: exited (code 0)", though it
+  # was logged as called off and counted as no failed start, and the upstream
+  # showed `stopped`. Over HTTP a start a stop called off is rejected as
+  # stopped, whatever step of it the stop cut short; so here. A prompts/list a
+  # start takes for an empty list when it is not answered failed as stopped
+  # already.
+  my $peer = <<~'CODE';
+    use Mojo::JSON qw(decode_json encode_json);
+    my $at = shift;
+    $| = 1;
+    while (my $line = <STDIN>) {
+      my $msg = eval { decode_json($line) } // next;
+      next unless defined $msg->{id};
+      if ($msg->{method} eq $at) { print STDERR "holding $at\n"; next }
+      my $result = $msg->{method} eq 'initialize'
+        ? {protocolVersion => '2025-06-18', serverInfo => {name => 'holder', version => '1'},
+           capabilities => {tools => {}, prompts => {}}}
+        : $msg->{method} eq 'tools/list' ? {tools => [{name => 'echo', inputSchema => {type => 'object'}}]}
+        :                                  {prompts => []};
+      print encode_json({jsonrpc => '2.0', id => $msg->{id}, result => $result}), "\n";
+    }
+    exit 0;    # at once, at the end of its input
+    CODE
+  for my $at ('initialize', 'tools/list', 'prompts/list') {
+    # The stop comes as the child says it holds the answer: it has the request.
+    my (@logged, $up);
+    my $log = log_to(\@logged)->level('debug');
+    my $weak;
+    $log->on(message => sub ($l, $level, @msg) { $weak->stop if $weak && "@msg" eq "[holder] holding $at" });
+    $up = MCP::Hub::Upstream::Stdio->new(
+      name        => 'holder',
+      config      => {type => 'stdio', command => $^X, args => ['-e', $peer, $at]},
+      cache_dir   => tempdir->to_string,
+      fail_window => 60,
+      log         => $log,
+    );
+    $up->request_timeout(30);
+    weaken($weak = $up);
+    for my $n (1 .. 3) {
+      my $start = $up->start_p;
+      my $pid   = $up->stats->{pid};
+      my $r     = await_bounded($start, 20);
+      is ref $r eq 'HASH' ? $r->{err} : 'ready', 'upstream holder: stopped', "$at, attempt $n: the start fails as stopped";
+      await_bounded($up->stopped_p, 20);
+      is exit_of($pid), 'code 0', "$at, attempt $n: the child ends on its EOF";
+      is_deeply [grep { $_->[1] == $pid } @KILLS], [], "$at, attempt $n: unsignalled";
+    }
+    is scalar(grep { $_ eq "debug [holder] holding $at" } @logged), 3, "$at: each time the child had the request";
+    my $row = $up->status_row;
+    is_deeply [@$row{qw(state error)}], ['stopped', undef], "$at: the status shows it stopped, with no error, as the start says"
+      or diag explain $row;
+    is_deeply [grep { !/^(?:trace|debug|info) / } @logged], [], "$at: nothing logged as a failure"
+      or diag explain \@logged;
+    is scalar(grep { $_ eq 'debug [holder] start called off by a stop' } @logged), 3,
+      "$at: each start logged as called off by a stop";
   }
 };
 

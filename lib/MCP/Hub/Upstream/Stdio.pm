@@ -97,9 +97,12 @@ sub start_p ($self) {
     $self->touch;
     $done->resolve($self);
   })->catch(sub ($err) {
-    # A start that a stop called off -- the child has been sent EOF, and its
-    # next request failed at once (_request_p) -- did not fail: it is logged at
-    # debug, as over HTTP (MCP::Hub::Upstream::Http), not as a failed handshake.
+    # A start that a stop called off -- the child has been sent EOF -- did not
+    # fail: it is logged at debug, as over HTTP (MCP::Hub::Upstream::Http), not
+    # as a failed handshake, and it is rejected as stopped, whatever the
+    # handshake ended with: its next request failed at once (_request_p), or
+    # the one in flight with the child's exit, when the child ended on its EOF
+    # before it answered (_on_exit).
     my $stopped = $child->{eof};
     $stopped
       ? $self->log->debug("[@{[$self->name]}] start called off by a stop")
@@ -122,7 +125,7 @@ sub start_p ($self) {
     $self->_kill_now unless $stopped;
     $self->state($self->{failed} ? 'failed' : 'stopped');
     delete $self->{start_promise};
-    $done->reject("$err");
+    $done->reject($stopped ? "upstream @{[$self->name]}: stopped" : "$err");
     return;    # never hand the rejected promise back into the chain
   });
 
@@ -619,10 +622,13 @@ A request that can no longer reach the child -- a call let through just before
 a stop sent it EOF, or one after its stdout closed -- is not sent: it fails at
 once, as C<upstream NAME: stopped> or C<upstream NAME: not connected>, instead
 of waiting out the request timeout. A stop during a start fails the start as
-C<stopped>, at once; it does not count toward the crash loop, it is logged at
-debug level -- as a start called off, not a failed handshake, as over HTTP --
-and the child is left to the stop: one that ends on its EOF is never signalled.
-A start that fails on its own is logged at error level.
+C<stopped>, whatever step of it the stop cut short, as over HTTP: at once when
+the next request of the start is not sent, else once the request in flight is
+answered or the child is gone -- a child that ends on its EOF before it answers
+fails the start as C<stopped> too, not as C<exited>. It does not count toward
+the crash loop, it is logged at debug level -- as a start called off, not a
+failed handshake -- and the child is left to the stop: one that ends on its EOF
+is never signalled. A start that fails on its own is logged at error level.
 
 Three exits within five seconds mark it C<failed>, with the reason in
 L<MCP::Hub::Upstream/error>. A failed upstream stays failed until it is
