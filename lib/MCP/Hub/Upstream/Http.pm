@@ -226,7 +226,7 @@ sub _http_send_p ($self, $method, $params, $renewed = undef) {
   # The response is either a JSON body or a text/event-stream. Mojo parses SSE
   # into events (leaving the body empty), so capture our reply from the sse
   # event stream; a plain JSON reply is read from the body once the tx is done.
-  my $tx    = $self->req_ua->build_tx(POST => $self->{url} => $self->_http_headers => json => $req);
+  my $tx    = $self->req_ua->build_tx(POST => $self->{url} => $self->_http_headers($method) => json => $req);
   my $found;
   $tx->res->content->on(sse => sub ($content, $event = undef) {
     return unless $event && defined $event->{text};
@@ -255,6 +255,9 @@ sub _http_send_p ($self, $method, $params, $renewed = undef) {
     $self->_end_session($session) if delete $self->{ending}{$session};
   };
 
+  # A request that fails is rejected with its reason as it is -- as over
+  # HTTP+SSE, with no newline at its end for the agent to read.
+  my $fail = sub ($reason) { Mojo::Promise->reject("upstream @{[$self->name]}: $reason") };
   $self->req_ua->start_p($tx)->then(sub ($tx) {
     return undef if $of_start && !$self->{pending}{$id};    # called off by a stop
     if (my $err = $tx->error) {
@@ -262,9 +265,9 @@ sub _http_send_p ($self, $method, $params, $renewed = undef) {
       if (!$found && defined $sent && ($err->{code} // 0) == 404) {
         my $renew = $self->_session_gone($sent, $renewed && !$of_start);
         $$renewed = $renew if $renewed;
-        die "upstream @{[$self->name]}: the remote ended the session (" . $self->_error_message($err) . ")\n";
+        return $fail->('the remote ended the session (' . $self->_error_message($err) . ')');
       }
-      die "upstream @{[$self->name]}: " . $self->_error_message($err) . "\n" unless $found;
+      return $fail->($self->_error_message($err)) unless $found;
     }
     # The session is the one the answer to the initialize names. A later answer
     # that names one too -- the reference server names it on every answer --
@@ -278,8 +281,8 @@ sub _http_send_p ($self, $method, $params, $renewed = undef) {
     # reply is a plain JSON body, or -- for a chunked event-stream, which Mojo
     # does not SSE-parse -- the de-chunked events sit in the body; parse those.
     my $res = $found // _reply_from_body($tx, $id);
-    die "upstream @{[$self->name]}: no response for $method\n" unless ref $res eq 'HASH';
-    die "upstream @{[$self->name]}: " . $self->_error_message($res->{error}) . "\n" if $res->{error};
+    return $fail->("no response for $method") unless ref $res eq 'HASH';
+    return $fail->($self->_error_message($res->{error})) if $res->{error};
     return $res->{result} // {};
   })->then(
     sub ($result) { $settled->(); $done->resolve($result); return },
@@ -345,7 +348,8 @@ sub _session_gone ($self, $sid, $renew) {
 }
 
 sub _http_post ($self, $obj) {
-  $self->req_ua->start($self->req_ua->build_tx(POST => $self->{url} => $self->_http_headers => json => $obj) => sub { });
+  my $tx = $self->req_ua->build_tx(POST => $self->{url} => $self->_http_headers($obj->{method}) => json => $obj);
+  $self->req_ua->start($tx => sub { });
   return 1;
 }
 
@@ -363,12 +367,17 @@ sub _reply_from_body ($tx, $id) {
   return undef;
 }
 
-sub _http_headers ($self) {
+# The protocol version goes on every request after the initialize, as the
+# version the initialize negotiated -- not on the initialize itself, which
+# negotiates it: the only one it could carry is that of the session before, of
+# the cached manifest or the default, which need not be the one its body asks
+# for, and a remote answers a version it does not support with 400.
+sub _http_headers ($self, $method) {
   return {
     %{$self->{headers}},
-    'Content-Type'         => 'application/json',
-    'Accept'               => 'application/json, text/event-stream',
-    'MCP-Protocol-Version' => $self->{server_protocol} // $self->protocol_version,
+    'Content-Type' => 'application/json',
+    'Accept'       => 'application/json, text/event-stream',
+    ($method eq 'initialize' ? () : ('MCP-Protocol-Version' => $self->{server_protocol} // $self->protocol_version)),
     (defined $self->{session_id} ? ('Mcp-Session-Id' => $self->{session_id}) : ()),
   };
 }
@@ -654,7 +663,9 @@ speaks both HTTP transports in the wild:
 
 A single endpoint. Each JSON-RPC request is a POST whose response is either a
 JSON body or a short C<text/event-stream>. An C<Mcp-Session-Id> returned by
-C<initialize> is echoed on later requests.
+C<initialize> is echoed on later requests, and so is the protocol version it
+negotiated, as C<MCP-Protocol-Version>; the C<initialize> itself carries
+neither.
 
 =item HTTP+SSE (C<type: "sse">)
 

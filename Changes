@@ -209,3 +209,6 @@ Revision history for MCP-Hub
     request once more on it, instead of failing every call on the dead
     session until a reload; calls that lose the same session share one new
     session, and no DELETE goes out for a session the remote ended.
+  - Streamable HTTP error results no longer end in a newline, reading the
+    same as over HTTP+SSE, and the initialize request no longer carries an
+    MCP-Protocol-Version header for a version it has not negotiated yet.

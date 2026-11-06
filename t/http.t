@@ -135,8 +135,9 @@ sub mcp_answer ($error) {
 
 # A fake Streamable HTTP MCP server: every JSON-RPC request is a POST and its
 # answer the response. It records every POST it receives, with the session id
-# it carries (`session`), and gives every initialize a new one; every other
-# answer names the session of its request, as the reference server's do. The
+# it carries (`session`) and its MCP-Protocol-Version header (`version`), and
+# gives every initialize a new session; every other answer names the session
+# of its request, as the reference server's do. The
 # answer callback returns the response, or a promise of it: one that never settles
 # holds the request, as a remote that takes its time does. `answered` counts
 # the answers, `cut` the POSTs whose connection went before they were answered.
@@ -165,7 +166,7 @@ sub fake_http (%opt) {
   $app->routes->post('/mcp' => sub ($c) {
     my $req = eval { $c->req->json } // {};
     my $sid = $c->req->headers->header('Mcp-Session-Id');
-    push @{$state->{posts}}, {%$req, session => $sid};
+    push @{$state->{posts}}, {%$req, session => $sid, version => $c->req->headers->header('MCP-Protocol-Version')};
     my $gone = sub { defined $sid && !$state->{live}{$sid} && ++$state->{gone} };
     return $c->rendered(404) if $gone->();
     return $c->rendered(202) unless defined $req->{id};    # a notification
@@ -1306,6 +1307,105 @@ subtest 'streamable http upstream: a stop calls off the new session, and opens n
     is $gone, undef, "$when: nothing holds the upstream";
     $fake->{daemon}->stop;
   }
+};
+
+subtest 'an error reads the same over both transports: no trailing newline' => sub {
+  # Over Streamable HTTP the reason of a failed request ended in a newline --
+  # "upstream fake: nope\n" -- and the agent read it in the text of the error
+  # result; over HTTP+SSE it did not.
+  my $fake = fake_http(answer => pong_answer(sub ($req) {
+    my $name = $req->{params}{name};
+    return $name eq 'rpc'    ? {jsonrpc => '2.0', id => $req->{id}, error => {code => -32000, message => 'nope'}}
+      :    $name eq 'status' ? {http_status => 500}
+      :                        undef;
+  }));
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  is _error_text(_await_bounded($up->call_tool('rpc', {}), 5)), 'upstream fake: nope', 'http: a JSON-RPC error';
+  is _error_text(_await_bounded($up->call_tool('status', {}), 5)), 'upstream fake: Internal Server Error',
+    'http: an HTTP error status';
+
+  # A remote that ends every session as soon as it gives it: the start fails.
+  $up->stop;
+  $fake->{volatile} = 1;
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)),
+    'upstream fake: the remote ended the session (Not Found)', 'http: a session the remote ended';
+  $up->stop;
+
+  (my $wrong = $fake->{url}) =~ s{/mcp$}{/wrong};
+  my $other = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $wrong, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  $other->log->level('fatal');
+  is _await_bounded($other->start_p, 5)->{err}, 'upstream fake: Not Found', 'http: a start that fails';
+
+  my $sse = fake_sse(answer => mcp_answer({code => -32000, message => 'nope'}));
+  my $sup = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'sse', url => $sse->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  is _error_text(_await_bounded($sup->call_tool('boom', {}), 10)), 'upstream fake: nope', 'sse: a JSON-RPC error';
+
+  $sup->stop;
+  $sse->{daemon}->stop;
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: the initialize carries no MCP-Protocol-Version, the requests after it the one it negotiated' => sub {
+  # The version goes on the requests after the initialize, which negotiates
+  # it. The initialize carried one too -- the one of the session before, of
+  # the cached manifest, or the default -- which may not be the one it asks for
+  # in its body, and a remote answers a version it does not support with 400.
+  my $version = '2025-03-26';
+  my $answer  = pong_answer();
+  my $fake    = fake_http(answer => sub ($req) {
+    my $res = $answer->($req);
+    $res->{result}{protocolVersion} = $version if ($req->{method} // '') eq 'initialize';
+    return $res;
+  });
+  my $cache    = tempdir;
+  my $versions = sub { [sort map { "$_->{method}: " . ($_->{version} // 'none') } splice @{$fake->{posts}}] };
+  my $build    = sub {
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+      cache_dir => "$cache",
+    );
+    $up->log->level('fatal');
+    return $up;
+  };
+
+  my $up = $build->();
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started, with no manifest yet';
+  is_deeply $versions->(),
+    ['initialize: none', 'notifications/initialized: 2025-03-26', 'tools/list: 2025-03-26'],
+    'the initialize carries none, the requests after it the version the remote answered';
+
+  $up->stop;
+  $version = '2025-06-18';
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started again';
+  is_deeply $versions->(),
+    ['initialize: none', 'notifications/initialized: 2025-06-18', 'tools/list: 2025-06-18'],
+    'the initialize carries none of the session before, the requests after it the new one';
+  $up->stop;
+
+  $version = '2025-03-26';
+  my $cached = $build->();
+  is $cached->manifest_fetched_at ? 'cached' : 'none', 'cached', 'an upstream built over the cached manifest';
+  is _await_bounded($cached->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  is_deeply $versions->(),
+    ['initialize: none', 'notifications/initialized: 2025-03-26', 'tools/list: 2025-03-26'],
+    'its initialize carries none of the manifest';
+  $cached->stop;
+
+  $fake->{daemon}->stop;
 };
 
 subtest 'an https url without TLS is a failed upstream that names the fix' => sub {
