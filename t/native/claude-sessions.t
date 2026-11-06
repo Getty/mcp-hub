@@ -7,11 +7,20 @@ use MCP::Hub::Native::ClaudeSessions;
 
 plan skip_all => 'symlink not supported here' unless eval { symlink('', "@{[tempdir]}/x"); 1 };
 
-my $root = curfile->sibling('..', 'fixtures', 'claude')->to_string;
-
 # The session picker uses mtime ("the newest .jsonl"); make it deterministic
-# regardless of how the fixtures were copied into place.
-my $proj_a = curfile->sibling('..', 'fixtures', 'claude', 'projects', '-home-tester-proj-a');
+# regardless of how the fixtures were copied into place. The mtimes are set on
+# a copy, so the fixtures in the checkout keep theirs and a run beside this one
+# sees no change; $copy holds the tempdir until the test ends.
+my $fixtures = curfile->sibling('..', 'fixtures', 'claude');
+my %mtime    = map { ("$_" => (stat $_)[9]) } @{$fixtures->list_tree};
+my $copy     = tempdir;
+for my $file (@{$fixtures->list_tree}) {
+  my $to = $copy->child(@{$file->to_rel($fixtures)->to_array});
+  $to->dirname->make_path;
+  $file->copy_to($to);
+}
+my $root   = $copy->to_string;
+my $proj_a = $copy->child('projects', '-home-tester-proj-a');
 utime time - 100, time - 100, $proj_a->child('a1.jsonl')->to_string or die "a1.jsonl: $!";
 utime time,       time,       $proj_a->child('a2.jsonl')->to_string or die "a2.jsonl: $!";
 
@@ -65,5 +74,8 @@ subtest 'pid is a number on the wire' => sub {
       "$name: a number in the structured content";
   }
 };
+
+my %now = map { ("$_" => (stat $_)[9]) } @{$fixtures->list_tree};
+is_deeply \%now, \%mtime, 'the fixtures in the checkout keep their mtimes';
 
 done_testing;
