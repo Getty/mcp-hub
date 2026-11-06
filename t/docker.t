@@ -80,10 +80,28 @@ sub fail_with ($fake, $match, %res) {
   $file->spew(encode_json($rules));
 }
 
-sub records ($fake) {
+# The containers that exist. A record is written by rename, so it is always
+# whole -- but `rm` unlinks it, and the hub removes containers while a test
+# lists them. A record gone between the listing and the read is a container
+# removed meanwhile: it is not in the snapshot, like one removed a moment
+# earlier. $between runs after the listing, before the reads -- a hook for
+# exactly that gap.
+sub records ($fake, $between = undef) {
   my $dir = $fake->{state}->child('containers');
   return [] unless -d $dir;
-  return [map { decode_json($_->slurp) } sort { "$a" cmp "$b" } $dir->list->grep(qr/\.json$/)->each];
+  my @files = sort { "$a" cmp "$b" } $dir->list->grep(qr/\.json$/)->each;
+  $between->(@files) if $between;
+  my @records;
+  for my $file (@files) {
+    my $fh;
+    unless (open $fh, '<', "$file") {
+      next if $!{ENOENT};
+      die "Can't open file $file: $!";
+    }
+    local $/;
+    push @records, decode_json(scalar <$fh>);
+  }
+  return \@records;
 }
 
 sub running ($fake) { return [grep { $_->{state} eq 'running' } @{records($fake)}] }
@@ -157,6 +175,16 @@ my %IMAGES = (
 );
 
 # --- docker: stdio ---------------------------------------------------------
+
+subtest 'records() snapshots the containers that exist, whatever is removed while it reads' => sub {
+  my $fake = fake_docker();
+  put_record($fake, {id => $_, state => 'running'}) for qw(aaa bbb ccc);
+  is_deeply [map { $_->{id} } @{records($fake)}], [qw(aaa bbb ccc)], 'control: all three are listed';
+
+  my $snap = records($fake, sub (@files) { $fake->{state}->child('containers', 'bbb.json')->remove });
+  is_deeply [map { $_->{id} } @$snap], [qw(aaa ccc)], 'a record removed between listing and reading is not in the snapshot';
+  is_deeply [map { $_->{id} } @{records($fake)}], [qw(aaa ccc)], 'and it is gone for the next snapshot as well';
+};
 
 subtest 'a stdio container: the docker run, the secret, idle stop' => sub {
   my $fake = fake_docker(images => \%IMAGES);
