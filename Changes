@@ -292,3 +292,6 @@ Revision history for MCP-Hub
   - A forked class whose prompts/list or resources/list answers with an
     error is listed with none, as any other upstream, instead of failing
     the entry; an error on its tools/list still fails it.
+  - A stdio, forked-class or Docker-stdio start that a stop calls off (say,
+    a reload that replaces a starting entry) is logged at debug, no longer
+    as an error 'handshake failed'.

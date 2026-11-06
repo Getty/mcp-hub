@@ -236,9 +236,14 @@ subtest 'a stop during the start is no failed start' => sub {
   # start takes for an empty list when they are not answered. The request is
   # not sent and the start fails as stopped, at once; it is not counted toward
   # the crash loop, and the child is left to the stop: it ends on its EOF,
-  # never signalled.
+  # never signalled. Nor is it logged as a failure: it was logged at error,
+  # "handshake failed: upstream echo: stopped", where the Http transport logs
+  # it at debug -- a reload that replaces a starting entry wrote an error line
+  # for something that is no failure.
   for my $at ('tools/list', 'prompts/list') {
     my ($up, $signals) = upstream('--eof-delay=1');
+    my @logged;
+    $up->log(log_to(\@logged)->level('debug'));
     $up->fail_window(60);
     $up->request_timeout(30);
     my $t0;
@@ -261,7 +266,28 @@ subtest 'a stop during the start is no failed start' => sub {
       is_deeply [grep { $_->[1] == $pid } @KILLS], [], "$at, attempt $n: unsignalled";
     }
     is $up->state, 'stopped', "$at: none of the stops counted";
+    is_deeply [grep { !/^(?:trace|debug|info) / } @logged], [], "$at: nothing logged as a failure"
+      or diag explain \@logged;
+    is scalar(grep { $_ eq 'debug [echo] start called off by a stop' } @logged), 3,
+      "$at: each start the stop called off is logged at debug, as such";
   }
+};
+
+subtest 'a start that fails on its own is logged as the failure it is' => sub {
+  # The other side of the stop during the start: a child that is gone before
+  # it answers its initialize -- no stop asked for -- fails the start, at error.
+  my @logged;
+  my $up = MCP::Hub::Upstream::Stdio->new(
+    name      => 'gone',
+    config    => {type => 'stdio', command => $^X, args => ['-e', 'exit 3']},
+    cache_dir => tempdir->to_string,
+    log       => log_to(\@logged)->level('debug'),
+  );
+  my $r = await_bounded($up->start_p, 20);
+  is ref $r eq 'HASH' ? $r->{err} : 'ready', 'upstream gone: exited (code 3)', 'the start fails with the exit';
+  is_deeply [grep {/^error /} @logged], ['error [gone] handshake failed: upstream gone: exited (code 3)'],
+    'logged at error' or diag explain \@logged;
+  ok !(grep {/called off/} @logged), 'not as called off by a stop';
 };
 
 subtest 'a child reaped before its grace is over gets no signal' => sub {

@@ -51,7 +51,9 @@ Was das Kind nicht mehr erreicht (`_refused`: kein Stream — Kind weg oder stdo
 oder EOF geschickt), geht nicht raus und scheitert sofort als `upstream NAME: not
 connected` bzw. `stopped`, statt den Request-Timeout abzuwarten. Ein Stop während des
 Starts lässt ihn sofort als `stopped` scheitern — nicht gezählt, das Kind bleibt dem Stop
-(kein Signal, wenn es auf EOF endet).
+(kein Signal, wenn es auf EOF endet), geloggt auf debug (`start called off by a stop`, wie
+Http), nie als `handshake failed` auf error; Kriterium ist `$child->{eof}`. Fork und
+Docker-stdio erben das mit `start_p`.
 
 Ein Refresh (`refresh_p`, nur bei `ready` mit pid) ist an das Kind gebunden, auf dem er
 begann: `_list_all_p(0, $self->{child})` reicht es als `$on` bis `_request_p`, und jeder
