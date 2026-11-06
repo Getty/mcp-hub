@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T03:41:59Z
+id: 80
+priority: low
+status: backlog
+tags:
+- style
+- conventions
+title: 'House-style conflict: bare private subs in classes vs getty-perl-core''s methods
+  rule'
+updated: 2026-11-06T03:41:59Z
+---
+
+Noted by mcp-hub-worker during k69 (2026-11-06). getty-perl-core says helpers in a class are methods, but Aggregate (_wrap_tool, _listed_extra, _join_sections), Facade::Server (_merge) and Auth (_bearer) use bare private subs. Workers match the file (engineering discipline 5). Maintainer call: convert to methods, or note the exception in mcp-hub-core / the shared skill.
