@@ -268,3 +268,6 @@ Revision history for MCP-Hub
     and tells the listeners they changed; it fails and the manifest stays.
     A prompts/list or resources/list the upstream answers with an error is
     still an empty list.
+  - Streamable HTTP: a request that finds the upstream stopped, with no
+    start after the stop, fails at once as stopped instead of going out
+    without a session id.

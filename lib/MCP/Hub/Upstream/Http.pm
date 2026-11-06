@@ -219,6 +219,11 @@ sub _notify ($self, $method, $params = {}) {
 # stop would cut it off, and it would keep no session from the stop's DELETE
 # (_http_send_p). A stop that calls the start off fails it as stopped.
 #
+# Such a request that finds the upstream stopped, with no start under way, is
+# not sent at all: it fails at once, as stopped. The stop has ended the session
+# and forgotten its id, and the request would go out with none -- the next page
+# of a refresh a stop overtook, say.
+#
 # A request that comes back 404 because the remote has ended its session
 # (_session_gone) is sent once more, on the new session -- not again after
 # that. The 404 says it did not run on the old one, so it does not run twice.
@@ -226,6 +231,7 @@ sub _notify ($self, $method, $params = {}) {
 sub _http_request_p ($self, $method, $params, $of_start, $again = 0) {
   return $self->{start_promise}->then(sub { $self->_http_request_p($method, $params, 0, $again) })
     if !$of_start && $self->{start_promise};
+  return Mojo::Promise->reject("upstream @{[$self->name]}: stopped") if !$of_start && $self->state eq 'stopped';
 
   my $renewed;
   return $self->_http_send_p($method, $params, $of_start, $again ? undef : \$renewed)->catch(sub ($err) {
@@ -738,7 +744,8 @@ finish: its answer comes on its own POST, and the remote may already be
 carrying it out. Nor does a call, or the next page of a refresh, go out in the
 middle of a start there: a request that comes upon a start under way, and is
 not one the start's handshake sends, waits for it and goes out on the session
-it opens, or fails with it.
+it opens, or fails with it. One that comes upon the upstream stopped, with no
+start after the stop, is not sent at all: it fails as C<upstream NAME: stopped>.
 
 Over Streamable HTTP a stop also ends the session. Once no call is left on it,
 one C<DELETE> to the endpoint with its C<Mcp-Session-Id> tells the remote that

@@ -1584,6 +1584,75 @@ subtest 'a refresh whose prompts/list goes unanswered keeps the manifest, an err
   }
 };
 
+subtest 'streamable http upstream: a refresh that finds the upstream stopped sends no next page' => sub {
+  # A refresh lists page by page. A stop between two of its pages, with no
+  # start after it, ends the session and forgets its id -- and the next page
+  # went out all the same, with no session id. The remote refused it and the
+  # refresh failed, but it should never have been sent. A request that is not
+  # a start's own and finds the upstream stopped fails at once, as stopped.
+  my %hold;    # what the remote holds back: the next such request waits for its promise
+  my $fake;
+  $fake = fake_http(answer => sub ($req) {
+    my ($id, $method) = ($req->{id}, $req->{method} // '');
+    my $cursor = $req->{params}{cursor};
+    return {http_status => 400} if $method ne 'initialize' && !defined $fake->{posts}[-1]{session};
+    my $result
+      = $method eq 'initialize'
+      ? {protocolVersion => '2025-06-18', capabilities => {}, serverInfo => {name => 'fake-http', version => '0.0.1'}}
+      : $method ne 'tools/list' ? {content => [{type => 'text', text => 'pong'}]}
+      : $cursor                 ? {tools => [{name => 'pong', inputSchema => {type => 'object'}}]}
+      :                           {tools => [{name => 'ping', inputSchema => {type => 'object'}}], nextCursor => 'p2'};
+    my $answer = {jsonrpc => '2.0', id => $id, result => $result};
+    my $held   = delete $hold{$cursor ? 'next page' : $method} or return $answer;
+    return $held->then(sub { $answer });
+  });
+  my $sent = sub {
+    return [map { "$_->{method}" . ($_->{params}{cursor} ? " $_->{params}{cursor}" : '') . ': ' . ($_->{session} // 'none') }
+      grep { ($_->{method} // '') ne 'notifications/initialized' } splice @{$fake->{posts}}];
+  };
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  my @logged;
+  my $log = Mojo::Log->new;
+  $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+  $up->log($log);
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  is_deeply $sent->(), ['initialize: none', 'tools/list: s1', 'tools/list p2: s1'], 'it lists page by page, on s1';
+
+  # A refresh, whose first page the remote holds back.
+  my $page = $hold{'tools/list'} = Mojo::Promise->new;
+  my $refreshed;
+  Mojo::IOLoop->next_tick(sub { $up->refresh_p->then(sub { $refreshed = 1 }) });
+  ok until_true(sub { @{$fake->{posts}} }), 'the refresh asks for its first page';
+  is_deeply $sent->(), ['tools/list: s1'], 'on s1';
+
+  # A stop, and no start after it. The first page comes back, and the stop's
+  # DELETE, which waited for it, ends s1.
+  _stop($up);
+  $page->resolve;
+  ok until_true(sub { $refreshed }), 'the refresh is over';
+  ok until_true(sub { @{$fake->{deletes}} }), 's1 is ended once the first page is through';
+  Mojo::Promise->timer(0.1)->wait;
+  is_deeply $sent->(), [], 'its next page never went out';
+  is_deeply $fake->{deletes}, ['s1'], 'no other session was ended';
+  is scalar(grep {/^debug: \[fake\] refresh failed: upstream fake: stopped$/} @logged), 1,
+    'it failed as stopped, at debug level'
+    or diag explain \@logged;
+  is_deeply [map { $_->name } @{$up->server->tools}], ['ping', 'pong'], 'the manifest is the one before';
+  is $up->state, 'stopped', 'the upstream is stopped';
+  is $up->error, undef,     'with no failure reason';
+  is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], 'nothing logged as a failure'
+    or diag explain \@logged;
+
+  weaken(my $gone = $up);
+  undef $up;
+  is $gone, undef, 'nothing holds the upstream';
+  $fake->{daemon}->stop;
+};
+
 subtest 'streamable http upstream: a start that fails, or that a stop calls off, ends the session it was given' => sub {
   # A start whose initialize was answered with a session id, and which failed
   # after that, left the session open on the remote until its own timeout. So
