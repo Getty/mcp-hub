@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T07:49:57Z
+id: 111
+priority: low
+status: backlog
+tags:
+- native
+- decision
+title: 'Decide: should list_running_sessions'' last_prompt skip user lines that hold
+  only a tool result?'
+updated: 2026-11-06T07:49:57Z
+---
+
+Found during k103. ClaudeSessions reports last_prompt = "" when the last user-typed line of a session holds only a tool_result (Claude Code writes tool results as type=user). t/native/claude-sessions-tail.t asserts this existing behaviour. Arguably the "most recent user prompt" should be the last user line with text. Product question for the maintainer; if yes, the head/tail scan keeps looking past text-less user lines.
