@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T19:15:08Z
+created: 2026-11-06T17:32:12Z
+id: 147
+priority: low
+started: 2026-11-06T17:54:58Z
+status: done
+tags:
+- http
+- sse
+- upstream
+- drift
+title: HTTP transports send no notifications/cancelled for a request they time out
+updated: 2026-11-06T19:15:14Z
+---
+
+Found by mcp-hub-worker during k144 (2026-11-06).
+Stdio sends notifications/cancelled {requestId} when a request times out (Stdio::_request_p, around line 211; POD "Lifecycle"), so the child can drop work the hub gave up on. Neither HTTP transport does: a Streamable HTTP POST that hits request_timeout, or an HTTP+SSE request whose timer fires, is rejected locally and the remote keeps working on it -- a long tool call keeps the remote busy after the agent already got "timed out".
+Done when: both HTTP transports send notifications/cancelled for a request they time out (Streamable HTTP: a POST with the session id; SSE: a POST to the endpoint), not for initialize (MCP spec: initialize must not be cancelled), nothing when the upstream is stopped; tests in t/http.t red on HEAD.
+
+Done (mcp-hub-worker): new Http::_cancel sends notifications/cancelled {requestId, reason} for a timed-out request. Streamable HTTP: on Mojo's 'Request timeout' or 'Inactivity timeout', as a POST on the session the request went out on. SSE: from the request timer, as a POST to the endpoint. Never for initialize, never unless ready/starting, never off the session or stream; fire-and-forget. Worker's choices: cancel on Inactivity timeout too (see k150), detection by Mojo's message text, a start's own tools/list is cancelled too, a stateless remote still gets it. 3 subtests in t/http.t, red 16/52 assertions on HEAD; mutants (no initialize guard, no session check) caught. Found on the way: k150, k151, k152, k153; k89 noted. Not committed.
+
+Committed as 932579d
