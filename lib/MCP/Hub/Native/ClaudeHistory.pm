@@ -123,21 +123,36 @@ sub search_conversations ($self, $args) {
   my $needle = lc $query;
   my $skip   = _raw_skip($needle);
 
+  # Up to $want matches of one file, in file order.
+  my $match = sub ($rec, $found, $want) {
+    return if @$found >= $want;
+    my $role = $rec->{type} // '';
+    return unless ($role eq 'user' || $role eq 'assistant') && $roles{$role};
+    my $text = _text($rec->{message}) // '';
+    return unless (my $pos = index(lc $text, $needle)) >= 0;
+    push @$found, {timestamp => $rec->{timestamp}, role => $role, snippet => _snippet($text, $pos, length $query)};
+  };
+
+  # A file whose metadata is out of date is read once, for the metadata and the
+  # matches together; on a cold cache that is every file.
+  my %found;
+  for my $file (map { _session_files($_) } $self->_project_dirs) {
+    my @found;
+    $found{"$file"} = \@found if $self->_refresh($file, $skip, sub ($rec) { $match->($rec, \@found, $limit) });
+  }
+
   my @hits;
   my $sessions = $self->list_sessions({project => $args->{project}, since => $args->{since}, until => $args->{until}, limit => 1e9});
   for my $session (@$sessions) {
     last if @hits >= $limit;
-    for my $entry (@{$self->_entries($session->{_file}, $skip)}) {
-      next unless $roles{$entry->{role}};
-      my $text = $entry->{text} // '';
-      next unless (my $pos = index(lc $text, $needle)) >= 0;
-      push @hits, {
-        session_id => $session->{session_id},
-        project    => $session->{project},
-        timestamp  => $entry->{timestamp},
-        role       => $entry->{role},
-        snippet    => _snippet($text, $pos, length $query),
-      };
+    my $found = $found{$session->{_file}};
+    unless ($found) {
+      $found = [];
+      my $want = $limit - @hits;
+      _each_record($session->{_file}, $skip, sub ($rec) { $match->($rec, $found, $want) });
+    }
+    for my $hit (@$found) {
+      push @hits, {session_id => $session->{session_id}, project => $session->{project}, %$hit};
       last if @hits >= $limit;
     }
   }
@@ -172,83 +187,139 @@ sub _project_dirs ($self) {
   return grep { -d $_ } @{$projects->list({dir => 1})->to_array};
 }
 
+sub _session_files ($dir) {
+  return grep { $_->basename =~ /\.jsonl$/ } @{$dir->list->to_array};
+}
+
 sub _sessions_in ($self, $dir) {
-  my @sessions;
-  for my $file (@{$dir->list->to_array}) {
-    next unless $file->basename =~ /\.jsonl$/;
-    push @sessions, $self->_meta($file);
-  }
-  return @sessions;
+  return map { $self->_meta($_) } _session_files($dir);
 }
 
 sub _meta ($self, $file) {
-  my @stat = stat "$file";
-  my $key  = "$stat[9]:$stat[7]";    # mtime:size
-  my $cached = $self->meta_cache->{"$file"};
-  return {%{$cached->{meta}}, _file => "$file"} if $cached && $cached->{key} eq $key;
-
-  my $meta = $self->_scan($file);
-  $self->meta_cache->{"$file"} = {key => $key, meta => $meta};
-  return {%$meta, _file => "$file"};
+  $self->_refresh($file);
+  return {%{$self->meta_cache->{"$file"}{meta}}, _file => "$file"};
 }
 
-sub _scan ($self, $file) {
-  my ($session_id, $project, $started, $last, $count, $first_prompt, $title, $branch);
-  for my $line (split /\n/, path($file)->slurp) {
-    next unless length $line;
-    my $rec = eval { decode_json($line) } or next;
+# Brings the cached metadata of $file up to date. The cache keeps the file's
+# device, inode, size and mtime, the offset after the last whole line read, and
+# the scan's state at that offset. A file that only grew is read from that
+# offset on; a new one, or one that shrank, was replaced (another inode) or
+# changed without growing, is read from the start. With $visit, a file that has
+# to be read at all is read from the start, and $visit sees every decoded line
+# of it -- lines before the offset only if the raw test $skip lets them
+# through. Returns whether the file was read.
+sub _refresh ($self, $file, $skip = undef, $visit = undef) {
+  my $old  = $self->meta_cache->{"$file"};
+  my $same = sub (@stat) { $old && @stat && $old->{dev} == $stat[0] && $old->{ino} == $stat[1] };
+  my @stat = stat "$file";
+  return 0 if $same->(@stat) && $old->{size} == $stat[7] && $old->{mtime} == $stat[9];
 
-    $session_id //= $rec->{sessionId};
-    $project    //= $rec->{cwd};
-    $branch     //= $rec->{gitBranch};
-    $started    //= $rec->{timestamp};
-    $last = $rec->{timestamp} if defined $rec->{timestamp};
-
-    my $type = $rec->{type} // '';
-    $title = $rec->{aiTitle} if $type eq 'ai-title';
-
-    if ($type eq 'user' || $type eq 'assistant') {
-      $count++;
-      $first_prompt //= _text($rec->{message}) if $type eq 'user';
+  # Whether the file only grew is decided on the handle read, not the path.
+  my $fh    = path($file)->open('<:raw');
+  my @fstat = stat $fh;
+  my $grown = $same->(@fstat) && $fstat[7] > $old->{size};
+  my $from  = $grown ? $old->{offset} : 0;
+  my %state = $grown ? %{$old->{state}} : ();
+  my $tail;
+  my ($offset, $size) = _lines($fh, $visit ? 0 : $from, sub ($line, $start, $whole) {
+    my $rec;
+    if ($start >= $from) {
+      $rec = eval { decode_json($line) } or return;
+      # An unterminated last line counts for now, but is read again next time.
+      if ($whole) { _absorb(\%state, $rec) }
+      else        { _absorb($tail = {%state}, $rec) }
     }
-  }
+    else {
+      return if $skip && $skip->($line);
+      $rec = eval { decode_json($line) } or return;
+    }
+    $visit->($rec) if $visit;
+  });
 
-  $project //= $self->_dir_to_path($file->dirname->basename);
+  @fstat = stat $fh;
+  $self->meta_cache->{"$file"} = {
+    dev    => $fstat[0],
+    ino    => $fstat[1],
+    size   => $size,
+    mtime  => $fstat[9],
+    offset => $offset,
+    state  => \%state,
+    meta   => $self->_summary($file, $tail // \%state),
+  };
+  return 1;
+}
+
+sub _absorb ($state, $rec) {
+  $state->{session_id} //= $rec->{sessionId};
+  $state->{project}    //= $rec->{cwd};
+  $state->{branch}     //= $rec->{gitBranch};
+  $state->{started}    //= $rec->{timestamp};
+  $state->{last} = $rec->{timestamp} if defined $rec->{timestamp};
+
+  my $type = $rec->{type} // '';
+  $state->{title} = $rec->{aiTitle} if $type eq 'ai-title';
+
+  if ($type eq 'user' || $type eq 'assistant') {
+    $state->{count}++;
+    $state->{first_prompt} //= _text($rec->{message}) if $type eq 'user';
+  }
+}
+
+sub _summary ($self, $file, $state) {
   return {
-    session_id    => $session_id // $file->basename =~ s/\.jsonl$//r,
-    project       => $project,
-    started_at    => $started,
-    last_activity => $last // $started,
-    messages      => $count // 0,
-    first_prompt  => $first_prompt,
-    title         => $title,
-    git_branch    => $branch,
+    session_id    => $state->{session_id} // $file->basename =~ s/\.jsonl$//r,
+    project       => $state->{project} // $self->_dir_to_path($file->dirname->basename),
+    started_at    => $state->{started},
+    last_activity => $state->{last} // $state->{started},
+    messages      => $state->{count} // 0,
+    first_prompt  => $state->{first_prompt},
+    title         => $state->{title},
+    git_branch    => $state->{branch},
   };
 }
 
-# With a raw test, a line is decoded only if its raw bytes could hold a match.
-sub _entries ($self, $file, $skip = undef) {
+sub _entries ($self, $file) {
   my @entries;
-  for my $line (split /\n/, path($file)->slurp) {
-    next unless length $line;
-    next if $skip && $skip->($line);
-    my $rec = eval { decode_json($line) } or next;
-    my $type = $rec->{type} // '';
-    next unless $type eq 'user' || $type eq 'assistant';
-    push @entries, {
-      uuid      => $rec->{uuid},
-      timestamp => $rec->{timestamp},
-      role      => $type,
-      text      => _text($rec->{message}),
-    };
-  }
+  _each_record($file, undef, sub ($rec) { my $entry = _entry($rec) or return; push @entries, $entry });
   return \@entries;
+}
+
+# Every decoded line of $file. With a raw test, a line is decoded only if its
+# raw bytes could hold a match.
+sub _each_record ($file, $skip, $cb) {
+  _lines(path($file)->open('<:raw'), 0, sub ($line, @) {
+    return if $skip && $skip->($line);
+    my $rec = eval { decode_json($line) } or return;
+    $cb->($rec);
+  });
+}
+
+sub _entry ($rec) {
+  my $type = $rec->{type} // '';
+  return undef unless $type eq 'user' || $type eq 'assistant';
+  return {uuid => $rec->{uuid}, timestamp => $rec->{timestamp}, role => $type, text => _text($rec->{message})};
+}
+
+# Calls $cb->($line, $start, $whole) for every non-empty line read from $fh
+# from byte $from on, one line in memory at a time; $whole is false for a last
+# line without its newline. Returns the offset after the last whole line and
+# the offset reached.
+sub _lines ($fh, $from, $cb) {
+  seek $fh, $from, 0 if $from;
+  my ($pos, $offset) = ($from, $from);
+  while (my $line = <$fh>) {
+    my $start = $pos;
+    $pos += length $line;
+    my $whole = chomp $line;
+    $offset = $pos if $whole;
+    $cb->($line, $start, $whole) if length $line;
+  }
+  return $offset, $pos;
 }
 
 sub _file_for_session ($self, $session_id) {
   for my $dir ($self->_project_dirs) {
-    for my $file (@{$dir->list->to_array}) {
-      next unless $file->basename =~ /\.jsonl$/;
+    for my $file (_session_files($dir)) {
       my $meta = $self->_meta($file);
       return $file if ($meta->{session_id} // '') eq $session_id;
     }
@@ -353,8 +424,12 @@ Code history MCP server, which today costs a ~120 MB node process per session.
 It reads the JSONL session files under C<$CLAUDE_CONFIG_DIR/projects> (or
 C<~/.claude/projects>) and offers four tools.
 
-Per-session metadata is cached in memory keyed by C<(mtime, size)>, so repeated
-listings do not re-read unchanged files.
+Session files are read a line at a time. Per-session metadata is cached in
+memory together with the file's device, inode, size, modification time and the
+offset its scan reached: an unchanged file is not read again, a file that grew
+is read only from that offset on, and a file that shrank, was replaced or was
+rewritten without growing is read again from the start. A search reads a file
+whose metadata is out of date only once, for both.
 
 =head2 Tools
 
