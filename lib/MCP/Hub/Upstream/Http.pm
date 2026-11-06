@@ -20,6 +20,11 @@ use Scalar::Util qw(weaken);
 use constant FAIL_THRESHOLD => 3;
 use constant FAIL_WINDOW    => 5;
 
+# How Mojo::UserAgent rejects a POST it cut off for its time: its request
+# timeout, or its inactivity timeout. The hub has given up on such a request,
+# and cancels it on the remote (_cancel).
+use constant TIMED_OUT => qr/^(?:Request|Inactivity) timeout\z/;
+
 # The streaming user agent for the long-lived SSE GET stream (no timeout).
 has ua => sub {
   my $ua = Mojo::UserAgent->new;
@@ -209,6 +214,28 @@ sub _notify ($self, $method, $params = {}) {
   return $self->{transport} eq 'sse' ? $self->_sse_post($obj) : $self->_http_post($obj);
 }
 
+# A request the hub has given up on -- it timed out -- goes on on the remote:
+# neither the POST the hub cut off nor the answer it no longer waits for on the
+# stream tells the remote anything, and a disconnect is no cancellation (MCP
+# 2025-06-18, Cancellation and Streamable HTTP). So it is cancelled, as a stdio
+# child's is (MCP::Hub::Upstream::Stdio): a notifications/cancelled with the
+# id it went out with, and the reason it was rejected with. Never the
+# initialize, which a client must not cancel. Only while the upstream is still
+# on what the request went out on: not stopped, and over Streamable HTTP on its
+# session ($sent; undef for a remote that gives none), over HTTP+SSE with its
+# stream. A stop has ended the session, or ends it once its last call is
+# through. Sent and forgotten, as any notification: the request has failed
+# already, and a POST of it that fails changes nothing.
+sub _cancel ($self, $id, $method, $reason, $sent = undef) {
+  return $self if $method eq 'initialize';
+  return $self unless $self->state eq 'ready' || $self->state eq 'starting';
+  my $on = $self->{transport} eq 'sse' ? $self->{sse} && $self->{sse}{stream}
+    : defined $sent                    ? defined $self->{session_id} && $self->{session_id} eq $sent
+    :                                    !defined $self->{session_id};
+  $self->_notify('notifications/cancelled', {requestId => $id, reason => $reason}) if $on;
+  return $self;
+}
+
 # --- Streamable HTTP (single endpoint, response on the POST) ---------------
 
 # A request is one of a start's when the start's handshake sends it
@@ -287,8 +314,12 @@ sub _http_send_p ($self, $method, $params, $of_start, $renewed = undef) {
   # then, with its message alone ("Connection refused", "Request timeout"). One
   # the remote answers with a JSON-RPC error is rejected with that answer, which
   # reads the same (MCP::Hub::Upstream::_error_answer); an HTTP error status is
-  # no answer.
+  # no answer. One that timed out is cancelled on the remote as well (_cancel).
   my $fail = sub ($reason) { Mojo::Promise->reject("upstream @{[$self->name]}: $reason") };
+  my $lost = sub ($reason) {
+    $self->_cancel($id, $method, $reason, $sent) if $reason =~ TIMED_OUT;
+    return $fail->($reason);
+  };
   $self->req_ua->start_p($tx)->then(sub ($tx) {
     # Called off by a stop: the answer is turned away. An initialize the stop
     # found still connecting, or with its answer on the way, has opened a
@@ -322,7 +353,7 @@ sub _http_send_p ($self, $method, $params, $of_start, $renewed = undef) {
     return $fail->("no response for $method") unless ref $res eq 'HASH';
     return Mojo::Promise->reject($self->_error_answer($res->{error})) if $res->{error};
     return $res->{result} // {};
-  }, $fail)->then(
+  }, $lost)->then(
     sub ($result) { $settled->(); $done->resolve($result); return },
     sub ($err)    { $settled->(); $done->reject($err);     return },
   );
@@ -560,11 +591,14 @@ sub _sse_request_p ($self, $method, $params) {
   my $id      = ++$self->{id};
   my $promise = Mojo::Promise->new;
 
+  # One that times out is cancelled on the remote as well (_cancel).
   my $timer;
   if ((my $timeout = $self->request_timeout) > 0) {
     $timer = Mojo::IOLoop->timer($timeout => sub {
       my $pending = delete $self->{pending}{$id} or return;
-      $pending->{promise}->reject("upstream @{[$self->name]}: timed out after ${timeout}s");
+      my $why     = "timed out after ${timeout}s";
+      $self->_cancel($id, $method, $why);
+      $pending->{promise}->reject("upstream @{[$self->name]}: $why");
     });
   }
   $self->{pending}{$id} = {promise => $promise, timer => $timer};
@@ -767,6 +801,21 @@ its call: C<upstream NAME: Connection refused> (over HTTP+SSE C<upstream NAME:
 connect failed: Connection refused>), C<upstream NAME: Request timeout> for a
 POST that outlasts the request timeout, C<upstream NAME:> and the message of a
 JSON-RPC error the remote answers with.
+
+A request the hub times out is cancelled on the remote, as a stdio child's is:
+the remote would go on with it otherwise, as a dropped connection is no
+cancellation to it. Over Streamable HTTP that is a POST that outlasts the
+request timeout of L</req_ua>, or its inactivity timeout; over HTTP+SSE one
+whose answer has not come on the stream within
+L<MCP::Hub::Upstream/request_timeout>. The hub sends a
+C<notifications/cancelled> with the id the request went out with and the reason
+it failed with (C<Request timeout>, C<timed out after 60s>), as it sends any
+notification: over Streamable HTTP on the session of the request, with its
+C<Mcp-Session-Id> and C<MCP-Protocol-Version>, over HTTP+SSE to the endpoint.
+Never for an C<initialize>, which a client may not cancel, and not once the
+upstream is stopped, or has left the session -- or the stream -- the request
+went out on. Nothing waits for it: the request has failed already, and a POST
+of it that fails changes nothing.
 
 Over HTTP+SSE every request is a POST whose answer comes on the stream. A POST
 the remote does not take -- an HTTP error status, no response, a refused

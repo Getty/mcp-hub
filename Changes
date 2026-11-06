@@ -301,3 +301,6 @@ Revision history for MCP-Hub
   - A stdio or forked-class start that a stop calls off now fails as
     'stopped' also when the child ends on its EOF before it answers, not as
     'exited'.
+  - An HTTP upstream sends notifications/cancelled for a request it times
+    out (Streamable HTTP request or inactivity timeout, HTTP+SSE request
+    timer), never for initialize.

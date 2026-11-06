@@ -2150,4 +2150,156 @@ subtest 'a warming fetch that cannot connect is failed, with the reason, until a
   $daemon2->stop;
 };
 
+# The notifications/cancelled among the POSTs a fake server received.
+sub cancels_on ($fake) { return [grep { ($_->{method} // '') eq 'notifications/cancelled' } @{$fake->{posts}}] }
+
+subtest 'streamable http upstream: a request it times out is cancelled on the remote' => sub {
+  # The hub gave up on it -- Mojo's request timeout, or its inactivity timeout,
+  # cut the POST off -- and nothing told the remote, which went on with it: a
+  # disconnect is no cancellation (MCP 2025-06-18, Streamable HTTP and
+  # Cancellation). A long tool call kept the remote busy after the agent read
+  # that it timed out. It is cancelled, as a stdio child's is: a
+  # notifications/cancelled with the id it went out with, and why, on its
+  # session and with the negotiated version, as any notification.
+  my $fake = fake_http(answer => pong_answer(sub ($req) {
+    return ($req->{params}{name} // '') eq 'hold' ? Mojo::Promise->new : undef;    # never answered
+  }));
+  for my $case (['Request timeout', 1, undef], ['Inactivity timeout', 5, 1]) {
+    my ($reason, $request_timeout, $inactivity) = @$case;
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'http', url => $fake->{url}, request_timeout => $request_timeout},
+      cache_dir => tempdir->to_string,
+    );
+    $up->log->level('fatal');
+    $up->req_ua->inactivity_timeout($inactivity) if $inactivity;
+    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$reason: started";
+    @{$fake->{posts}} = ();
+    is _error_text(_await_bounded($up->call_tool('hold', {}), 10)), "upstream fake: $reason", "$reason: the call times out";
+    my ($posted) = grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}};
+    ok until_true(sub { @{cancels_on($fake)} }), "$reason: and is cancelled";
+    my $cancels = cancels_on($fake);
+    is scalar @$cancels, 1, "$reason: once";
+    is_deeply $cancels->[0]{params}, {requestId => $posted->{id}, reason => $reason},
+      "$reason: by the id it went out with, and why" or diag explain $cancels;
+    ok !exists $cancels->[0]{id}, "$reason: as a notification";
+    is $cancels->[0]{session}, $posted->{session}, "$reason: on its session";
+    is $cancels->[0]{version}, '2025-06-18', "$reason: with the negotiated version";
+    is $up->state, 'ready', "$reason: the upstream stays ready";
+    is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', "$reason: and answers the next call";
+    _stop($up);
+  }
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: no cancellation for an initialize, nor once the upstream is stopped' => sub {
+  # The spec does not let a client cancel its initialize. A request of a start
+  # after it is cancelled like any other, and the session the start was given
+  # ended. A call left to finish past a stop has no session to be cancelled on
+  # any more: the stop ended it, or ends it once the call is through -- whether
+  # or not a start has opened the next session since.
+  my $hold   = '';
+  my $answer = pong_answer(sub ($req) { ($req->{params}{name} // '') eq 'hold' ? Mojo::Promise->new : undef });
+  my $fake   = fake_http(answer => sub ($req) { ($req->{method} // '') eq $hold ? Mojo::Promise->new : $answer->($req) });
+  my $up     = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 1},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  my $settle = sub { Mojo::Promise->timer(0.3)->wait };
+
+  $hold = 'initialize';
+  is _await_bounded($up->start_p, 5)->{err}, 'upstream fake: Request timeout', 'an initialize that times out fails the start';
+  $settle->();
+  is_deeply cancels_on($fake), [], 'and is not cancelled';
+
+  $hold = 'tools/list';
+  @{$fake->{posts}} = @{$fake->{deletes}} = ();
+  is _await_bounded($up->start_p, 5)->{err}, 'upstream fake: Request timeout', 'a tools/list that times out fails the start';
+  my ($listed) = grep { ($_->{method} // '') eq 'tools/list' } @{$fake->{posts}};
+  ok until_true(sub { @{cancels_on($fake)} }), 'and is cancelled';
+  is_deeply [map { [$_->{params}{requestId}, $_->{session}] } @{cancels_on($fake)}], [[$listed->{id}, $listed->{session}]],
+    'by its id, on the session of the start' or diag explain $fake->{posts};
+  ok until_true(sub { @{$fake->{deletes}} }), 'which is ended';
+
+  $hold = '';
+  for my $then ('stopped', 'started again') {
+    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$then: started";
+    @{$fake->{posts}} = @{$fake->{deletes}} = ();
+    my $call = $up->call_tool('hold', {});
+    ok until_true(sub { grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}} }), "$then: a call is on its way";
+    my ($posted) = grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}};
+    _stop($up);
+    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$then: a start after the stop"
+      if $then eq 'started again';
+    is _error_text(_await_bounded($call, 5)), 'upstream fake: Request timeout', "$then: the call left to finish times out";
+    ok until_true(sub { grep { $_ eq $posted->{session} } @{$fake->{deletes}} }), "$then: its session is ended once it is through";
+    $settle->();
+    is_deeply cancels_on($fake), [], "$then: and it is not cancelled" or diag explain cancels_on($fake);
+    _stop($up);
+  }
+  $fake->{daemon}->stop;
+};
+
+subtest 'sse upstream: a request it times out is cancelled on the remote' => sub {
+  # Its answer would come on the stream; the hub gave up on it -- its timer
+  # fired -- and the remote went on with it, as over Streamable HTTP. It is
+  # cancelled the same way, as a POST to the endpoint. Not an initialize, nor a
+  # request a stop failed: the stop took the stream and the endpoint with it.
+  my $hold = '';
+  my $handshake = mcp_answer('unused');
+  my $fake = fake_sse(answer => sub ($req) {
+    my $method = $req->{method} // '';
+    return undef if $method eq $hold;    # taken, never answered
+    return $handshake->($req) unless $method eq 'tools/call';
+    my $name = $req->{params}{name};
+    return undef if $name eq 'hold';
+    return {jsonrpc => '2.0', id => $req->{id}, result => {content => [{type => 'text', text => "pong $name"}]}};
+  });
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 1},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  my $settle = sub ($seconds = 0.3) { Mojo::Promise->timer($seconds)->wait };
+
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  @{$fake->{posts}} = ();
+  is _error_text(_await_bounded($up->call_tool('hold', {}), 5)), 'upstream fake: timed out after 1s', 'a call times out';
+  my ($posted) = grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}};
+  ok until_true(sub { @{cancels_on($fake)} }), 'and is cancelled';
+  my $cancels = cancels_on($fake);
+  is_deeply [map { $_->{params} } @$cancels], [{requestId => $posted->{id}, reason => 'timed out after 1s'}],
+    'once, by the id it went out with, and why' or diag explain $cancels;
+  ok !exists $cancels->[0]{id}, 'as a notification';
+  is $up->state, 'ready', 'the upstream stays ready';
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong ping', 'and answers the next call';
+
+  @{$fake->{posts}} = ();
+  my $call = $up->call_tool('hold', {});
+  ok until_true(sub { grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}} }), 'another call is on its way';
+  _stop($up);
+  is _error_text(_await_bounded($call, 5)), 'upstream fake: stopped', 'a stop fails it';
+  $settle->(1.3);
+  is_deeply cancels_on($fake), [], 'it is not cancelled, not even once its time is up';
+
+  @{$fake->{posts}} = ();
+  $hold = 'initialize';
+  is _await_bounded($up->start_p, 5)->{err}, 'upstream fake: timed out after 1s', 'an initialize that times out fails the start';
+  $settle->();
+  is_deeply cancels_on($fake), [], 'and is not cancelled';
+
+  @{$fake->{posts}} = ();
+  $hold = 'tools/list';
+  is _await_bounded($up->start_p, 5)->{err}, 'upstream fake: timed out after 1s', 'a tools/list that times out fails the start';
+  my ($listed) = grep { ($_->{method} // '') eq 'tools/list' } @{$fake->{posts}};
+  ok until_true(sub { @{cancels_on($fake)} }), 'and is cancelled';
+  is_deeply [map { $_->{params}{requestId} } @{cancels_on($fake)}], [$listed->{id}], 'by its id';
+
+  $up->stop;
+  $fake->{daemon}->stop;
+};
+
 done_testing;

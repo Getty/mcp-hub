@@ -87,6 +87,18 @@ wie der einer Notification, wird nur auf debug geloggt. Der Callback hält den U
 schwach. Zur Connect-Failure-Loop zählt ein gescheiterter POST nur über den gescheiterten
 Start, wie jeder andere.
 
+Einen Request, den der Hub per Timeout aufgibt, sagt er auf der Gegenseite ab wie beim
+stdio-Kind — ein Verbindungsabbruch ist laut Spec keine Absage, der Remote arbeitete sonst
+weiter: Streamable HTTP, wenn `req_ua` den POST mit `Request timeout` oder `Inactivity
+timeout` abbricht (Mojos Meldungen, `TIMED_OUT`); SSE, wenn sein Timer feuert. `_cancel`
+schickt `notifications/cancelled` mit der id, mit der er rausging, und dem Grund seiner
+Ablehnung als `reason`, wie jede Notification (Streamable HTTP mit Session-Id und
+ausgehandelter Version, SSE an den Endpoint). Nie für `initialize` (Spec); nichts, wenn der
+Upstream nicht `ready`/`starting` ist oder nicht mehr auf der Session des Requests (`$sent`)
+bzw. seinem Stream sitzt — ein Stop hat die Session beendet oder beendet sie nach dem
+letzten Call. Fire-and-forget: der Request ist schon abgelehnt; ein gescheiterter POST
+ändert nichts (SSE loggt ihn auf debug).
+
 Streamable-HTTP-Sessions: jeder Start öffnet eine **neue** Session — sein `initialize`
 trägt weder Session-Id noch `MCP-Protocol-Version`, die Id kommt nur aus dessen Antwort
 (`Mcp-Session-Id`), spätere Requests tragen Id und ausgehandelte Version. Ein Stop
