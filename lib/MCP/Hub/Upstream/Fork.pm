@@ -346,7 +346,10 @@ C<failed> until a refresh, a refresh that forks and handshakes -- all inherited
 unchanged. A failed worker leaves C<tools/list> answering from the facade, while
 a C<tools/call> reports the failure and the refresh hint. One request at a time,
 as with any stdio child; the next call forks from the hub as it is then, which
-also undoes the worker's copy-on-write growth.
+also undoes the worker's copy-on-write growth. A stop is the end of the
+worker's input: a worker that finishes the call it is in within two seconds
+exits on its own and is never signalled; one still busy after that gets
+C<SIGTERM>.
 
 =back
 

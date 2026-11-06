@@ -507,7 +507,7 @@ Terminate the upstream. A no-op for Perl upstreams.
 
 Resolves once what L</stop> set in motion is over: immediately for an upstream
 that holds no process; for a stdio child or a forked worker once it has exited,
-which it is given up to five seconds for (see
+which it is given up to seven seconds for (see
 L<MCP::Hub::Upstream::Stdio/Lifecycle>); for a Docker one once the C<docker>
 CLI has stopped and removed its container. The daemon waits for it on shutdown.
 

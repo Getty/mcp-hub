@@ -137,7 +137,9 @@ subtest 'a crash loop ends in failed, a refresh brings the worker back' => sub {
   is text($c->call_tool('echo', {msg => 'back'})), 'back', 'and answering';
 };
 
-subtest 'stop does not wait for a call in flight' => sub {
+subtest 'a stop gives a call in flight the grace, not the time it would take' => sub {
+  # The worker reads its EOF only once the call is done: it is still busy when
+  # the two seconds are over, and SIGTERM ends it.
   my $up = $up{stopper};
   my $p  = call_p($t, '/stopper', 'sleep', {seconds => 5});
   my ($result, $error);
@@ -149,12 +151,39 @@ subtest 'stop does not wait for a call in flight' => sub {
 
   my $start = time;
   $up->stop;
-  ok wait_until(sub { !kill 0, $pid }, 4), 'the worker is gone';
+  ok wait_until(sub { !kill 0, $pid }, 10), 'the worker is gone';
   my $took = time - $start;
-  cmp_ok $took, '<', 1, sprintf 'in under a second (%.2fs)', $took;
+  cmp_ok $took, '>=', $up->EOF_GRACE - 0.1, sprintf 'once the grace was over (%.2fs)', $took;
+  cmp_ok $took, '<', 4, 'not once the call was done';
   ok wait_until(sub { $up->state eq 'stopped' }), 'and the upstream is stopped';
   is $up->stats->{pid}, undef, 'with no pid';
   ok wait_until(sub { $result || $error }), 'the call in flight was answered, not left hanging';
+};
+
+subtest 'a call that ends within the grace is finished, and the worker not signalled' => sub {
+  my $up = $up{stopper};
+  my %status;
+  no warnings 'redefine';
+  my $on_exit = \&MCP::Hub::Upstream::Stdio::_on_exit;
+  local *MCP::Hub::Upstream::Stdio::_on_exit = sub {
+    my ($self, $status) = @_;
+    $status{$self->{pid}} = $status if $self->{pid};
+    goto &$on_exit;
+  };
+  my ($result, $error);
+  call_p($t, '/stopper', 'sleep', {seconds => 0.5})->then(sub { $result = shift }, sub { $error = shift });
+  ok wait_until(sub { $up->state eq 'ready' && $up->stats->{pid} }), 'the worker runs the call';
+  my $pid = $up->stats->{pid};
+  Mojo::Promise->timer(0.2)->wait;    # the call has reached the worker
+
+  my $start = time;
+  $up->stop;
+  ok wait_until(sub { exists $status{$pid} }, 10), 'the worker is gone after the stop';
+  my $took = time - $start;
+  cmp_ok $took, '<', $up->EOF_GRACE, sprintf 'within the grace (%.2fs)', $took;
+  is MCP::Hub::Upstream::Stdio::_exit_reason($status{$pid}), 'code 0', 'having exited on its own, not on a signal';
+  ok wait_until(sub { $result || $error }), 'the call is answered';
+  is text($result // {}), 'slept 0.5', 'by the worker, done with it' or diag explain $result // $error;
 };
 
 subtest 'a blocking tool in a worker does not stall the hub' => sub {

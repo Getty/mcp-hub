@@ -243,3 +243,6 @@ Revision history for MCP-Hub
     array no longer breaks finding, filtering or ordering that session: the
     next line's value is used, a number counts as its string, and a
     `tool_use` with an empty name renders as `[tool_use]`.
+  - A stop -- idle, reload or shutdown -- closes a stdio server's or forked
+    worker's stdin and gives it two seconds to exit on its own; only one
+    still running then gets SIGTERM, and SIGKILL five seconds later.

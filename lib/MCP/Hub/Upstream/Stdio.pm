@@ -16,7 +16,11 @@ use Socket qw(AF_UNIX SOCK_STREAM PF_UNSPEC);
 # ABSTRACT: A stdio MCP child process mounted as an upstream
 
 use constant MAX_LINE_BUFFER => 16 * 1024 * 1024;
-use constant KILL_GRACE      => 5;
+
+# A stop closes the child's stdin and waits EOF_GRACE seconds for it to exit
+# on its own, then sends SIGTERM, and SIGKILL KILL_GRACE seconds after that.
+use constant EOF_GRACE  => 2;
+use constant KILL_GRACE => 5;
 
 has cache_dir    => sub ($self) { $self->hub ? $self->hub->hub_config->cache_dir : '.' };
 
@@ -108,19 +112,26 @@ sub start_p ($self) {
   return $done;
 }
 
+# End of input first: a stdio server exits on EOF, and one that does is never
+# signalled -- whatever it is in the middle of, a git commit say, it gets to
+# finish. One still there EOF_GRACE seconds later gets SIGTERM, then SIGKILL.
+# A stop already under way is neither started over nor hurried, and a child
+# being killed needs none.
 sub stop ($self) {
-  return $self unless my $pid = $self->{pid};
+  return $self unless $self->{pid};
+  my $child = $self->{child};
   $self->{stopping} = 1;
   $self->_clear_idle_timer;
+  return $self if $child->{stop} || $child->{killed};
   shutdown($self->{socket}, 1) if $self->{socket};    # SHUT_WR -> EOF on child stdin
-  kill 'TERM', $pid unless $self->{child}{reaped};
-  $self->{kill_timer} = Mojo::IOLoop->timer(KILL_GRACE, sub { $self->_kill_now if ($self->{pid} // 0) == $pid });
+  $child->{eof}  = 1;
+  $child->{stop} = Mojo::IOLoop->timer(EOF_GRACE, sub { $self->_terminate($child) });
   return $self;
 }
 
-# Resolves once the child is gone -- after a stop, within KILL_GRACE seconds.
-# A shutdown waits for it: the hub must not exit while a child it stopped is
-# still to be reaped, or killed.
+# Resolves once the child is gone -- after a stop, within EOF_GRACE and
+# KILL_GRACE seconds. A shutdown waits for it: a child that stays on after its
+# EOF is still to be signalled, by this loop.
 sub stopped_p ($self) {
   return Mojo::Promise->resolve($self) unless $self->{pid};
   return $self->_gone_p->then(sub { $self });
@@ -178,6 +189,10 @@ sub _notify ($self, $method, $params = {}) {
 
 sub _send ($self, $obj) {
   my $stream = $self->{stream} or return undef;
+
+  # Not to a child that has been sent EOF: the write would fail, and the error
+  # close the socket -- with whatever the child still has to say unread.
+  return undef if $self->{child} && $self->{child}{eof};
   $stream->write(encode_json($obj) . "\n");
   return 1;
 }
@@ -297,7 +312,7 @@ sub _on_close ($self) {
   return $self if $child->{reaped} || $self->{stopping};
 
   # A child that has closed its stdout but lives on can never answer again.
-  # It gets the grace a stop gives, then it is killed.
+  # It gets the grace a stop gives after its SIGTERM, then it is killed.
   $child->{linger} = Mojo::IOLoop->timer(KILL_GRACE, sub {
     return if $child->{reaped} || ($self->{pid} // 0) != $pid;
     $self->log->warn("[@{[$self->name]}] closed its stdout @{[KILL_GRACE]}s ago and still runs, killing it");
@@ -330,8 +345,8 @@ sub _on_exit ($self, $status) {
   $self->_drain_stderr;
 
   my $child = delete $self->{child} // {};
-  Mojo::IOLoop->remove($_) for grep {defined} $self->{kill_timer}, $child->{linger};
-  delete @{$self}{qw(kill_timer stream err_stream socket pid)};
+  Mojo::IOLoop->remove($_) for grep {defined} @{$child}{qw(stop linger)};
+  delete @{$self}{qw(stream err_stream socket pid)};
   $self->stats->{pid} = undef;
 
   # The reason the requests it leaves unanswered fail with -- a failed start's
@@ -433,10 +448,22 @@ sub _attach ($self, $pid, $parent, $err_r) {
   return $pid;
 }
 
+# The child did not exit on EOF: SIGTERM, and SIGKILL if that does not end it
+# either. A child reaped already gets no signal -- its pid may be another
+# process's by now.
+sub _terminate ($self, $child) {
+  return $self unless $self->{child} && $self->{child} == $child;
+  kill 'TERM', $self->{pid} unless $child->{reaped};
+  $child->{stop} = Mojo::IOLoop->timer(KILL_GRACE, sub {
+    $self->_kill_now if $self->{child} && $self->{child} == $child;
+  });
+  return $self;
+}
+
 sub _kill_now ($self) {
   $self->_clear_idle_timer;
-  Mojo::IOLoop->remove($self->{kill_timer}) if $self->{kill_timer};
   my $child = $self->{child} or return $self;
+  Mojo::IOLoop->remove($child->{stop}) if $child->{stop};
   $child->{killed} = 1;
 
   # Reaped already, a process it started holding its socket: there is no pid
@@ -530,14 +557,16 @@ C<tools/call>, C<prompts/get> or C<resources/read>. It is stopped again after
 L</idle_timeout> seconds of no requests (unless
 L<MCP::Hub::Upstream/always_on>), and restarted on the next call.
 
-A stop closes the child's stdin and sends it C<SIGTERM>, and C<SIGKILL> five
-seconds later; a call that comes in meanwhile waits for it to be gone and starts
-the next child. The hub runs one child at a time. A child that closes its stdout
-but goes on running can never answer again, and is killed after the same five
-seconds. L<MCP::Hub::Upstream/stopped_p> resolves once the child is gone, and
-the daemon waits for that on shutdown. Its exit status is collected without
-blocking the event loop, under L<Mojo::Reactor::EV> too
-(L<MCP::Hub::Child/watch_exit>).
+A stop closes the child's stdin and gives it two seconds to exit on its own, as
+a stdio server does at the end of its input. A child that does is never sent a
+signal, so whatever it was in the middle of -- a git commit, say -- is finished.
+One that is still there gets C<SIGTERM>, and C<SIGKILL> five seconds after that.
+A call that comes in meanwhile waits for it to be gone and starts the next
+child: the hub runs one child at a time. L<MCP::Hub::Upstream/stopped_p>
+resolves once it is gone, and the daemon waits for that on shutdown. A child
+that closes its stdout but goes on running can never answer again, and is
+killed after five seconds. Its exit status is collected without blocking the
+event loop, under L<Mojo::Reactor::EV> too (L<MCP::Hub::Child/watch_exit>).
 
 Three exits within five seconds mark it C<failed>, with the reason in
 L<MCP::Hub::Upstream/error>. A failed upstream stays failed until it is

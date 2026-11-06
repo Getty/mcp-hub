@@ -31,7 +31,28 @@ my $server = EchoServer->new;
 my ($HTTP) = map { /^--http=(\d+)$/ ? $1 : () } @ARGV;
 if (defined $HTTP) { _serve_http($server, $HTTP); exit 0 }
 
+# How it ends, for the tests of a stop (t/stdio-stop.t): --signals=FILE writes
+# a line "TERM <epoch seconds>" to FILE for every SIGTERM, and exits on it --
+# unless --ignore-term. At the end of its input it exits, like any stdio
+# server; --eof-delay=SECONDS takes that long first (finishing a commit, say),
+# --ignore-eof does not, and goes on until a signal ends it -- or a minute is
+# over: the orphan of a test that failed half-way ends all the same.
+my ($SIGNALS)   = map { /^--signals=(.+)$/       ? $1 : () } @ARGV;
+my ($EOF_DELAY) = map { /^--eof-delay=([\d.]+)$/ ? $1 : () } @ARGV;
+if (defined $SIGNALS) {
+  my $ignore = grep { $_ eq '--ignore-term' } @ARGV;
+  $SIG{TERM} = sub {
+    require Time::HiRes;
+    open my $fh, '>>', $SIGNALS or die "$SIGNALS: $!\n";
+    printf $fh "TERM %.3f\n", Time::HiRes::time();
+    close $fh;
+    exit 0 unless $ignore;
+  };
+}
+
 $server->to_stdio;
+select undef, undef, undef, $EOF_DELAY if $EOF_DELAY;
+if (grep { $_ eq '--ignore-eof' } @ARGV) { sleep 1 for 1 .. 60 }
 
 sub _serve_http ($server, $port) {
   require Mojolicious;

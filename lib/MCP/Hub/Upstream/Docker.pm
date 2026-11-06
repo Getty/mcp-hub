@@ -592,8 +592,10 @@ did not start makes the start fail with Docker's "already in use". C<env> values
 reach the container as bare C<-e KEY>, through the environment of the C<docker>
 process, never on a command line.
 
-A stop closes a stdio container's stdin and stops its CLI, then removes the
-container in case the CLI was killed first; an HTTP container is stopped
+A stop closes a stdio container's stdin -- the container gets EOF -- and gives
+it two seconds to exit before its CLI gets C<SIGTERM> (and C<SIGKILL> five
+seconds later, as any stdio child, see L<MCP::Hub::Upstream::Stdio/Lifecycle>),
+then removes the container in case the CLI was killed first; an HTTP container is stopped
 (C<docker stop -t 5>) and removed -- by its labels, when C<docker run -d> never
 said its id. L</stopped_p> resolves once that is done -- the daemon waits for it
 on shutdown. A stop that arrives while the container starts, even during the
