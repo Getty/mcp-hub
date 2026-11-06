@@ -161,13 +161,20 @@ sub _record ($line) {
 # skipped, as MCP::Hub::Native::ClaudeHistory skips it. Content that is not an
 # array is the text itself, made into a string as ClaudeHistory makes it: a
 # string as it is, a number or boolean as its string, an object as no text;
-# null stays undef.
+# null stays undef. A block's text is made into a string as there too.
 sub _text ($message) {
   return '' unless ref $message eq 'HASH';
   my $content = $message->{content};
   return undef unless defined $content;
   return ref $content eq 'HASH' ? '' : "$content" unless ref $content eq 'ARRAY';
-  return join "\n", map { $_->{text} // '' } grep { ref $_ eq 'HASH' && ($_->{type} // '') eq 'text' } @$content;
+  return join "\n", map { _string($_->{text}) // '' } grep { ref $_ eq 'HASH' && ($_->{type} // '') eq 'text' } @$content;
+}
+
+# A text value as a string: a string as it is, a number or boolean as its
+# string; undef for null, an object or an array, which make no text.
+sub _string ($value) {
+  return undef if !defined $value || ref $value eq 'HASH' || ref $value eq 'ARRAY';
+  return "$value";
 }
 
 sub _json ($tool, $data) {

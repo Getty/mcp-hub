@@ -38,6 +38,15 @@ my @edge = (
   user('false'),                                           # a boolean, stringified "0"
   user('null'),                                            # no text
   user(q({"text":"hash(0x1) in an object"})),              # an object as content: no text
+  user(q([{"type":"text","text":{"k":1}}])),               # an object as block text: no text
+  assistant(q([{"type":"text","text":["array",1]}])),      # an array as block text: no text
+  assistant(q([{"type":"tool_use","id":"t4","name":{"n":"Bash"},"input":{}}])),    # "[tool_use]"
+  assistant(q([{"type":"tool_use","id":"t5","name":["x"],"input":{}}])),           # "[tool_use]"
+  assistant(q([{"type":"text","text":1e20}])),             # block text stringified "1e+20"
+  user('15e-1'),                                           # a number, stringified "1.5"
+  user('1e-7'),                                            # a number, stringified "1e-07"
+  user('1e999'),                                           # a number too large, stringified "Inf"
+  assistant(q([{"type":"tool_use","id":"t6","name":-1e999,"input":{}}])),          # "[tool_use -Inf]"
   user(q("path C:\\\\Users\\\\tester")),                 # escaped backslashes
   user(q("the needle is only in a field","x":"zanzibar")), # a raw hit that is no text hit
   '{"type":"user", not json zanzibar',
@@ -75,6 +84,8 @@ my @queries = (
   'kelvin', "\x{212A}elvin", 'taksi', 'i', 'use bash', '[tool_use bash]', 'bash]', 'e bash', 'tool_use',
   '[tool_result]', 'tool_result', '100000', '1', '42', '70000000', '3000', 'c:\\users', 'zanzibar', 'ZANZIBAR', 'quux', ' ', '',
   'nameless', '[tool_use]', 'tool_use]', 'e]', '0', 'null', 'hash(0x', 'hash', '0x1', 'in an object',
+  'array(0x', 'array', '(0x', '(', ')', 'x', 'y', 's', 'r', 'b', 'd', 'k', 'n', 'e+', '1e+20', '1.5', 'e-0',
+  'inf', '-inf', 'nan',
 );
 for my $q (@queries) {
   for my $roles (['user'], ['user', 'assistant']) {
@@ -90,7 +101,8 @@ subtest 'words that only match after decoding still match' => sub {
     ("$q" => scalar @{$h->search_conversations({query => $q, roles => [@roles ? @roles : 'user']})});
   } (['abc'], ['lib/mcp'], ['kelvin'], ['taksi'], ['café'], ['use bash', 'assistant'], ['[tool_result]'],
      ['100000'], ['42', 'assistant'], ['70000000', 'assistant'], ['3000', 'assistant'], ['zanzibar'],
-     ['nameless', 'assistant'], ['hash(0x']);
+     ['nameless', 'assistant'], ['hash(0x'], ['(0x', 'assistant'], ['1e+20', 'assistant'], ['1.5'], ['e-0'],
+     ['inf'], ['-inf', 'assistant']);
   is $count{abc},             1, 'an escaped ASCII letter';
   is $count{'lib/mcp'},       1, 'an escaped slash';
   is $count{kelvin},          2, 'KELVIN SIGN, raw and escaped';
@@ -104,7 +116,13 @@ subtest 'words that only match after decoding still match' => sub {
   is $count{3000},            1, 'a number as tool name, stringified';
   is $count{zanzibar},        1, 'a plain word, not the field-only or broken line';
   is $count{nameless},        1, 'next to a tool_use marker without a name';
-  is $count{'hash(0x'},       0, 'not an object as content, which is no text';
+  is $count{'hash(0x'},       0, 'not an object as content or block text, which is no text';
+  is $count{'(0x'},           0, 'not an object or array as block text or name, which is no text';
+  is $count{'1e+20'},         1, 'a number as block text, stringified with an exponent';
+  is $count{'1.5'},           1, 'a number stringified with a point';
+  is $count{'e-0'},           1, 'a number stringified with a negative exponent';
+  is $count{inf},             1, 'a number too large, stringified';
+  is $count{'-inf'},          1, 'a number too large as tool name, stringified';
 };
 
 subtest 'only candidate lines are decoded' => sub {

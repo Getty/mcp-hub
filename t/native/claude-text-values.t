@@ -48,7 +48,8 @@ subtest 'a tool_use block without a name' => sub {
   is_deeply \@warnings, [], 'reading it warns about nothing';
 };
 
-# Content that is not an array: [JSON, the text it is, what the case shows].
+# Content that is not an array, then an array of one text block whose text is
+# not a string: [JSON, the text it is, what the case shows].
 my @cases = (
   [q("a plain string"), 'a plain string', 'a string stays as it is'],
   [q("1e5"),            '1e5',            'a string that looks like a number too'],
@@ -61,6 +62,14 @@ my @cases = (
   [q({"text":"in an object"}), '',        'an object becomes no text'],
   [q({}),               '',               'an empty object too'],
   [q(null),             undef,            'null stays null'],
+  [q([{"type":"text","text":{"text":"in an object"}}]), '',         'an object as block text becomes no text'],
+  [q([{"type":"text","text":{}}]),                      '',         'an empty object too'],
+  [q([{"type":"text","text":["in an array"]}]),         '',         'an array too'],
+  [q([{"type":"text","text":[]}]),                      '',         'an empty array too'],
+  [q([{"type":"text","text":7e7}]),                     '70000000', 'a number becomes its string'],
+  [q([{"type":"text","text":true}]),                    '1',        'true becomes "1"'],
+  [q([{"type":"text","text":false}]),                   '0',        'false becomes "0"'],
+  [q([{"type":"text","text":null}]),                    '',         'null becomes no text'],
 );
 
 for my $case (@cases) {
@@ -86,6 +95,37 @@ for my $case (@cases) {
       is $s->list_running_sessions->[0]{last_prompt}, $text, 'ClaudeSessions makes the same text of it';
       like wire($s, 'list_running_sessions'), qr/"last_prompt":\Q$want\E[,}]/, 'and sends it so as last_prompt';
     }
+  };
+}
+
+# A tool_use block whose name is not a string: [JSON of the name, the marker it
+# renders as, what the case shows].
+my @names = (
+  [q({"name":"Bash"}), '[tool_use]',      'an object as name renders as a tool_use without one'],
+  [q({}),              '[tool_use]',      'an empty object too'],
+  [q(["Bash"]),        '[tool_use]',      'an array too'],
+  [q([]),              '[tool_use]',      'an empty array too'],
+  [q(3e3),             '[tool_use 3000]', 'a number as its string'],
+  [q(true),            '[tool_use 1]',    'true as "1"'],
+  [q(false),           '[tool_use 0]',    'false as "0"'],
+);
+
+for my $case (@names) {
+  my ($json, $marker, $name) = @$case;
+  subtest "tool_use name $json" => sub {
+    my @warnings;
+    local $SIG{__WARN__} = sub { push @warnings, @_ };
+    my $root = session(user(q("run it")),
+      assistant(qq([{"type":"text","text":"Running it"},{"type":"tool_use","id":"t1","name":$json,"input":{}}])));
+    my $h    = MCP::Hub::Native::ClaudeHistory->new(root => "$root");
+    my $args = {session_id => 'vals', roles => ['assistant']};
+    my $want = json("Running it\n$marker");
+
+    is_deeply [map { $_->{text} } @{$h->get_conversation($args)->{entries}}], ["Running it\n$marker"], $name;
+    like wire($h, 'get_conversation', $args), qr/"text":\Q$want\E[,}]/, 'get_conversation sends it so';
+    is_deeply [map { $_->{snippet} } @{$h->search_conversations({query => 'running', roles => ['assistant']})}],
+      ["Running it $marker"], 'and search_conversations finds it so';
+    is_deeply \@warnings, [], 'reading it warns about nothing';
   };
 }
 

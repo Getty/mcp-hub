@@ -14,10 +14,9 @@ has meta_cache => sub { {} };
 # Escapes that decode to a character a raw search needle can match: printable
 # ASCII, U+0130 and U+212A (see _raw_skip); and text, name and content values
 # that are not strings but that _text makes into one: a number or boolean, as
-# any of the three, into its string (1e5 is "100000", true "1"); an object or
-# array as text or name into "HASH(0x...)" or "ARRAY(0x...)". Null, and an
-# object as content, _text makes into no text; these tests let them through
-# all the same.
+# any of the three, into its string (1e5 is "100000", 1e999 "Inf", true "1").
+# Null and an object, as any of the three, and an array as text or name, _text
+# makes into no text; these tests let them through all the same.
 my $ESCAPE        = qr/\\u(?:00[2-7][0-9a-fA-F]|0130|212[aA])/;
 my $TEXT_VALUE    = qr/"text"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\x20\t\r\n]/;
 my $NAME_VALUE    = qr/"name"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\x20\t\r\n]/;
@@ -389,9 +388,9 @@ sub _file_for_session ($self, $session_id) {
 # it can decode to a match without holding the needle raw: an escaped printable
 # ASCII character, a slash escaped as \/ when the needle holds '/', KELVIN SIGN
 # (lowercase "k") or U+0130 (lowercase "i\x{307}") when it holds that letter,
-# or a non-string text, name or content value when the needle could be such a
-# value stringified (1e5 is "100000", true "1", an object as text or name
-# "HASH(0x...)").
+# or a non-string text, name or content value when the needle could be part of
+# a number or boolean stringified (1e5 is "100000", 1e20 "1e+20", 1e999 "Inf",
+# true "1"); an object or array becomes no text.
 sub _raw_skip ($needle) {
   return undef unless $needle =~ /\A[\x20-\x7e]+\z/ && $needle !~ /["\\\[\]]/;
   return undef if grep { index($needle, substr('[tool_use ', $_)) == 0 } 1 .. 9;
@@ -399,7 +398,7 @@ sub _raw_skip ($needle) {
   my $slash  = index($needle, '/') >= 0;
   my $kelvin = index($needle, 'k') >= 0;
   my $dot_i  = index($needle, 'i') >= 0;
-  my $scalar = $needle =~ /\A[0-9a-fhinrsxy().+\-]+\z/;
+  my $scalar = $needle =~ /\A[0-9efin.+\-]+\z/;
   return sub ($line) {
     return !(index(lc $line, $needle) >= 0
       || (index($line, '\\u') >= 0 && $line =~ $ESCAPE)
@@ -413,7 +412,8 @@ sub _raw_skip ($needle) {
 # A message's text. Content that is not an array is the text itself: a string
 # as it is, a number or boolean as its string, an object as no text; null stays
 # undef. Of an array, the text blocks and a marker for each tool_use block
-# ("[tool_use]" if it has no name) and tool_result block.
+# ("[tool_use]" if it has no name) and tool_result block; a block's text or
+# name is made into a string by _string.
 sub _text ($message) {
   return '' unless ref $message eq 'HASH';
   my $content = $message->{content};
@@ -424,11 +424,21 @@ sub _text ($message) {
   for my $block (@$content) {
     next unless ref $block eq 'HASH';
     my $type = $block->{type} // '';
-    if    ($type eq 'text')        { push @parts, $block->{text} // '' }
-    elsif ($type eq 'tool_use')    { push @parts, defined $block->{name} ? "[tool_use $block->{name}]" : '[tool_use]' }
+    if    ($type eq 'text')        { push @parts, _string($block->{text}) // '' }
+    elsif ($type eq 'tool_use')    {
+      my $name = _string($block->{name});
+      push @parts, defined $name ? "[tool_use $name]" : '[tool_use]';
+    }
     elsif ($type eq 'tool_result') { push @parts, '[tool_result]' }
   }
   return join "\n", @parts;
+}
+
+# A text or name value as a string: a string as it is, a number or boolean as
+# its string; undef for null, an object or an array, which make no text.
+sub _string ($value) {
+  return undef if !defined $value || ref $value eq 'HASH' || ref $value eq 'ARRAY';
+  return "$value";
 }
 
 sub _snippet ($text, $pos, $len) {
