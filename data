@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-06T03:51:31Z
+created: 2026-11-06T01:48:42Z
+id: 63
+priority: low
+started: 2026-11-06T03:09:36Z
+status: done
+tags:
+- cli
+- bug
+title: mcp-hub --config with no value sets an empty config path
+updated: 2026-11-06T03:51:36Z
+---
+
+Found by mcp-hub-worker during k31 (2026-11-06), predates it. 'mcp-hub --config' (or -c) as the last argument before nothing sets MCP_HUB_CONFIG to an empty string with only a perl warning. It should fail with 'option --config needs a PATH' and exit non-zero. Test in t/cli.t.
+
+Fixed in bin/mcp-hub: the global --config/-c/--config= loop now dies 'option --config needs a PATH' (or 'option -c ...', the form typed) when the PATH is missing or empty. Observed root cause differs slightly from the card: no perl warning on this perl; $ENV{MCP_HUB_CONFIG} = undef reads back undef in-process, so the hub silently fell back to the default config search (even over an exported $MCP_HUB_CONFIG), while exec'd children saw ''. --config= / --config '' gave an empty path: an empty hub with no 'no configuration file' warning. My call: empty values are refused too, not only a missing one. Regression subtest in t/cli.t (8 argv forms, 18/24 red before, green after). POD line in bin/mcp-hub. Tree commit-ready, not committed; snapshot + patch in the worker's scratch dir w-cli/k63*.
+
+Committed as c87a1db.
