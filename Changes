@@ -118,6 +118,8 @@ Revision history for MCP-Hub
   - mcp-hub refuses prefork, cgi and psgi, named or picked by PLACK_ENV or
     GATEWAY_INTERFACE, saying why and pointing at mcp-hub daemon; the command
     list no longer offers them or Mojolicious' generate/inflate/cpanify.
+  - hypnotoad bin/mcp-hub is refused like prefork, cgi and psgi, pointing at
+    mcp-hub daemon.
   - The global --config/-c is only read before the command name, so
     get -c JSON and daemon -c N keep their own -c.
   - mcp-hub --config (or -c) without a PATH, or with an empty one, is an error

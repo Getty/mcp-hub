@@ -101,8 +101,9 @@ Print a fresh random bearer token. See L<MCP::Hub::Command::token>.
 The L<Mojolicious> commands of the same names, run against the hub.
 
 C<prefork>, C<cgi> and C<psgi> are refused, and so is starting C<mcp-hub> as a
-CGI script or a PSGI app: the hub is one process that owns every upstream and
-all state, and C<mcp-hub daemon> is how it serves. See L<MCP::Hub::Commands>.
+CGI script or a PSGI app, or under hypnotoad (C<hypnotoad bin/mcp-hub>): the hub
+is one process that owns every upstream and all state, and C<mcp-hub daemon> is
+how it serves. See L<MCP::Hub::Commands>.
 
 =head1 SEE ALSO
 

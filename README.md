@@ -350,6 +350,9 @@ A global `--config PATH` (or `-c PATH`, or `$MCP_HUB_CONFIG`) selects the config
 file for every command. It goes before the command name (`mcp-hub -c PATH status`);
 after it, every option belongs to the command.
 
+The hub serves as one process, under `mcp-hub daemon`: the Mojolicious `prefork`,
+`cgi` and `psgi` commands are refused, and so is `hypnotoad bin/mcp-hub`.
+
 `status`, `refresh` and `reload` talk to the running daemon at the config's `listen`
 address (a wildcard such as `0.0.0.0` or `[::]` is reached over loopback, and
 listen options such as `?cert=…&key=…` are left out). If the

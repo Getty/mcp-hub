@@ -51,9 +51,19 @@ my %REFUSED = (
 # What makes Mojolicious::Commands->detect pick cgi or psgi over the command name.
 my %DETECTED_BY = (cgi => [qw(PATH_INFO GATEWAY_INTERFACE)], psgi => ['PLACK_ENV']);
 
+# The servers that are no command but load mcp-hub as an app to serve it in
+# more than one process, and why each cannot.
+my %UNDER = (hypnotoad => 'hypnotoad serves it from pre-forked workers, and each would start its own upstreams and keep its own state');
+
 sub run ($self, $name = undef, @args) {
-  # Loaded by a server (Mojo::Server->load_app): Mojolicious hands it the app.
-  return $self->SUPER::run($name, @args) if defined $ENV{MOJO_APP_LOADER};
+  # Loaded by a server (Mojo::Server->load_app): Mojolicious hands it the app --
+  # unless the server is hypnotoad, which sets HYPNOTOAD_APP before it loads
+  # the app and then pre-forks.
+  if (defined $ENV{MOJO_APP_LOADER}) {
+    die $self->_refusal('hypnotoad', under => 1)
+      if defined $ENV{HYPNOTOAD_APP} || $INC{'Mojo/Server/Hypnotoad.pm'};
+    return $self->SUPER::run($name, @args);
+  }
 
   # Mojolicious lets a CGI or PSGI environment replace the command name.
   my $env = !$ENV{MOJO_NO_DETECT} && $self->detect;
@@ -70,7 +80,8 @@ sub run ($self, $name = undef, @args) {
 }
 
 sub _refusal ($self, $name, %opt) {
-  my $why = "the hub is one process that owns every upstream and all state; $REFUSED{$name}";
+  my $why = 'the hub is one process that owns every upstream and all state; ' . ($REFUSED{$name} // $UNDER{$name});
+  return qq{mcp-hub refuses to run under $name: $why. Run "mcp-hub daemon" instead.\n} if $opt{under};
   return qq{mcp-hub refuses "$name": $why. Run "mcp-hub daemon" instead.\n} unless $opt{detected};
 
   my $set = join ' and ', grep { defined $ENV{$_} } @{$DETECTED_BY{$name}};
@@ -143,6 +154,14 @@ is, so C<PLACK_ENV=production mcp-hub daemon> would serve nothing at all. With
 C<MOJO_NO_DETECT=1> the named command runs regardless. The command list leaves
 the refused commands out.
 
+hypnotoad is refused as well. It is no command: C<hypnotoad bin/mcp-hub> loads
+the script as an app (L<Mojo::Server/load_app>) and serves it from pre-forked
+workers, each of which would start its own upstreams and keep its own state. So
+when C<mcp-hub> is loaded as an app while C<HYPNOTOAD_APP> is set or
+L<Mojo::Server::Hypnotoad> is loaded, it dies instead of handing the app over.
+Any other loader -- L<Test::Mojo/new> with the script, morbo -- still gets the
+app, and a command line with C<HYPNOTOAD_APP> in its environment runs as ever.
+
 The author tools of L<Mojolicious::Command::Author> -- C<generate>, C<inflate>,
 C<cpanify> -- are not searched; C<get>, C<routes>, C<eval> and C<version> stay.
 
@@ -171,7 +190,8 @@ The line below the command list, pointing at C<mcp-hub help COMMAND>.
 
 As L<Mojolicious::Commands/run>, but dies, with the reason and a pointer to
 C<mcp-hub daemon>, for a refused command -- named or picked by the environment
--- and leaves the refused commands out of the command list.
+-- and when loaded as an app by hypnotoad, and leaves the refused commands out
+of the command list.
 
 =head1 SEE ALSO
 

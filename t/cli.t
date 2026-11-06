@@ -24,19 +24,22 @@ for my $name (qw(alpha beta)) {
   $config{$name} = "$file";
 }
 
-# Run bin/mcp-hub with the @INC of this test (lib/ first, not an installed
-# MCP::Hub): STDOUT, STDERR and the exit code.
-sub mcp_hub (@args) {
+# Run perl with the @INC of this test (lib/ first, not an installed MCP::Hub):
+# STDOUT, STDERR and the exit code.
+sub perl_child (@args) {
   my $err = $DIR->child('stderr');
   my $pid = open(my $out, '-|') // die "fork: $!";
   unless ($pid) {
     open STDERR, '>', "$err" or die $!;
-    exec $^X, (map {"-I$_"} grep { !ref } @INC), $BIN, @args or die "exec: $!";
+    exec $^X, (map {"-I$_"} grep { !ref } @INC), @args or die "exec: $!";
   }
   my $stdout = do { local $/; <$out> };
   close $out;
   return {out => $stdout, err => $err->slurp, exit => $? >> 8};
 }
+
+# Run bin/mcp-hub.
+sub mcp_hub (@args) { perl_child($BIN, @args) }
 
 # The answer to the initialize request -- only /alpha, mounted by alpha.json,
 # can give it, and only if the JSON arrived as the request body.
@@ -82,6 +85,49 @@ subtest 'a global --config without a PATH fails instead of reading another file'
     is $r->{err}, "option $opt needs a PATH\n", "...saying option $opt needs a PATH";
     is $r->{out}, '', '...and prints nothing';
   }
+};
+
+subtest 'hypnotoad cannot load mcp-hub to serve it pre-forked' => sub {
+  delete local @ENV{grep {/^HYPNOTOAD_/} keys %ENV};
+  local $ENV{MCP_HUB_CONFIG} = $config{alpha};
+  my $refused = qr/mcp-hub refuses to run under hypnotoad: the hub is one process that owns every upstream and all state; /;
+  my $load    = 'my $app = Mojo::Server->new->load_app(shift); print ref $app';
+
+  # Hypnotoad's own run, as "hypnotoad bin/mcp-hub" reaches it: HYPNOTOAD_REV
+  # skips its clean-start re-exec, and should the refusal ever stop working,
+  # HYPNOTOAD_TEST makes it exit once the app is loaded, before it forks.
+  {
+    local @ENV{qw(HYPNOTOAD_REV HYPNOTOAD_TEST)} = (1, 1);
+    my $r = perl_child('-MMojo::Server::Hypnotoad', '-e', 'Mojo::Server::Hypnotoad->new->run(shift)', $BIN);
+    isnt $r->{exit}, 0, 'hypnotoad bin/mcp-hub fails';
+    like $r->{err}, $refused, '...refused, saying why';
+    like $r->{err}, qr/Run "mcp-hub daemon" instead\.\n\z/, '...and pointing at mcp-hub daemon';
+    unlike $r->{out}, qr/Everything looks good/, '...and hypnotoad never got the app';
+  }
+
+  # Either sign alone is enough.
+  {
+    local $ENV{HYPNOTOAD_APP} = $BIN;
+    my $r = perl_child('-MMojo::Server', '-e', $load, $BIN);
+    isnt $r->{exit}, 0,      'loaded as an app with HYPNOTOAD_APP set: fails';
+    like $r->{err}, $refused, '...refused';
+    is $r->{out}, '',         '...and no app';
+  }
+  my $r = perl_child('-MMojo::Server::Hypnotoad', '-e', $load, $BIN);
+  isnt $r->{exit}, 0,      'loaded as an app with Mojo::Server::Hypnotoad loaded: fails';
+  like $r->{err}, $refused, '...refused';
+  is $r->{out}, '',         '...and no app';
+
+  # Neither: a one-process loader (Test::Mojo->new($script), morbo) still gets
+  # the app, and HYPNOTOAD_APP inherited by a command line stops nothing.
+  $r = perl_child('-MMojo::Server', '-e', $load, $BIN);
+  is $r->{exit}, 0, 'loaded as an app without hypnotoad: works' or diag $r->{err};
+  is $r->{out}, 'MCP::Hub', '...and hands over the hub';
+
+  local $ENV{HYPNOTOAD_APP} = $BIN;
+  $r = mcp_hub('config');
+  is $r->{exit}, 0, 'mcp-hub config with HYPNOTOAD_APP set but not loaded as an app: works' or diag $r->{err};
+  is_deeply servers($r), ['alpha'], '...and prints the configuration';
 };
 
 subtest "after the command, -c is the command's own option" => sub {
