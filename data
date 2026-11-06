@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-11-06T03:04:40Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T03:04:40Z
+created: 2026-11-06T01:48:47Z
+id: 64
+priority: low
+started: 2026-11-06T02:13:13Z
+status: done
+tags:
+- test
+- aggregate
+title: t/aggregate.t covers only the in-process path
+updated: 2026-11-06T03:04:40Z
+---
+
+Found by mcp-hub-worker during k30 (2026-11-06). t/aggregate.t mounts ExtraEcho in-process only. Add a subtest with ExtraEcho under hub: {fork: true}, which goes through the manifest path (Facade::Tool extra from a manifest) -- the k30 worker's scratch probe of that case fails on HEAD (pre-k30) and passes with the fix. Lane: mcp-hub-test-writer.
+
+t/aggregate.t: new subtest 'fork: /all keeps title, icons and _meta from the manifest' (ExtraEcho under hub.fork, tools and prompts, controls on own endpoint). Red on pre-k30 Aggregate.pm (6 /all assertions fail, controls pass), green on HEAD. Stdio manifest path not added: echo.pl would need an extras flag (t/upstream, outside this brief).
+
+fork subtest added to t/aggregate.t; red on pre-k30 Aggregate.pm, green on HEAD; prove -lr t/ green
+
+Committed as d5e1044
