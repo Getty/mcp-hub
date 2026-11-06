@@ -11,6 +11,8 @@
 #   calls.jsonl     every invocation: argv, working directory, pid, and the
 #                   values of the MCPHUB_TEST_* variables it was given
 #   down            when present, the "daemon" cannot be reached
+#   owner           optional: the pid of the test that owns this state; the processes
+#                   that outlive a CLI call end once it is gone
 #   signals.jsonl   every TERM the attached `run -i` process (the CLI the hub
 #                   signals) received: {"signal": "TERM", "pid": N, "time": EPOCH}
 #   fail.json       failures to inject: [{"match": REGEX, "code": N, "out": ..., "err": ...}],
@@ -62,6 +64,12 @@ my $STATE = $ENV{FAKE_DOCKER_STATE} or die "fake-docker: FAKE_DOCKER_STATE is no
 my $ECHO  = "$Bin/echo.pl";
 my $LIB   = Cwd::abs_path("$Bin/../../lib") // "$Bin/../../lib";
 mkdir "$STATE/containers";
+
+# The test that owns this state, if it says so (the file `owner`, its pid).
+# What outlives a CLI call -- a detached supervisor, an attached relay -- ends
+# its server and itself once that test is gone, so that a run killed by a
+# signal, which runs no END block, leaves nothing behind.
+my $OWNER = do { open my $fh, '<', "$STATE/owner"; local $/; ((<$fh> // '') =~ /^(\d+)/)[0] // 0 };
 
 _log_call();
 _fail(1, 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?')
@@ -502,9 +510,9 @@ sub _start {
       my $pid = fork // POSIX::_exit(1);
       if (!$pid) { exec @server or POSIX::_exit(127) }
       _update($id, sub { $_[0]{pid} = $pid });
-      waitpid $pid, 0;
+      _wait_child($pid);
       my $code = $? & 127 ? 128 + ($? & 127) : $? >> 8;
-      _update($id, sub { $_[0]{state} = 'exited'; $_[0]{exit_code} = $code; delete $_[0]{pid} });
+      eval { _update($id, sub { $_[0]{state} = 'exited'; $_[0]{exit_code} = $code; delete $_[0]{pid} }) };
       POSIX::_exit(0);
     }
     # Back only once the server process is known, so that a `stop` or `rm`
@@ -534,8 +542,8 @@ sub _start {
   _save($record);
   local $SIG{TERM} = sub { _log_signal('TERM'); kill 'TERM', $pid };
   local $SIG{PIPE} = 'IGNORE';
-  _relay($in_w, $out_r, $err_r);
-  waitpid $pid, 0;
+  _relay($pid, $in_w, $out_r, $err_r);
+  _wait_child($pid);
   my $code = $? & 127 ? 128 + ($? & 127) : $? >> 8;
   _remove($id) if $c->{flags}{'--rm'};
   return $code;
@@ -544,12 +552,13 @@ sub _start {
 # Our stdin to the server's, the server's stdout and stderr to ours, until the
 # server has closed both.
 sub _relay {
-  my ($in_w, $out_r, $err_r) = @_;
+  my ($pid, $in_w, $out_r, $err_r) = @_;
   my %sink = (fileno(STDIN) => $in_w, fileno($out_r) => \*STDOUT, fileno($err_r) => \*STDERR);
   my $select = IO::Select->new(\*STDIN, $out_r, $err_r);
   my $open   = 2;
   while ($open) {
-    for my $fh ($select->can_read) {    # none when a TERM interrupts it
+    return if _owner_gone($pid);
+    for my $fh ($select->can_read(1)) {    # none when a TERM interrupts it, or after a second
       my $n = sysread $fh, my $buf, 65536;
       next if !defined $n && $!{EINTR};
       my $from_stdin = fileno($fh) == fileno(STDIN);
@@ -568,6 +577,25 @@ sub _relay {
     }
   }
   return;
+}
+
+# Wait for the server process $pid -- $? is its status, as after waitpid -- but
+# kill it and give up once the owning test is gone.
+sub _wait_child {
+  my ($pid) = @_;
+  while (waitpid($pid, POSIX::WNOHANG) == 0) {
+    if (_owner_gone($pid)) { waitpid $pid, 0; last }
+    sleep 0.05;
+  }
+  return;
+}
+
+# True once the owning test is gone -- and the server process $pid is killed.
+sub _owner_gone {
+  my ($pid) = @_;
+  return 0 if !$OWNER || kill(0, $OWNER) || $!{EPERM};
+  kill 'KILL', $pid;
+  return 1;
 }
 
 sub _server_argv {

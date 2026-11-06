@@ -50,6 +50,7 @@ sub fake_docker (%opt) {
   my $state = $dir->child('state')->make_path;
   $state->child('images.json')->spew(encode_json($opt{images} // {}));
   $state->child('registry.json')->spew(encode_json($opt{registry} // {}));
+  $state->child('owner')->spew("$$\n");    # the fake's detached processes end once this test is gone, END or not
   my $cmd = $dir->child('docker');
   $cmd->spew(qq{#!/bin/sh\nFAKE_DOCKER_STATE='$state'\nexport FAKE_DOCKER_STATE\nexec '$^X' '$FAKE' "\$@"\n});
   chmod 0755, "$cmd";

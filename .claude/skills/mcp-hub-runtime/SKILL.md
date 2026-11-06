@@ -359,5 +359,7 @@ Jede Unit ist allein testbar: `Config` auf Strings, `Manifest` auf temp dir,
 spawnt, außer `t/upstream/echo.sh` in `t/binary.t`; der Server selbst ist die Klasse
 `t/lib/EchoServer.pm`, die `t/fork.t` als `class` forkt), Docker/Compose in `t/docker.t`
 gegen `t/upstream/fake-docker.pl` per `hub.docker_command` (seine „Container" sind
-`echo.pl`-Prozesse, jeder CLI-Aufruf wird protokolliert — kein Daemon, kein Image), die
+`echo.pl`-Prozesse, jeder CLI-Aufruf wird protokolliert — kein Daemon, kein Image; die
+„Container" enden, sobald der in `$state/owner` genannte Test-Prozess weg ist, auch bei
+SIGKILL ohne END), die
 Natives gegen `t/fixtures/claude/projects/`.
