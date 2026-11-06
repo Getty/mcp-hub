@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-06T16:40:02Z
+created: 2026-11-06T14:41:09Z
+id: 139
+priority: medium
+started: 2026-11-06T15:07:51Z
+status: done
+tags:
+- stdio
+- lifecycle
+title: 'Stdio: a child that exits mid-handshake leaves the upstream ready with no
+  pid'
+updated: 2026-11-06T16:41:15Z
+---
+
+Found during k130 (worker). A stdio start whose child exits in the middle of the handshake -- after initialize, before the lists are through -- waits out the remaining request (resources/list) and then comes up ready with no pid. Expected: the start fails (the exit counts toward the crash loop as it does today) and the upstream is not ready. Done: a test with a child that exits after tools/list; the start rejects, state is stopped or failed, no ready without a pid.
+
+Done (mcp-hub-worker): Stdio::start_p checks after _handshake_p whether the child is gone; one that exited fails the start with its exit reason ($child->{exited}, set in _on_exit) and counts once toward the crash loop (exited_pid); one that only closed its stdout is waited for (_gone_p). No more ready with no pid. An answered error on prompts/list or resources/list is still an empty list (k143 untouched). Test t/stdio.t, red 14/20 on HEAD. Not committed.
+
+Committed as 33d7872
