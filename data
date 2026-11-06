@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T08:39:46Z
+created: 2026-11-06T07:49:52Z
+id: 110
+priority: low
+started: 2026-11-06T07:57:57Z
+status: done
+tags:
+- native
+- tests
+title: Native test fixtures never reach get_conversation's named-file path
+updated: 2026-11-06T08:39:46Z
+---
+
+Found during k105. The fixture sessions in t/fixtures/claude are named sess-<id>.jsonl, while Claude Code names them <session_id>.jsonl. So t/native/claude-history.t and t/hub.t only ever exercise the fallback scan of _file_for_session (k98/k105); the named-file path is covered only by the purpose-built temp-dir tests. Done: rename (some of) the fixtures to the real naming, or add a fixture so named, and keep the fallback covered by one deliberately misnamed file.
+
+Worker done. Renamed (content unchanged, plain mv, index untouched): t/fixtures/claude/projects/-home-tester-proj-a/sess-a1.jsonl -> a1.jsonl and sess-a2.jsonl -> a2.jsonl. Kept t/fixtures/claude/projects/-home-tester-proj-b/sess-b1.jsonl misnamed on purpose, so the fallback scan stays covered. t/native/claude-history.t: new subtest recording the files opened on a cold cache — a2 is read from a2.jsonl alone; b1 from sess-b1.jsonl after a1/a2 (both fail against the old names). t/native/claude-sessions.t: utime paths follow the rename and now die if the file is missing (a missed rename was a silent no-op). No other expectation depended on the names (session_id comes from the lines); t/hub.t never calls get_conversation (only list_projects), so it needed no change. Wire vs HEAD: identical except list_sessions' _file paths (sess-aN -> aN). prove -lr t/ green on HEAD export + k109 + k110, default and Poll.
+
+Commit-ready, uncommitted. Index needs: git rm --cached the two sess-aN.jsonl, git add a1.jsonl a2.jsonl (paths in the note above). Test-only: no Changes entry needed. Proposed subject: Name the fixture sessions after their session_id, keeping one misnamed (k110).
+
+Committed as 3586152
