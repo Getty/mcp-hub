@@ -180,3 +180,6 @@ Revision history for MCP-Hub
   - search_conversations tests an ASCII search word against the raw JSON line
     and decodes only lines that can match (a rare word over 500 MB: 4.1 s ->
     1.7 s; 114 s -> 1.8 s with pure-Perl JSON).
+  - list_running_sessions reads only the head and tail of each session file,
+    so its cost no longer grows with the session (8 x 73 MB: 7 ms instead of
+    4.6 s).
