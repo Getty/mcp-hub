@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T14:52:24Z
+created: 2026-11-06T12:56:37Z
+id: 130
+priority: medium
+started: 2026-11-06T13:23:37Z
+status: done
+tags:
+- upstream
+- manifest
+title: A refresh cut short stores a manifest without its prompts and resources
+updated: 2026-11-06T15:06:51Z
+---
+
+Found during k78/k129 (worker). Upstream::_list_all_p takes any failure of prompts/list or resources/list for an empty list (->catch(sub {[]})). That is right for a server that advertises the capability but cannot list, but a refresh cut short -- a stop between tools/list and prompts/list, a request_timeout, a lost connection -- then stores a manifest whose prompts and resources are empty, and with k78 the listeners are told those lists changed. Done: a failure that is the transport's (stopped, timed out, not connected) fails the refresh and keeps the old manifest; only an error answer from the server reads as an empty list. Test: a refresh whose prompts/list is cut off keeps the cached prompts.
+
+Fixed: an answered JSON-RPC error is now rejected as MCP::Hub::Upstream::ErrorAnswer (new module, stringifies to the same "upstream NAME: message" text; every consumer stringifies -- main agent checked call_tool/get_prompt/read_resource, fail(), _bare_error, the 500 render); no answer stays a string. _list_all_p takes only an answered error for an empty list; a refresh with no answer fails and keeps manifest, cache and listeners. Worker's choices: the ErrorAnswer object as the mechanism; an HTTP error status counts as no answer; the start stays lenient -- decision card k143. Tests t/refresh.t (new) red 13/30 on HEAD (the error-answer variant green by design, it pins what stays), t/http.t red 6/32; green under EV and Poll. Drift: k137 (HTTP connection errors lack the prefix), k138 (stdio request after EOF waits out the timeout), k139 (child exiting mid-handshake -> ready with no pid), k141 (Fork fails the whole listing on an error answer). -> review.
+
+commit-ready: w-five snapshots
+
+Committed as a49cf89. Skill text in 43760d2.
+
+Trailer reworded to Opus by the main agent (backup refs/backup/pre-reword-k133-k57b): a49cf89 is now 8a4a0e7; skill text 43760d2 is now 7175354.
