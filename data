@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-06T05:53:39Z
+created: 2026-11-06T03:41:43Z
+id: 77
+priority: low
+started: 2026-11-06T05:28:37Z
+status: done
+tags:
+- security
+- aggregate
+- facade
+title: '/all: colliding names show the display fields of the entry the profile hides'
+updated: 2026-11-06T05:53:43Z
+---
+
+Found by mcp-hub-worker during k69 (2026-11-06). Since k69 /all filters by origin, but title/icons/_meta are still looked up by name, last one wins (%by_name in Facade::Server::_handle_tools_list, %pextra in Aggregate). With servers p (tool x__echo) and p__x (tool echo), both are /all name p__x__echo; a [p]-only client sees p__x's title on p's tool. Only with colliding names; goes away if server names may not contain '__' (Option A, maintainer decision pending on k69). Done: extras are keyed by the wrapper (or origin), not by name, so a profile only ever sees its own entry's display fields; regression test in t/aggregate-origin.t.
+
+2026-11-06 05:33 Cause confirmed: Facade::Server::_handle_tools_list maps rendered entries back to objects via %by_name over the UNFILTERED tool list (last of a name wins); Aggregate::rebuild keys %pextra by /all name. MCP::Server 0.15 renders in order from what the tools/prompts event left, minus has_scope misses, and returns only the rendering. Plan: Facade::Server pairs each rendered entry with its object by position (captures the event-filtered list via _tools/_prompts during the listing, re-applies has_scope, merges only on name match); prompt extras looked up per object through a hook that Aggregate overrides with a refaddr-keyed map. Regression test first in t/aggregate-origin.t.
+
+2026-11-06 05:45 Done, not committed. Cause: Facade::Server::_handle_tools_list matched rendered entries to objects via %by_name over the UNFILTERED tools (last of a name wins); Aggregate::rebuild keyed prompt extras by /all name (%pextra). Fix: Facade::Server pairs each rendered tool/prompt with the object it was rendered from by position -- _tools/_prompts overrides hand the event-filtered list to the running listing (local $self->{_listing}), _pairs re-applies has_scope and merges only where names match; prompt extras via _prompt_extra hook (by name on a server's own endpoint, by wrapper refaddr in Aggregate's new _prompt_extras). Per-server rendering unchanged. Test: t/aggregate-origin.t +2 subtests -- 'each entry keeps its own fields' red before (4 fails: tools+prompts, p-only and both-visible), green after; 'one hidden by its scope lends no fields' pins the scope step of the pairing (passes on old code, red under a mutant without has_scope). Mutant with prompt extras by name: red. Verified: aggregate*.t facade.t reload-free.t reload.t hub.t green under EV and Poll; same set green on git-archive HEAD + my 3 files; prove -lr t/ 38 files 410 tests PASS, self-skips docker-live.t npx.t wiki-live.t. POD Known limit paragraph updated. Skill lines now wrong (for k57): mcp-hub-runtime SKILL.md 135-136 and 145-146. Files: lib/MCP/Hub/Facade/Server.pm, lib/MCP/Hub/Aggregate.pm, t/aggregate-origin.t.
+
+Committed as c5099fc.
