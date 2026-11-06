@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-06T10:32:51Z
+created: 2026-11-03T06:33:10Z
+id: 25
+priority: medium
+started: 2026-11-06T03:21:59Z
+status: done
+tags:
+- bug
+- stdio
+title: Upstream::Stdio drops unread stderr when stdout's close is seen first
+updated: 2026-11-06T10:33:50Z
+---
+
+Found by the k21 worker on 2026-11-03. When the IOLoop handles the end of stdout before the stderr pipe has been read, `Upstream::Stdio::_on_close` drops the stderr stream unread. The last lines a dying child printed (often the reason it died) never reach the log. In k21 this made a docker start error read just "exited (code 125)", without the "name already in use" message.
+
+k21 fixed it for docker containers only, in `MCP::Hub::Upstream::Docker::Stdio::_drain_stderr` (reads what is left, capped at 1 MB). Plain stdio children still have the race.
+
+## Done
+- Plain stdio children: stderr written just before exit is logged, whichever close the loop sees first.
+- Regression test that forces the bad order (k21 removes the stderr watcher right after spawn) and fails on the current code.
+- Consider moving the drain into Upstream::Stdio so the Docker subclass no longer needs its own copy.
+
+Done, uncommitted (worker). Root cause: only Fork and Docker::Stdio drained the stderr pipe before handling an exit, each with its own copy of _on_exit + _drain_stderr; a plain stdio child had no drain at all, so when the loop saw the socket close and the exit before the last stderr read (load, or the k21 order) its last lines -- usually why it died -- were lost. Fix: one _drain_stderr in Upstream::Stdio, called from _on_exit before the exit is reported and the pipe dropped; non-blocking, 16 x 64 KB = 1 MB cap (Docker's; Fork's was the same). Fork's override and drain removed; Docker::Stdio keeps its _on_exit (owner report, teardown) and calls SUPER first. POD: Stdio DESCRIPTION says stderr is read to the end before the exit is handled. Test: new t/stdio-stderr.t forces the bad order (stderr watcher removed after spawn, as k21): a stdio child's last lines are logged before its exit warning; a process that writes on to the pipe is not waited for (<10 s, bounded lines); a forked worker's constructor death is in its exit warning. Red on HEAD (subtests 1-2; 3 as well with Fork's copy taken out), green under EV and Poll. Files: lib/MCP/Hub/Upstream/Stdio.pm, Fork.pm, Docker/Stdio.pm, t/stdio-stderr.t. Split: scratch w-k39/k25.patch (HEAD -> k25). Subject: "Read a stdio child's last stderr lines before handling its exit (k25)". Changes: none (unreleased behaviour, a log completeness fix). Update: the stderr writer fixture in t/stdio-stderr.t ends by itself once the pipe is gone, or after 60 s; it exits 9 when it cannot open its pidfile, and the test asserts that it ended. Drift filed as k122-k127; skill drift as a note on k57.
+
+Committed as 46baacb
