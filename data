@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T06:59:29Z
+created: 2026-11-06T06:04:33Z
+id: 95
+priority: low
+started: 2026-11-06T06:16:16Z
+status: done
+tags:
+- http
+- docs
+title: 'Http.pm POD: say what a stop does to calls in flight; stale k74 test comment'
+updated: 2026-11-06T06:59:29Z
+---
+
+Found during k90/k91.
+1. Upstream::Http POD says nothing about a stop and calls in flight: over SSE they fail as stopped (the stream that carries their answer closes), over Streamable HTTP a call on a ready upstream is left to finish (the remote may be carrying it out). Only requests of a start are called off on both transports. Document it.
+2. t/http.t, k74 subtest: the comment "No tools: the code of a façade tool holds its upstream" is stale since k73 (façade primitives hold the upstream weakly). Fix or drop the comment.
+
+Done (patch: scratchpad w-k94/k95.patch, applies after k94 and k96). Http.pm DESCRIPTION gains three paragraphs on stopping: a stop calls off a start on both transports (and a start after the stop is a fresh one, k96); over SSE a call in flight fails as stopped, its stream being closed; over Streamable HTTP a call on a ready upstream is left to finish; the session ends with a DELETE once no call is left on it, best effort, and possibly not sent at daemon shutdown. t/http.t k74 subtest: the stale 'No tools: the code of a façade tool holds its upstream' comment becomes 'Empty lists: what a start lists plays no part in its stop.' Checked: that subtest passes with a real tool listed too, weak-ref check included.
+
+Ready for review: POD-only plus one test comment. Commit subject proposed: 'Document what a stop does to an HTTP upstream (k95)'.
+
+Committed as 19ce671
