@@ -1,0 +1,52 @@
+---
+class: standard
+completed: 2026-11-06T05:20:24Z
+created: 2026-11-06T03:29:14Z
+id: 74
+priority: low
+started: 2026-11-06T03:55:23Z
+status: done
+tags:
+- http
+- sse
+title: Http::_close_sse leaves a pending SSE connect to its timeout instead of settling
+  it as stopped
+updated: 2026-11-06T05:20:28Z
+---
+
+Found by mcp-hub-worker during k66 (2026-11-06). _close_sse drops a connect attempt that has not got its endpoint yet without settling it. Since k66 that attempt's own endpoint timer rejects it after request_timeout -- counted as a connect failure and logged 'timed out waiting for the SSE endpoint', though it was a stop. Done: _close_sse settles a pending attempt at once with a 'stopped' reason (no connect-failure count, no timeout log line); test in t/http.t with the fake SSE server's endpoint_delay.
+
+k74 commit-ready, not committed. Files: lib/MCP/Hub/Upstream/Http.pm, t/http.t. The fake SSE server is unchanged (endpoint_delay was enough). Checksums: scratchpad w-k74/tree.sha1.
+
+Root cause: stop -> _close_sse dropped a connect still waiting for its endpoint without settling it. Two things could settle it later:
+- connect not up yet: the endpoint timer, request_timeout later, as "timed out waiting for the SSE endpoint", holding the upstream until then;
+- stream open: the close of its own stream, as "SSE stream closed before endpoint".
+A stop during the handshake failed the initialize as "SSE stream closed". In every case start_p's catch logged an error ("handshake failed") and ran _record_failure, so three stops within 5s marked the upstream failed.
+
+Fix (Http.pm):
+- _close_sse settles a pending connect as 'stopped' through _sse_resolve, which removes its timer, before it closes the stream.
+- stop sets stop_requested while a start is in flight (Docker.pm's pattern and key, on a separate object, so no collision), then fails pending requests as 'stopped' before _close_sse.
+- start_p's catch: with stop_requested, a debug line and no _record_failure. The start still rejects, at once, with 'upstream NAME: stopped'.
+- Side effect: requests in flight on a ready SSE upstream that is stopped now fail as 'stopped' instead of 'SSE stream closed'.
+
+Test: k66's stop-mid-connect subtest is replaced by 'sse upstream: a stop while it starts calls the start off, it does not fail it'. It covers 3 phases (before connected, before endpoint, during handshake) with 3 stops each, and asserts:
+- each start is rejected at once as 'stopped';
+- after 3 stops the upstream is still stopped with no error;
+- no warn/error log line and no endpoint timeout;
+- the next start connects;
+- no timer holds the upstream (weaken check).
+Red before: 21 asserts fail against HEAD's Http.pm. Green after. Five mutants each go red: timer left behind, failure counted anyway, stream closed before pending requests are failed, no stop mark, no settle.
+
+Verification:
+- t/http.t: 10x EV and 10x Poll, all green.
+- prove -lr t/ on the final tree: Files=35, Tests=303, FAIL only in t/docker.t (30, 33). Skipped: docker-live, npx, wiki-live.
+- t/docker.t in a git-archive export (a86dd0a), 2 runs each: pure HEAD 1 pass / 1 fail, HEAD plus my files 1 pass / 1 fail. Different timing subtests fail each run (load average 20-26). The compose subtest that failed with my files only (fake-docker's 'each start watched it') uses a Streamable-HTTP engine stopped after ready, where my change does nothing: the flag is never set and the reordered calls are no-ops.
+
+Drift for the main agent to file (all on the p5-mcp-hub board):
+1. t/stdio-stderr.t (another worker's untracked file): tempdir->child('writer.pid') deletes the temp dir at once. The fixture's open then dies, the writer PID is never written, and the kill never fires. Every run orphans a 'print STDERR ... while 1' writer (ppid 1, about 50% CPU each). 18 are alive now. I killed only the two my runs created.
+2. Facade cycle: tool/prompt/resource closures hold $upstream strongly, so an upstream with tools is never freed. This looks in progress elsewhere (Facade.pm modified, untracked t/reload-free.t). My test answers tools/list with no tools to stay clear of it.
+3. Hub.pm _warm_upstream: a reload or shutdown that stops an upstream whose warming fetch is in flight now gets 'upstream X: stopped' at once. The hub still logs it as an error and _fetch_failed marks that discarded object failed. Harmless, but noise.
+4. Http SSE: a stop that lands between two handshake requests posts the next one to no endpoint. _sse_post returns undef silently, so the request stays pending until request_timeout, and forever with request_timeout 0, which wedges start_promise. Fix: _sse_request_p rejects at once when there is no endpoint.
+5. Streamable HTTP: a stop during the handshake is ignored and the upstream goes ready afterwards. Low priority.
+
+Committed as 7aeb63c.
