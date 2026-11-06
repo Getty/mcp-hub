@@ -124,8 +124,11 @@ geladen, eine Wegwerf-Instanz beantwortet `initialize`/`tools/list` (und
 einem Legacy-`MCP::Server::Context`; `instructions` kommen vom Server-Objekt (das
 Legacy-`initialize` von MCP 0.15 liefert sie nicht). Danach werden ihre
 tool/prompt/resource-Listen geleert — Tool-Closures über `$self` sind ein Zyklus —
-und die Instanz freigegeben. Kein Cache, kein Hash. Verweigert (→ Placeholder):
-Klassen mit `hub`-Attribut, Listing per Promise, kein `/proc/self/fd`.
+und die Instanz freigegeben. Kein Cache, kein Hash. Eine Error-Antwort auf
+`prompts/list`/`resources/list` ist eine leere Liste wie in `_list_all_p`, das auch
+Handshake und Refresh des Workers lesen (`_handle_list` mit `$lenient`). Verweigert
+(→ Placeholder): Klassen mit `hub`-Attribut, Listing per Promise, eine Error-Antwort
+auf `tools/list`, kein `/proc/self/fd`.
 
 **Beim ersten Call** wird `fork` statt `fork`/`exec` gemacht; der Worker setzt
 `$0 = "mcp-hub-worker NAME"`, Signale wie `exec` (gefangene → DEFAULT, HUP →

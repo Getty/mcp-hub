@@ -29,6 +29,20 @@ package WorkerDies {
   }
 }
 
+# A class that answers the lists named in its `fails` arg -- tools, prompts,
+# resources -- with an error: listing them dies, and MCP::Server answers that
+# as an internal error.
+package ListsFail {
+  use Mojo::Base 'EchoServer', -signatures;
+  sub new ($class, %args) {
+    my $fails = delete $args{fails} // [];
+    my $self  = $class->SUPER::new(%args);
+    $self->log->level('fatal');    # it logs every internal error
+    for my $list (@$fails) { $self->on($list => sub (@) { die "cannot list $list\n" }) }
+    return $self;
+  }
+}
+
 my @LOG;
 sub hub ($servers) {
   my $log = Mojo::Log->new(level => 'debug');
@@ -267,6 +281,39 @@ subtest 'a class that cannot be forked stays visible as failed' => sub {
     like $up{$name}->error,
       qr/Mojo::Collection is neither an MCP::Server subclass nor has a 'server' method returning one/, 'saying why';
   }
+};
+
+subtest 'a list the class answers with an error is empty, as an upstream one is' => sub {
+  # Listing the class in the hub failed it as a whole when its prompts/list or
+  # resources/list answered with an error -- where its worker, as any stdio or
+  # HTTP upstream, takes that answer for an empty list. Its tools/list still
+  # fails it.
+  my $hub = hub({
+    lenient => {%{forked('ListsFail')}, args => {fails => ['prompts', 'resources']}},
+    strict  => {%{forked('ListsFail')}, args => {fails => ['tools']}},
+  });
+  my $t  = Test::Mojo->new($hub);
+  my %up = %{$hub->upstreams_by_name};
+  my $c  = client($t, '/lenient');
+
+  is $up{strict}->state, 'failed', 'tools answered with an error: the class is failed';
+  like $up{strict}->error, qr{ListsFail answered tools/list with an error: Internal error}, 'saying why';
+
+  # The rest needs the class listed: the client dies on the 503 of a failed one.
+  is($up{lenient}->state, 'stopped', 'prompts and resources answered with an error: the class is listed') or return;
+  ok((grep { $_->{name} eq 'echo' } @{$c->list_tools->{tools}}), 'with its tools');
+  is_deeply $c->list_prompts->{prompts},     [], 'with no prompts';
+  is_deeply $c->list_resources->{resources}, [], 'and no resources';
+  is $up{lenient}->stats->{pid}, undef, 'listing forked nothing';
+
+  is text($c->call_tool('echo', {msg => 'in a worker'})), 'in a worker', 'a call forks a worker that answers';
+  is $up{lenient}->state, 'ready', 'whose handshake takes the lists for empty too';
+  my $refreshed;
+  $up{lenient}->refresh_p->then(sub (@) { $refreshed = 1 })->wait;
+  ok $refreshed, 'and so does a refresh';
+  is_deeply $c->list_prompts->{prompts}, [], 'still with no prompts';
+
+  $hub->shutdown_p->wait;
 };
 
 subtest 'option (a) in process' => sub {

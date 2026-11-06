@@ -67,9 +67,13 @@ sub _class_manifest ($self, $class) {
     # in a worker alike -- so they are read off the server object.
     $self->{instructions} = $server->instructions;
 
+    # A prompts/list or resources/list the class answers with an error is an
+    # empty list, as an upstream's is (MCP::Hub::Upstream::_list_all_p) -- and
+    # its worker's, whose handshake and refresh go through that. An error on its
+    # tools/list fails the entry.
     $lists{tools}     = $self->_handle_list($server, 'tools/list', 'tools');
-    $lists{prompts}   = exists $caps->{prompts}   ? $self->_handle_list($server, 'prompts/list',   'prompts')   : [];
-    $lists{resources} = exists $caps->{resources} ? $self->_handle_list($server, 'resources/list', 'resources') : [];
+    $lists{prompts}   = exists $caps->{prompts}   ? $self->_handle_list($server, 'prompts/list',   'prompts',   1) : [];
+    $lists{resources} = exists $caps->{resources} ? $self->_handle_list($server, 'resources/list', 'resources', 1) : [];
     1;
   };
   my $err = $@;
@@ -83,7 +87,9 @@ sub _class_manifest ($self, $class) {
   return $self->_manifest_from(\%lists);
 }
 
-sub _handle ($self, $server, $method, $params = {}) {
+# The result the class answers $method with. An answer with an error dies --
+# with $lenient, it is undef instead.
+sub _handle ($self, $server, $method, $params = {}, $lenient = 0) {
   my $class = $self->config->{class};
   my $res   = $server->handle(
     {jsonrpc => '2.0', id => 1, method => $method, params => $params},
@@ -92,15 +98,20 @@ sub _handle ($self, $server, $method, $params = {}) {
   die "$class answered $method with a promise; a forked class must list synchronously\n"
     if blessed $res && $res->isa('Mojo::Promise');
   die "$class answered $method with nothing\n" unless ref $res eq 'HASH';
-  die "$class answered $method with an error: " . $self->_error_message($res->{error}) . "\n" if $res->{error};
+  if ($res->{error}) {
+    return undef if $lenient;
+    die "$class answered $method with an error: " . $self->_error_message($res->{error}) . "\n";
+  }
   return $res->{result} // {};
 }
 
-sub _handle_list ($self, $server, $method, $key) {
+# Every page of $method. With $lenient, an error the class answers on any of
+# them makes the whole list empty, as it does over a transport.
+sub _handle_list ($self, $server, $method, $key, $lenient = 0) {
   my (@all, %seen);
   my $cursor;
   while (1) {
-    my $result = $self->_handle($server, $method, defined $cursor ? {cursor => $cursor} : {});
+    my $result = $self->_handle($server, $method, defined $cursor ? {cursor => $cursor} : {}, $lenient) // return [];
     push @all, @{$result->{$key} // []};
     $cursor = $result->{nextCursor};
     last unless defined $cursor && length $cursor && !$seen{$cursor}++;
@@ -326,7 +337,10 @@ is built. A throwaway instance, made with the entry's C<args>, answers
 C<initialize>, C<tools/list> and -- when its capabilities announce them --
 C<prompts/list> and C<resources/list> through its own JSON-RPC handler, in
 process. That fills the facade; the C<instructions> are read off the server
-object. The instance is then let go of: its server's tool, prompt and resource
+object. A C<prompts/list> or C<resources/list> the class answers with an error
+is an empty list, as it is for the worker and any other upstream (see
+L<MCP::Hub::Upstream/refresh_p>); an error on its C<tools/list> fails the
+entry. The instance is then let go of: its server's tool, prompt and resource
 lists are emptied first, so a tool closure that captures the instance does not
 keep it alive through a cycle. Nothing is cached on disk and nothing is hashed,
 so C<args> -- which may hold secrets -- is never written anywhere.

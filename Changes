@@ -289,3 +289,6 @@ Revision history for MCP-Hub
     toward the crash loop.
   - Streamable HTTP: a request that gets no response -- refused, timed out
     -- reads `upstream NAME: ...` like every other failure.
+  - A forked class whose prompts/list or resources/list answers with an
+    error is listed with none, as any other upstream, instead of failing
+    the entry; an error on its tools/list still fails it.
