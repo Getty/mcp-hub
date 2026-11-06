@@ -205,7 +205,7 @@ sub _meta ($self, $file) {
 # the scan's state at that offset. A file that only grew is read from that
 # offset on; a new one, or one that shrank, was replaced (another inode) or
 # changed without growing, is read from the start. With $visit, a file that has
-# to be read at all is read from the start, and $visit sees every decoded line
+# to be read at all is read from the start, and $visit sees every record
 # of it -- lines before the offset only if the raw test $skip lets them
 # through. Returns whether the file was read.
 sub _refresh ($self, $file, $skip = undef, $visit = undef) {
@@ -224,14 +224,14 @@ sub _refresh ($self, $file, $skip = undef, $visit = undef) {
   my ($offset, $size) = _lines($fh, $visit ? 0 : $from, sub ($line, $start, $whole) {
     my $rec;
     if ($start >= $from) {
-      $rec = eval { decode_json($line) } or return;
+      $rec = _record($line) or return;
       # An unterminated last line counts for now, but is read again next time.
       if ($whole) { _absorb(\%state, $rec) }
       else        { _absorb($tail = {%state}, $rec) }
     }
     else {
       return if $skip && $skip->($line);
-      $rec = eval { decode_json($line) } or return;
+      $rec = _record($line) or return;
     }
     $visit->($rec) if $visit;
   });
@@ -284,14 +284,21 @@ sub _entries ($self, $file) {
   return \@entries;
 }
 
-# Every decoded line of $file. With a raw test, a line is decoded only if its
-# raw bytes could hold a match.
+# Every record of $file (see _record). With a raw test, a line is decoded only
+# if its raw bytes could hold a match.
 sub _each_record ($file, $skip, $cb) {
   _lines(path($file)->open('<:raw'), 0, sub ($line, @) {
     return if $skip && $skip->($line);
-    my $rec = eval { decode_json($line) } or return;
+    my $rec = _record($line) or return;
     $cb->($rec);
   });
+}
+
+# The record a line holds: the object it decodes to, or undef for a line that
+# is not JSON, or is JSON but not an object ([1], 42, "x").
+sub _record ($line) {
+  my $rec = eval { decode_json($line) };
+  return ref $rec eq 'HASH' ? $rec : undef;
 }
 
 sub _entry ($rec) {

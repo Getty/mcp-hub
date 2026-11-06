@@ -194,3 +194,7 @@ Revision history for MCP-Hub
   - A start of an HTTP upstream asked for right after a stop is now a fresh
     start, begun once the stopped start has settled, instead of failing as
     stopped along with it.
+  - A session-file line that is JSON but not an object (`[1]`, `42`, `"x"`)
+    is now skipped like an unreadable one; before, it made list_projects,
+    list_sessions, search_conversations, get_conversation and
+    list_running_sessions fail for every session.

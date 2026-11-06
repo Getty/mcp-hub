@@ -100,7 +100,7 @@ sub _session_meta ($self, $file) {
   while (my $line = <$fh>) {
     chomp $line;
     next unless length $line;
-    my $rec = eval { decode_json($line) } or next;
+    my $rec = _record($line) or next;
     $session_id //= $rec->{sessionId};
     $branch     //= $rec->{gitBranch};
     $started    //= $rec->{timestamp};
@@ -124,7 +124,7 @@ sub _session_meta ($self, $file) {
     $buf = $pos > $head ? shift @lines : '';
     for my $line (reverse @lines) {
       next unless length $line;
-      my $rec = eval { decode_json($line) } or next;
+      my $rec = _record($line) or next;
       if (!$last_found && defined $rec->{timestamp}) { $last = $rec->{timestamp}; $last_found = 1 }
       if (!$prompt_found && ($rec->{type} // '') eq 'user') {
         $last_prompt  = _text($rec->{message});
@@ -141,6 +141,13 @@ sub _session_meta ($self, $file) {
     last_prompt   => $last_prompt,
     git_branch    => $branch,
   };
+}
+
+# The record a line holds: the object it decodes to, or undef for a line that
+# is not JSON, or is JSON but not an object ([1], 42, "x").
+sub _record ($line) {
+  my $rec = eval { decode_json($line) };
+  return ref $rec eq 'HASH' ? $rec : undef;
 }
 
 sub _text ($message) {
