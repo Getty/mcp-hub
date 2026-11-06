@@ -198,3 +198,6 @@ Revision history for MCP-Hub
     is now skipped like an unreadable one; before, it made list_projects,
     list_sessions, search_conversations, get_conversation and
     list_running_sessions fail for every session.
+  - get_conversation reads the session's own file (`<session_id>.jsonl`, as
+    Claude Code names it) first, so on a cold cache it no longer reads every
+    session file; a session in a file named otherwise is still found.

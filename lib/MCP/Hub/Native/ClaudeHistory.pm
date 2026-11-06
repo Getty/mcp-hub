@@ -324,12 +324,16 @@ sub _lines ($fh, $from, $cb) {
   return $offset, $pos;
 }
 
+# Claude Code names a session's file after the session, so a file of that name
+# is read first; only if none holds the session are the others read. The
+# session_id is compared with the names of the files listed, never made into a
+# path, so it cannot reach outside the projects dir.
 sub _file_for_session ($self, $session_id) {
-  for my $dir ($self->_project_dirs) {
-    for my $file (_session_files($dir)) {
-      my $meta = $self->_meta($file);
-      return $file if ($meta->{session_id} // '') eq $session_id;
-    }
+  my @files = map { _session_files($_) } $self->_project_dirs;
+  my $name  = "$session_id.jsonl";
+  for my $file ((grep { $_->basename eq $name } @files), (grep { $_->basename ne $name } @files)) {
+    my $meta = $self->_meta($file);
+    return $file if ($meta->{session_id} // '') eq $session_id;
   }
   return undef;
 }
@@ -436,7 +440,9 @@ memory together with the file's device, inode, size, modification time and the
 offset its scan reached: an unchanged file is not read again, a file that grew
 is read only from that offset on, and a file that shrank, was replaced or was
 rewritten without growing is read again from the start. A search reads a file
-whose metadata is out of date only once, for both.
+whose metadata is out of date only once, for both. C<get_conversation> reads
+the file named after the session (C<< <session_id>.jsonl >>, as Claude Code
+names it) first, and the others only if that one does not hold the session.
 
 =head2 Tools
 
