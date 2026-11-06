@@ -41,10 +41,10 @@ sub client ($t, $path) {
   return MCP::Client->new(ua => $t->ua, url => "$base$path");
 }
 
-sub hub ($hub = {}) {
+sub hub ($hub = {}, $server = {class => 'ExtraEcho'}) {
   my $cache = tempdir;
   return MCP::Hub->new(hub_config_input => {
-    mcpServers => {extra => {class => 'ExtraEcho'}},
+    mcpServers => {extra => $server},
     hub        => {cache_dir => "$cache", %$hub},
   });
 }
@@ -108,6 +108,30 @@ subtest 'clients mode: the profile tool filter leaves extra on what it keeps' =>
   is $tools->[0]{title}, $EXTRA->{title}, 'filtered /all keeps the title';
   is_deeply $tools->[0]{icons}, $EXTRA->{icons}, 'filtered /all keeps the icons';
   is_deeply $tools->[0]{_meta}, $EXTRA->{_meta}, 'filtered /all keeps _meta';
+};
+
+# A forked class is listed from the manifest, the way a stdio upstream is: its
+# extras reach /all through Facade::Tool, not through an in-process server.
+subtest 'fork: /all keeps title, icons and _meta from the manifest' => sub {
+  plan skip_all => 'forked class workers need Linux (/proc/self/fd)' unless -d '/proc/self/fd';
+  my $t = Test::Mojo->new(hub({}, {class => 'ExtraEcho', hub => {fork => \1}}));
+
+  my $own = find(client($t, '/extra')->list_tools->{tools}, 'echo');
+  is $own->{title}, $EXTRA->{title}, 'control: own endpoint has the title';
+  is_deeply $own->{icons}, $EXTRA->{icons}, 'control: own endpoint has icons';
+  is_deeply $own->{_meta}, $EXTRA->{_meta}, 'control: own endpoint has _meta';
+
+  my $agg = find(client($t, '/all')->list_tools->{tools}, 'extra__echo');
+  ok $agg, 'the prefixed tool is in /all';
+  is $agg->{title}, $EXTRA->{title}, '/all keeps the tool title';
+  is_deeply $agg->{icons}, $EXTRA->{icons}, '/all keeps the tool icons';
+  is_deeply $agg->{_meta}, $EXTRA->{_meta}, '/all keeps the tool _meta';
+
+  my $prompt = find(client($t, '/all')->list_prompts->{prompts}, 'extra__greet');
+  ok $prompt, 'the prefixed prompt is in /all';
+  is $prompt->{title}, $PEXTRA->{title}, '/all keeps the prompt title';
+  is_deeply $prompt->{icons}, $PEXTRA->{icons}, '/all keeps the prompt icons';
+  is_deeply $prompt->{_meta}, $PEXTRA->{_meta}, '/all keeps the prompt _meta';
 };
 
 done_testing;
