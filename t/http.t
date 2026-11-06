@@ -1309,6 +1309,96 @@ subtest 'streamable http upstream: a stop calls off the new session, and opens n
   }
 };
 
+subtest 'streamable http upstream: a call let through just before a start goes out on the session it opens' => sub {
+  # A call is let through by start_p and sent a tick later. A start that began
+  # in between -- after a stop, or for the new session a 404 asks for -- took it
+  # for a request of its own: it went out in the middle of the handshake, with
+  # no session id before the initialize was answered (a stateful remote answers
+  # that 400), a stop cut it off as a request of the start, and it held no
+  # session against the stop's DELETE. It waits for the start, and goes out on
+  # the session the start opens, as a call made while it starts does.
+  for my $when ('a stop and a start', 'a new session after a 404') {
+    my $hold = Mojo::Promise->new;
+    my $fake = fake_http(answer => pong_answer(sub ($req) {
+      return undef unless $req->{params}{name} eq 'held';
+      my $id = $req->{id};
+      return $hold->then(sub { {jsonrpc => '2.0', id => $id, result => {content => [{type => 'text', text => 'pong'}]}} });
+    }));
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+      cache_dir => tempdir->to_string,
+    );
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+    $up->log($log);
+    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$when: started";
+    posts_on($fake);
+
+    # The state the call is let through in, and the call.
+    my ($let_through, $call, $other);
+    if ($when eq 'a stop and a start') {
+      # In the running loop, as in the daemon: outside it, the stop's DELETE
+      # has Mojo::UserAgent run one tick, and the call would go out in the
+      # middle of the stop, before the start.
+      Mojo::IOLoop->next_tick(sub {
+        $let_through = $up->state;
+        $call        = $up->call_tool('held', {});
+        $up->stop;
+        $up->start_p;
+      });
+      ok until_true(sub { @{$fake->{deletes}} }), "$when: the stop ends s1";
+    }
+    else {
+      # The remote has ended s1. The call is let through as the 404 of another
+      # comes back: once the hub has read it, before it acts on it -- a tick
+      # before the new session's start begins.
+      delete $fake->{live}{s1};
+      weaken(my $weak = $up);
+      my $hooked;
+      $up->req_ua->on(start => sub ($ua, $tx) {
+        return if $hooked++;
+        $tx->on(finish => sub ($tx) {
+          Mojo::IOLoop->next_tick(sub { $let_through = $weak->state; $call = $weak->call_tool('held', {}) });
+        });
+      });
+      $other = $up->call_tool('ping', {});
+    }
+    ok until_true(sub {
+      $call && $up->state eq 'ready' && grep { ($_->{params}{name} // '') eq 'held' } @{$fake->{posts}};
+    }), "$when: the start is through, and the call sent";
+    is $let_through, 'ready', "$when: the call was let through on the ready upstream";
+    is _error_text(_await_bounded($other, 5)), 'pong', "$when: the call that came back 404 is answered" if $other;
+    is_deeply posts_on($fake),
+      $when eq 'a stop and a start'
+      ? ['initialize: none', 'tools/list: s2', 'tools/call: s2']
+      : ['tools/call: s1', 'initialize: none', 'tools/list: s2', 'tools/call: s2', 'tools/call: s2'],
+      "$when: the call went out once the start was through, on the session it opened";
+
+    # A call on the session the upstream is on: a stop leaves it to finish,
+    # and ends the session once it is through.
+    my ($cut, $deleted) = ($fake->{cut}, scalar @{$fake->{deletes}});
+    $up->stop;
+    Mojo::Promise->timer(0.1)->wait;
+    is scalar @{$fake->{deletes}}, $deleted, "$when: a stop does not end s2 under the call";
+    $hold->resolve;
+    is _error_text(_await_bounded($call, 5)), 'pong', "$when: the call is answered";
+    is $fake->{cut}, $cut, "$when: its POST was not cut off";
+    ok until_true(sub { @{$fake->{deletes}} > $deleted }), "$when: then s2 is ended";
+    is_deeply $fake->{deletes}, $when eq 'a stop and a start' ? ['s1', 's2'] : ['s2'],
+      "$when: with one DELETE carrying its id";
+    is $up->error, undef, "$when: no failure reason";
+    is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$when: nothing logged as a failure"
+      or diag explain \@logged;
+
+    weaken(my $gone = $up);
+    undef $up;
+    is $gone, undef, "$when: nothing holds the upstream";
+    $fake->{daemon}->stop;
+  }
+};
+
 subtest 'an error reads the same over both transports: no trailing newline' => sub {
   # Over Streamable HTTP the reason of a failed request ended in a newline --
   # "upstream fake: nope\n" -- and the agent read it in the text of the error

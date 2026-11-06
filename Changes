@@ -217,3 +217,8 @@ Revision history for MCP-Hub
     is skipped, as ClaudeHistory skips it.
   - get_conversation reads the session's own file once on a cold cache, for
     its metadata and its messages together, instead of twice.
+  - A call that a Streamable HTTP upstream lets through just before a start
+    begins -- after a stop, or for the new session a remote-ended one needs --
+    now waits for that start and goes out on its session, instead of going
+    out without a session id in the middle of the handshake, where a stop
+    cut it off.
