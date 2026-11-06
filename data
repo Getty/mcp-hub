@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-06T03:52:08Z
+created: 2026-11-06T01:48:37Z
+id: 62
+priority: low
+started: 2026-11-06T03:09:31Z
+status: done
+tags:
+- cli
+- hazard
+title: hypnotoad bin/mcp-hub still serves the hub pre-forked
+updated: 2026-11-06T03:52:15Z
+---
+
+Found by mcp-hub-worker during k34 (2026-11-06). k34 refuses prefork/cgi/psgi, but 'hypnotoad bin/mcp-hub' runs the app under Mojo::Server::Hypnotoad, pre-forked -- the hypnotoad half of the one-process hazard. Refuse it when HYPNOTOAD_APP (or Mojo::Server::Hypnotoad being loaded) is seen at startup, with the same message pointing at 'mcp-hub daemon'. Test without actually starting hypnotoad.
+
+Seam: MCP::Hub::Commands::run, MOJO_APP_LOADER branch (hypnotoad -> Mojo::Server::Prefork->load_app -> do bin/mcp-hub -> ->start -> commands->run, which used to hand the app straight back). Now dies there when HYPNOTOAD_APP is set or Mojo::Server::Hypnotoad is loaded, via _refusal(under => 1): 'mcp-hub refuses to run under hypnotoad: the hub is one process that owns every upstream and all state; hypnotoad serves it from pre-forked workers, ... Run "mcp-hub daemon" instead.' Reason in new %UNDER table; hypnotoad deliberately NOT added to %REFUSED (that would also turn 'mcp-hub hypnotoad' from Unknown command into a refusal; out of scope). Other loaders (Test::Mojo->new(script), morbo) still get the app; a CLI run with HYPNOTOAD_APP inherited is unaffected. No lib/MCP/Hub.pm change. Test in t/cli.t (child processes): real Mojo::Server::Hypnotoad->run with HYPNOTOAD_REV=1 (skip re-exec) + HYPNOTOAD_TEST=1 (exit before fork if the refusal broke), each sign alone via Mojo::Server->load_app, plus 2 controls; 10/14 red before, green after. Manual: real 'hypnotoad -t' and '-f bin/mcp-hub' print 'Everything looks good!' before, refuse after. POD (Commands, bin/mcp-hub) + one README CLI sentence. Not committed; per-card patches in w-cli/k6{3,7,2}.patch apply in order to HEAD; prove -lr t/ green on tree and on HEAD export.
+
+Committed as b08bea4.
