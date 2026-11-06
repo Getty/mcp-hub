@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-11-06T02:06:26Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T02:06:26Z
+created: 2026-11-03T18:20:30Z
+id: 30
+priority: high
+started: 2026-11-06T01:25:18Z
+status: done
+tags:
+- aggregate
+- facade
+- bug
+title: /all aggregate drops title, icons and _meta of upstream tools
+updated: 2026-11-06T02:06:26Z
+---
+
+MCP::Hub::Aggregate::_wrap_tool (lib/MCP/Hub/Aggregate.pm:35) builds the prefixed Facade::Tool from name/description/input_schema/output_schema/annotations only — the tool's `extra` (title, icons, _meta) is not carried over, and Aggregate is a plain MCP::Server that does not re-merge it. Found during k29 research: a tool with title and _meta shows both on its own endpoint, neither on /all. Breaks the hazard 'the façade must not drop extra'; present since v1, no test covers it. Needs a regression test (mcp-hub-test-writer) and the fix (mcp-hub-worker).
+
+Regression test added: t/aggregate.t (3 subtests; controls on the own endpoint pass, every /all assertion for tool and prompt title/icons/_meta fails on HEAD). Fix: Aggregate::_wrap_tool/_wrap_prompt must carry extra, and the aggregate needs a Facade::Server-style merging list render (it is a plain MCP::Server). Not committed, not handed off.
+
+Regression test added: t/aggregate.t (3 subtests; the controls on the own endpoint pass, all /all assertions for tool and prompt title/icons/_meta fail on HEAD). Fix goes in Aggregate::_wrap_tool/_wrap_prompt plus an extra-merging list render on the aggregate (see Facade::Server). Not committed, not handed off.
+
+2026-11-06 01:34 Cause, wider than the card says: for an in-process class (the test's ExtraEcho, Upstream::Perl) the upstream server is the class itself with plain MCP::Tool objects -- there is no Facade::Tool->extra to copy; the extras exist only in what that server renders in its own tools/list / prompts/list. So the fix takes them from the upstream's own render at rebuild time (works for façades and in-process alike), stores them on the wrapped Facade::Tool / the aggregate's extra->{prompts}, and makes Aggregate a Facade::Server subclass so its list render re-merges them (after the tools-event filter).
+
+2026-11-06 01:42 Fix in place (lib/MCP/Hub/Aggregate.pm, POD of Aggregate + Facade::Server, skills mcp-hub-core/-runtime). t/aggregate.t green. Also verified by a scratch probe (not committed) that a FORKED ExtraEcho (manifest -> Facade::Tool->extra path) now keeps tool title/_meta and prompt title on /all -- it fails on HEAD's Aggregate; t/aggregate.t covers only the in-process path. Full prove -lr t/ rerun in progress (first run caught k34/k31's in-flight t/cli.t + t/command.t mid-edit; both pass on rerun).
+
+2026-11-06 01:47 Done: /all keeps title/icons/_meta of tools and prompts. MCP::Hub::Aggregate is now an MCP::Hub::Facade::Server; rebuild reads each upstream server's own tools/list + prompts/list rendering (empty MCP::Server::Context, so no profile filter) and keeps the extras per name (MCP::Hub::Facade::_extra) on the wrapped Facade::Tool->extra and in extra->{prompts}{<u>__<p>}; Facade::Server's render merges them back after the tools-event filter (filter_aggregate unchanged). Covers in-process classes (plain MCP::Tool, extras only in their render) and manifest-backed façades alike. lib/MCP/Hub.pm untouched. POD (Aggregate, Facade::Server) and skills mcp-hub-core / mcp-hub-runtime updated. Verified: prove -l t/aggregate.t PASS (fails on HEAD); scratch probe with a forked ExtraEcho passes (fails on HEAD's Aggregate); prove -lr t/ Files=26, Tests=238, Result: PASS -- skipped: t/docker-live.t, t/npx.t, t/wiki-live.t (opt-in env vars). Drift for the dispatcher: (1) t/aggregate.t lacks a manifest-path case (forked ExtraEcho, hub.fork) -> mcp-hub-test-writer; (2) _wrap_tool/_wrap_prompt still drop MCP::Primitive scopes/cache_ttl/cache_scope of the upstream entry -> p5-mcp-hub board, low.
+
+Committed as 8d5f5e8
