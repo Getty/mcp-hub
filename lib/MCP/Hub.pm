@@ -4,6 +4,7 @@ use Mojo::Base 'Mojolicious', -signatures;
 
 use MCP::Hub::Aggregate;
 use MCP::Hub::Auth;
+use MCP::Hub::Commands;
 use MCP::Hub::Config;
 use MCP::Hub::Facade::Server;
 use MCP::Hub::Help;
@@ -34,11 +35,11 @@ has 'aggregate';
 has upstreams         => sub { [] };
 has upstreams_by_name => sub { {} };
 
-sub startup ($self) {
-  # Prepend, not append: our daemon command must win over the built-in
-  # Mojolicious::Command::daemon (which ignores the config listen address).
-  unshift @{$self->commands->namespaces}, 'MCP::Hub::Command';
+# The command line without the commands that would serve the hub as more than
+# one process (prefork, cgi, psgi), and with ours searched first.
+has commands => sub ($self) { MCP::Hub::Commands->new(app => $self) };
 
+sub startup ($self) {
   my $config = $self->_resolve_config;
   $self->hub_config($config);
   $self->log->warn("no configuration file at $config->{_missing}") if $config->{_missing};
@@ -812,6 +813,12 @@ The L<MCP::Hub::Auth>.
 How often the C<hub.auto_reload> watcher stats the configuration file, in
 seconds. Defaults to C<2>. It is an attribute rather than a configuration key
 because there is nothing to tune in a deployment; tests set it lower.
+
+=attr commands
+
+The L<MCP::Hub::Commands> that runs the command line: L<Mojolicious::Commands>
+with the hub's own commands searched first, and with C<prefork>, C<cgi> and
+C<psgi> refused.
 
 =attr cli
 

@@ -199,4 +199,84 @@ subtest 'refresh renders a failed upstream as failed, never "0 tools"' => sub {
   unlike $out, qr/broken\s+0 tools/, 'and never "0 tools"';
 };
 
+# --- the commands that would serve the hub in more than one process ---------
+
+# Run one command line against $app: what it printed, and the error it died
+# with (undef when it did not).
+sub run_command ($app, @args) {
+  my $out = '';
+  open my $fh, '>', \$out or die;
+  my $old = select $fh;
+  my $ok  = eval { $app->start(@args); 1 };
+  select $old;
+  return ($out, $ok ? undef : $@);
+}
+
+# Should a refusal ever stop working, the real command must not start a
+# pre-forking server, or read a CGI request from STDIN, inside the test: each
+# dies instead, naming itself.
+my @REFUSED = qw(prefork cgi psgi);
+for my $name (@REFUSED) {
+  my $class = "Mojolicious::Command::$name";
+  eval "require $class; 1" or die $@;
+  no strict 'refs';
+  no warnings 'redefine';
+  *{"${class}::run"} = sub { die "reached $class\n" };
+}
+
+subtest 'prefork, cgi and psgi are refused, saying why and pointing at mcp-hub daemon' => sub {
+  delete local @ENV{qw(PLACK_ENV PATH_INFO GATEWAY_INTERFACE MOJO_NO_DETECT)};
+  for my $name (@REFUSED) {
+    for my $args ([$name], [$name, '-l', 'http://127.0.0.1:9'], ['help', $name], [$name, '--help']) {
+      my ($out, $err) = run_command($app, @$args);
+      like $err, qr/^mcp-hub refuses "$name": the hub is one process that owns every upstream and all state/,
+        "mcp-hub @$args is refused, and says why";
+      like $err, qr/Run "mcp-hub daemon" instead\.\n\z/, '...and points at mcp-hub daemon';
+      is $out, '', '...and prints nothing';
+    }
+  }
+};
+
+subtest 'a CGI or PSGI environment cannot turn a command into cgi or psgi' => sub {
+  # Mojolicious::Commands lets the environment override the command name: with
+  # PLACK_ENV set, mcp-hub daemon served nothing, returned a PSGI app and
+  # exited 0. A command that returns at once stands in for daemon here.
+  my %env = (psgi => {PLACK_ENV => 'production'}, cgi => {GATEWAY_INTERFACE => 'CGI/1.1'});
+  for my $as (sort keys %env) {
+    my ($var) = keys %{$env{$as}};
+    delete local @ENV{qw(PLACK_ENV PATH_INFO GATEWAY_INTERFACE MOJO_NO_DETECT)};
+    local $ENV{$var} = $env{$as}{$var};
+    my ($out, $err) = run_command($app, 'token');
+    like $err, qr/^mcp-hub refuses to run as \U$as\E \($var/, "$var set: refused, naming the variable";
+    like $err, qr/one process that owns every upstream/,     '...and saying why';
+    like $err, qr/"mcp-hub daemon"/,                         '...and pointing at mcp-hub daemon';
+    is $out, '', '...and the command never ran';
+
+    local $ENV{MOJO_NO_DETECT} = 1;
+    ($out, $err) = run_command($app, 'token');
+    is $err, undef, "$var set with MOJO_NO_DETECT=1: the named command runs";
+    like $out, qr/\A[\w-]{43}\n\z/, '...and prints its token';
+  }
+};
+
+subtest 'the command list leaves them out and keeps the commands worth having' => sub {
+  delete local $ENV{HARNESS_ACTIVE};    # Mojolicious prints no list under a test harness
+  delete local @ENV{qw(PLACK_ENV PATH_INFO GATEWAY_INTERFACE MOJO_NO_DETECT)};
+  for my $args ([], ['help'], ['--help'], ['-h']) {
+    my ($out, $err) = run_command($app, @$args);
+    is $err, undef, "mcp-hub @$args lists the commands";
+    my (undef, $table) = split /^Commands:\n/m, $out, 2;
+    my %listed = map { /^ (\w[\w-]*) / ? ($1 => 1) : () } split /\n/, $table // '';
+    ok !$listed{$_}, "$_ is not listed" for @REFUSED, qw(cpanify generate inflate);
+    ok $listed{$_},  "$_ is listed" for qw(config daemon refresh reload status token eval get routes version);
+  }
+};
+
+subtest 'the Mojolicious author tools are not hub commands' => sub {
+  is_deeply $app->commands->namespaces, ['MCP::Hub::Command', 'Mojolicious::Command'],
+    'ours first, then the core commands; no Mojolicious::Command::Author';
+  my (undef, $err) = run_command($app, 'generate');
+  like $err, qr/^Unknown command "generate"/, 'mcp-hub generate is an unknown command';
+};
+
 done_testing;

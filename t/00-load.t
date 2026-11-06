@@ -27,6 +27,7 @@ my @modules = qw(
   MCP::Hub::Native::ClaudeHistory
   MCP::Hub::Native::ClaudeSessions
   MCP::Hub::Native::Status
+  MCP::Hub::Commands
   MCP::Hub::Command::daemon
   MCP::Hub::Command::config
   MCP::Hub::Command::status

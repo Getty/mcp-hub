@@ -68,9 +68,9 @@ the configuration. It is the ordinary L<Mojolicious::Command::daemon>, so
 C<-m>/C<--mode>, C<-i>/C<--inactivity-timeout>, C<$MOJO_LOG_LEVEL> and the other
 daemon options and environment variables all apply.
 
-The hub must not run under hypnotoad or a pre-forking server, so there is no
-C<prefork> command: every worker would spawn its own child processes and hold
-its own state.
+The hub must not run under hypnotoad or a pre-forking server, so C<mcp-hub
+prefork> is refused (L<MCP::Hub::Commands>): every worker would spawn its own
+child processes and hold its own state.
 
 =head2 Reloading
 

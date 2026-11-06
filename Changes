@@ -111,3 +111,6 @@ Revision history for MCP-Hub
   - A stdio upstream, a docker/compose CLI run and a forked class worker no
     longer inherit MOJO_REUSE, Mojo's list of the hub's listening sockets by
     fd -- fds the child does not hold. An entry's own env may still set it.
+  - mcp-hub refuses prefork, cgi and psgi, named or picked by PLACK_ENV or
+    GATEWAY_INTERFACE, saying why and pointing at mcp-hub daemon; the command
+    list no longer offers them or Mojolicious' generate/inflate/cpanify.
