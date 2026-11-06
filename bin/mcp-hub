@@ -11,9 +11,15 @@ use MCP::Hub;
 # environment. Only before the command name: after it, the options belong to
 # the command -- get's -c is the request body, daemon's -c the client limit.
 while (@ARGV) {
-  if    ($ARGV[0] eq '--config' || $ARGV[0] eq '-c') { shift @ARGV; $ENV{MCP_HUB_CONFIG} = shift @ARGV }
-  elsif ($ARGV[0] =~ /^--config=(.*)$/s)             { shift @ARGV; $ENV{MCP_HUB_CONFIG} = $1 }
+  my ($opt, $path);
+  if    ($ARGV[0] eq '--config' || $ARGV[0] eq '-c') { ($opt, $path) = splice @ARGV, 0, 2 }
+  elsif ($ARGV[0] =~ /^--config=(.*)$/s)             { shift @ARGV; ($opt, $path) = ('--config', $1) }
   else                                               { last }
+
+  # A missing PATH would leave the hub on the default file, an empty one on no
+  # file at all -- either without a word.
+  die "option $opt needs a PATH\n" unless length($path // '');
+  $ENV{MCP_HUB_CONFIG} = $path;
 }
 
 # cli => 1: a broken configuration file is deferred rather than thrown at
@@ -46,7 +52,8 @@ agents on the machine as its own endpoint.
 A global C<--config PATH> (or C<-c PATH>, or C<$MCP_HUB_CONFIG>) selects the
 configuration file for every command. It goes before the command name: after
 the name every option is the command's own, so in
-C<mcp-hub --config FILE get -c JSON URL> the C<-c> is the request body.
+C<mcp-hub --config FILE get -c JSON URL> the C<-c> is the request body. Without a
+PATH, or with an empty one, C<--config> is an error.
 
 The file may be JSON or YAML and its extension decides which: C<.yml> and
 C<.yaml> are read as YAML, anything else as JSON. Both spell the same

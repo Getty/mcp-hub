@@ -66,6 +66,24 @@ subtest 'the global forms before the command select the config file' => sub {
   is_deeply servers($r), ['beta'], 'several global options: the last one wins';
 };
 
+subtest 'a global --config without a PATH fails instead of reading another file' => sub {
+  # Regression: a missing PATH left MCP_HUB_CONFIG undef, so the hub read the
+  # default file instead; an empty one made it read no file, without a word.
+  local $ENV{MCP_HUB_CONFIG} = $config{alpha};
+  for my $case (
+    ['--config', '--config'], ['-c', '-c'], ['--config', '--config='],
+    ['--config', '--config', ''], ['-c', '-c', ''],
+    ['--config', '--config', '', 'config'], ['--config', '--config=', 'config'],
+    ['-c', '-c', $config{beta}, '-c'],
+  ) {
+    my ($opt, @args) = @$case;
+    my $r = mcp_hub(@args);
+    isnt $r->{exit}, 0, "mcp-hub @args fails";
+    is $r->{err}, "option $opt needs a PATH\n", "...saying option $opt needs a PATH";
+    is $r->{out}, '', '...and prints nothing';
+  }
+};
+
 subtest "after the command, -c is the command's own option" => sub {
   my $rpc = encode_json({
     jsonrpc => '2.0', id => 1, method => 'initialize',
