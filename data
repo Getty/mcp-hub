@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T07:27:22Z
+created: 2026-11-06T05:14:57Z
+id: 93
+priority: low
+started: 2026-11-06T06:46:08Z
+status: done
+tags:
+- native
+- reload
+- memory
+title: Native class instances close over $self in their tool code and leak when a
+  reload drops them
+updated: 2026-11-06T07:27:22Z
+---
+
+Found by mcp-hub-worker during k73 (2026-11-06). Native::ClaudeHistory, ClaudeSessions and Status (and t/lib/EchoServer's notify tool) close over $self in their tools' code. A reload that drops such a 'class' entry leaks the instance (the Upstream::Perl object itself is freed). Done: the tool code holds the instance weakly or gets it from the call context; t/reload-free.t covers a removed class entry.
+
+2026-11-06 07:18 Fix (same pattern as k73 Facade::_tool): ClaudeHistory, ClaudeSessions and Status weaken $self in _register. Each tool answers with an isError result "NAME: gone, the server of this tool was freed" when its server is gone. The call context has no server in MCP 0.15, so the weak reference was the only option. EchoServer notify holds a weak $server. Wire behaviour of a live server is unchanged. Status: its $self closure is not intended as a keep-alive, so it is weakened like the others. Its has hub is strong, but so is every Upstream has hub; that cycle lasts as long as the hub and does not keep the instance. t/reload-free.t, new subtest: a reload removes 4 class entries (echo, history, sessions, status) after a tool of each ran through /all, and the instances are freed. Red before: all 4 alive; with each class put back on its own, only that one stays alive. A second new subtest: a native tool held on its own answers "NAME: gone". LIMIT, needs a card outside my lane: an instance served on its own endpoint is still not freed. MCP::Server->to_action sets server->transport(HTTP), and MCP::Server::Transport has server holds it strongly, a cycle. The same holds for the facade server of every upstream type. Probe: an http upstream listed on /http and removed by a reload is freed, its facade server is not. The k73 Changes line "a reload frees the upstreams" is true of the Upstream objects only. Fix candidates: Upstream.pm action (hold the transport server weakly, or drop the transport when the hub lets go of it), stdio-chain lane; or MCP dist Transport. Also: an in-process third-party class whose tools capture its instance leaks the same way. Upstream::Perl could empty the server lists when it is dropped, as Fork already does for its throwaway instance (Upstream/Perl.pm).
+
+2026-11-06 07:18 Done, not committed. The card criteria are met. The own-endpoint transport cycle (see note) needs its own card. Files: lib/MCP/Hub/Native/{ClaudeHistory,ClaudeSessions,Status}.pm, t/lib/EchoServer.pm, t/reload-free.t. Patch: w-native2/k93.patch, applies on top of k98. Verified with the same runs as k97: full prove -lr passes on f8d6d62 and 19ce671, and under the Poll reactor; only docker-live, npx and wiki-live self-skip. Proposed subject: "Hold the native server weakly in its tools, so a reload frees it (k93)". The Changes entry should be worded so that it does not claim more than this fixes.
+
+Committed as 6cef591
