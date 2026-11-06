@@ -173,6 +173,14 @@ subtest 'the worker holds nothing of the hub' => sub {
   # The control for the line above: only libev installs signal handlers of its own.
   like proc_status($$, 'SigCgt'), qr/[1-9a-f]/, 'while the hub still has its handlers'
     if Mojo::IOLoop->singleton->reactor->isa('Mojo::Reactor::EV');
+
+  # Mojo lists the hub's listening sockets in MOJO_REUSE, by fd -- fds that are
+  # /dev/null in the worker.
+  my $port = $t->ua->server->url->port;
+  like $ENV{MOJO_REUSE}, qr/(?:^|,)127\.0\.0\.1:$port:\d+(?:,|$)/, 'the hub has its listener in MOJO_REUSE';
+  my $env = client($t, '/probe')->call_tool('getenv', {name => 'MOJO_REUSE'})->{structuredContent};
+  ok !$env->{set}, 'the worker has no MOJO_REUSE' or diag "MOJO_REUSE=$env->{value}";
+  is $up{probe}->stats->{pid}, $pid, 'as the same worker tells';
 };
 
 # libev's default loop reaps every child itself, at top priority, as soon as

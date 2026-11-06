@@ -2,7 +2,7 @@ package MCP::Hub::Upstream::Fork;
 our $VERSION = '0.001';
 use Mojo::Base 'MCP::Hub::Upstream::Stdio', -signatures;
 
-use MCP::Hub::Child qw(inherited_fds);
+use MCP::Hub::Child qw(child_env inherited_fds);
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
 use MCP::Server::Context;
@@ -175,6 +175,7 @@ sub _worker ($self, $parent, $child, $err_r, $err_w) {
     close $child;
     close $err_w;
     $self->_isolate_fds;
+    %ENV = child_env();    # less the MOJO_REUSE that names the hub's listeners
 
     srand();    # or every worker would repeat the hub's rand() sequence
 
@@ -378,11 +379,13 @@ socket and its stderr at its own pipe, gives every regular file it inherited an
 open file description of its own (same position, same access and append flags)
 and puts F</dev/null> over every other inherited fd -- the listening socket,
 client connections, other upstreams' sockets and pipes, the event loop's own
-fds. It reseeds C<rand>, and an C<END> block compiled last makes an C<exit> in
-class code end the worker with its status before any of the hub's C<END>
-blocks. It always leaves with C<POSIX::_exit>: exit code C<0> after EOF, C<3>
-when the instance could not be built or its server died (the message goes to
-stderr, which the hub logs and puts in the exit warning).
+fds -- and drops C<MOJO_REUSE>, which names the listening socket's fd, from its
+environment (L<MCP::Hub::Child/child_env>). It reseeds C<rand>, and an C<END>
+block compiled last makes an C<exit> in class code end the worker with its
+status before any of the hub's C<END> blocks. It always leaves with
+C<POSIX::_exit>: exit code C<0> after EOF, C<3> when the instance could not be
+built or its server died (the message goes to stderr, which the hub logs and
+puts in the exit warning).
 
 Whatever the hub holds at the moment of the fork must be harmless to inherit or
 be neutralised by that recipe. A hub that runs more than one thread at that

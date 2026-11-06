@@ -2,7 +2,7 @@ package MCP::Hub::Upstream::Stdio;
 our $VERSION = '0.001';
 use Mojo::Base 'MCP::Hub::Upstream', -signatures;
 
-use MCP::Hub::Child qw(close_inherited_fds);
+use MCP::Hub::Child qw(child_env close_inherited_fds);
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
 use MCP::Hub::Manifest;
@@ -317,7 +317,7 @@ sub _spawn ($self) {
     open(STDOUT, '>&', $child)  or POSIX::_exit(127);
     open(STDERR, '>&', $err_w)  or POSIX::_exit(127);
     close_inherited_fds();    # the hub's listening socket among them
-    %ENV = (%ENV, %{$c->{env} // {}});
+    %ENV = child_env($c->{env});    # less the MOJO_REUSE that names those fds
     if (defined $c->{cwd}) { chdir $c->{cwd} or POSIX::_exit(127) }
     { exec {$c->{command}} $c->{command}, @{$c->{args} // []} }
     POSIX::_exit(127);

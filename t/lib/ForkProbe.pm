@@ -60,6 +60,18 @@ sub new ($class, @args) {
     },
   );
 
+  # One variable of the environment the process answers from -- for the fork
+  # tests' look at what a worker inherits.
+  $self->tool(
+    name         => 'getenv',
+    description  => 'Whether a variable is set in the environment of the process that answers, and its value',
+    input_schema => {type => 'object', properties => {name => {type => 'string'}}},
+    code         => sub ($tool, $args) {
+      my $name = $args->{name};
+      return $tool->structured_result({set => exists $ENV{$name} ? \1 : \0, value => $ENV{$name}});
+    },
+  );
+
   return $self;
 }
 

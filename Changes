@@ -108,3 +108,6 @@ Revision history for MCP-Hub
   - A stdio upstream and every docker/compose CLI run no longer inherit the
     hub's listening socket (or any other fd above stderr): a child that
     outlived a crashed hub kept its port bound.
+  - A stdio upstream, a docker/compose CLI run and a forked class worker no
+    longer inherit MOJO_REUSE, Mojo's list of the hub's listening sockets by
+    fd -- fds the child does not hold. An entry's own env may still set it.

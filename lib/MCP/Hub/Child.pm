@@ -5,9 +5,9 @@ use Mojo::Base -strict, -signatures;
 use Exporter qw(import);
 use POSIX ();
 
-# ABSTRACT: The file descriptors a child process inherits from the hub
+# ABSTRACT: The file descriptors and environment a child process inherits from the hub
 
-our @EXPORT_OK = qw(close_inherited_fds inherited_fds);
+our @EXPORT_OK = qw(child_env close_inherited_fds inherited_fds);
 
 # Where there is no /proc/self/fd to list, every fd below the soft limit is
 # closed, one call each -- but never more than this many, since a soft limit
@@ -35,13 +35,22 @@ sub _open_max () {
   return $max > 0 && $max < CLOSE_MAX ? $max : CLOSE_MAX;
 }
 
+# Mojo::IOLoop::Server lists every socket the hub listens on in MOJO_REUSE, as
+# "address:port:fd", for a hot-deployed copy of itself to adopt -- fds no child
+# holds. The entry's own env goes on top, and may set it.
+sub child_env ($env = undef) {
+  my %env = %ENV;
+  delete $env{MOJO_REUSE};
+  return (%env, %{$env // {}});
+}
+
 1;
 
 =encoding utf8
 
 =head1 SYNOPSIS
 
-  use MCP::Hub::Child qw(close_inherited_fds);
+  use MCP::Hub::Child qw(child_env close_inherited_fds);
 
   my $pid = fork // die "fork: $!\n";
   unless ($pid) {
@@ -49,6 +58,7 @@ sub _open_max () {
     open(STDOUT, '>&', $child) or POSIX::_exit(127);
     open(STDERR, '>&', $err_w) or POSIX::_exit(127);
     close_inherited_fds();
+    %ENV = child_env($entry->{env});
     { exec {$command} $command, @args }
     POSIX::_exit(127);
   }
@@ -69,6 +79,14 @@ of them between C<fork> and C<exec>, once its stdin, stdout and stderr are in
 place. A forked class worker (L<MCP::Hub::Upstream::Fork>) runs no exec and
 lists them with L</inherited_fds> to neutralise them in place.
 
+The environment goes along too, but for C<MOJO_REUSE>: the list of the hub's
+listening sockets that L<Mojo::IOLoop::Server> keeps there, C<address:port:fd>
+each, for a hot-deployed copy of the server to adopt instead of binding again.
+In a child those fds are closed, or F</dev/null> in a worker, and a Mojo app
+that listened on one of those addresses would take the fd number for its
+socket -- whatever the number holds by then. Every child starts from
+L</child_env>, the exec'd ones and the worker alike.
+
 =head1 FUNCTIONS
 
 Nothing is exported by default.
@@ -81,6 +99,15 @@ Closes every fd above C<2>. They are listed from F</proc/self/fd>; where that is
 missing (anywhere but Linux), every fd from C<3> up to the C<_SC_OPEN_MAX> soft
 limit is closed, capped at 65536. Call it in a child, once its stdin, stdout and
 stderr are set up, right before the C<exec>.
+
+=func child_env
+
+  %ENV = child_env($entry->{env});
+
+The environment for a child: the hub's C<%ENV> without C<MOJO_REUSE>, and the
+given hash reference (an entry's C<env>, or C<undef>) on top -- an entry that
+sets C<MOJO_REUSE> itself keeps its value. Assign it in the child, never in the
+hub, whose own C<MOJO_REUSE> Mojo still maintains.
 
 =func inherited_fds
 
