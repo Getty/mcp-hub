@@ -20,8 +20,10 @@ Die Design-Specs zu den Alternativen B/C liegen in `docs/superpowers/specs/`.
 `fork`/`exec`, kein CPAN-Dependency fürs Prozess-Handling. stdin/stdout sind **ein**
 `AF_UNIX`-Socket-Pair (als `Mojo::IOLoop::Stream`), stderr eine Pipe, die auf
 `debug` geloggt wird. Jede Anfrage ist ein non-blocking Promise, korreliert über
-eine fortlaufende id; ein Request-Timeout schickt `notifications/cancelled` und
-lehnt das Promise ab.
+eine fortlaufende id; ein Request-Timeout lehnt das Promise als `upstream NAME: timed out
+after Ns` ab und schickt `notifications/cancelled` mit der id und diesem Grund als
+`reason`, wie Http (`_cancel`) — nie für `initialize` (Spec). Fork und Docker-stdio erben
+das mit `_request_p`.
 
 Handshake: `initialize` mit Protokoll `2025-06-18` (der Server antwortet, was er
 will — seine Version wird übernommen) → `notifications/initialized` →

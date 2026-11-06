@@ -207,12 +207,17 @@ sub _request_p ($self, $method, $params = {}, $of_start = 0, $child = undef) {
   my $id      = ++$self->{id};
   my $promise = Mojo::Promise->new;
 
+  # One that times out goes on in the child unless it is cancelled there: with
+  # its id and the reason it was rejected with, as over HTTP
+  # (MCP::Hub::Upstream::Http::_cancel). Never the initialize, which a client
+  # must not cancel (MCP 2025-06-18, Cancellation).
   my $timer;
   if ((my $timeout = $self->request_timeout) > 0) {
     $timer = Mojo::IOLoop->timer($timeout => sub {
       my $pending = delete $self->{pending}{$id} or return;
-      $self->_send({jsonrpc => '2.0', method => 'notifications/cancelled', params => {requestId => $id}});
-      $pending->{promise}->reject("upstream @{[$self->name]}: timed out after ${timeout}s");
+      my $why     = "timed out after ${timeout}s";
+      $self->_notify('notifications/cancelled', {requestId => $id, reason => $why}) unless $method eq 'initialize';
+      $pending->{promise}->reject("upstream @{[$self->name]}: $why");
     });
   }
 
@@ -595,8 +600,10 @@ L<Mojo::IOLoop::Stream>, its stderr a pipe logged at C<debug> -- read to the end
 are logged even when the end of its stdout is seen first; every other fd it
 inherited from the hub is closed before the exec (L<MCP::Hub::Child>). All
 requests are non-blocking promises, correlated by an integer id, with a
-per-request timeout that rejects the promise and sends
-C<notifications/cancelled>.
+per-request timeout (L<MCP::Hub::Upstream/request_timeout>) that rejects the
+promise as C<upstream NAME: timed out after Ns> and cancels the request in the
+child: a C<notifications/cancelled> with its id and that reason, as over HTTP.
+Never the C<initialize>, which a client must not cancel (MCP 2025-06-18).
 
 =head2 Lifecycle
 

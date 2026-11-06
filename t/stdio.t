@@ -173,6 +173,50 @@ subtest 'request timeout' => sub {
   settle;
 };
 
+# Every message the upstream sent its child while $code ran, as it went out.
+sub sends_during ($code) {
+  my @sent;
+  no warnings 'redefine';
+  my $send = \&MCP::Hub::Upstream::Stdio::_send;
+  local *MCP::Hub::Upstream::Stdio::_send = sub ($self, $obj) {
+    my $sent = $send->($self, $obj);
+    push @sent, $obj if $sent;
+    return $sent;
+  };
+  $code->();
+  return \@sent;
+}
+
+sub cancels_in ($sent) {
+  return [map { $_->{params} } grep { ($_->{method} // '') eq 'notifications/cancelled' } @$sent];
+}
+
+subtest 'a request that times out is cancelled with its reason -- never the initialize' => sub {
+  # Every request that timed out was cancelled on the child, the initialize
+  # too, which a client must not cancel (MCP 2025-06-18, Cancellation); and the
+  # cancel did not say why, as it does over HTTP. Seen as the hub sends it: a
+  # start that fails kills its child, which may die before it reads a line.
+  # The call's child is started first, so that its initialize, slow on a busy
+  # machine, is not the request that times out.
+  my $up = upstream();
+  is _await_bounded($up->start_p->then(sub { 'started' }), 30), 'started', 'started';
+  $up->request_timeout(1);
+  my $r;
+  my $sent = sends_during(sub { $r = _await_bounded($up->call_tool('sleep', {seconds => 5}), 10) });
+  is _error_text($r), 'upstream echo: timed out after 1s', 'a call times out';
+  my ($call) = grep { ($_->{method} // '') eq 'tools/call' } @$sent;
+  is_deeply cancels_in($sent), [{requestId => $call->{id}, reason => 'timed out after 1s'}],
+    'and is cancelled, once, with the reason it failed with';
+  $up->stop;
+
+  my $mute = oneliner('mute', 'sleep 30', request_timeout => 1, log => log_to([]));
+  $sent = sends_during(sub { $r = _await_bounded($mute->start_p, 10) });
+  is ref $r eq 'HASH' ? $r->{err} : 'ready', 'upstream mute: timed out after 1s', 'an initialize times out';
+  is_deeply [map { $_->{method} } @$sent], ['initialize'], 'and is not cancelled';
+  $mute->stop;
+  _await_bounded($_->stopped_p, 10) for $up, $mute;
+};
+
 subtest 'crash mid-call and restart' => sub {
   my $up = upstream;
   my $r  = _await($up->call_tool('exit', {}));

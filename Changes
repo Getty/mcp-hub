@@ -308,3 +308,6 @@ Revision history for MCP-Hub
     Mojo's 40 s inactivity timeout (or `$MOJO_INACTIVITY_TIMEOUT`):
     `request_timeout` alone bounds a request, and a reload that changes it
     applies it.
+  - A stdio, forked-class or Docker-stdio request that times out is
+    cancelled with a reason ('timed out after Ns'); an initialize that
+    times out is no longer cancelled, as MCP 2025-06-18 requires.
