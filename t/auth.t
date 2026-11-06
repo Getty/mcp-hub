@@ -11,6 +11,15 @@ package FakeTool {
   has 'name';
 }
 
+# Knows which server each /all entry came from, and its name there. The filters
+# must ask it: an entry's "<server>__<name>" does not say, since a server name
+# may contain "__" itself.
+package FakeAggregate {
+  use Mojo::Base -base, -signatures;
+  has origins => sub { {} };
+  sub origin ($self, $entry) { return @{$self->origins->{$entry->name} // []} }
+}
+
 package FakeController {
   use Mojo::Base -base, -signatures;
   use Mojo::Message::Request;
@@ -151,22 +160,45 @@ subtest 'no rule means no filtering' => sub {
   is_deeply names($t), [qw(a b c)], 'full profile keeps every tool';
 };
 
-subtest 'aggregate filtering by prefix' => sub {
+# Each /all entry with the origin the aggregate records for it. The last two
+# are named as if they came from context7, which the profile allows: one comes
+# from a server "context7__x" it does not allow, one from nowhere known.
+my $AGGREGATE = FakeAggregate->new(origins => {
+  context7__resolve => ['context7', 'resolve'],
+  context7__ask     => ['context7', 'ask'],
+  serper__search    => ['serper',   'search'],
+  serper__scrape    => ['serper',   'scrape'],
+  secret__leak      => ['secret',   'leak'],
+  context7__x__leak => ['context7__x', 'leak'],
+});
+
+subtest 'aggregate filtering by origin' => sub {
   my $auth    = MCP::Hub::Auth->new(config => $clients_config);
   my $profile = $clients_config->profiles->{research};
-  my $t = tools(qw(context7__resolve serper__search serper__scrape secret__leak));
-  $auth->filter_aggregate($profile, $t);
+  my $t = tools(qw(context7__resolve serper__search serper__scrape secret__leak context7__x__leak context7__orphan));
+  $auth->filter_aggregate($profile, $t, $AGGREGATE);
   is_deeply names($t), [qw(context7__resolve serper__search)],
-    'drops denied tool and server outside the profile';
+    'drops the denied tool, the servers outside the profile, and the entry of unknown origin';
 };
 
 subtest 'aggregate prompt filtering follows servers alone' => sub {
   my $auth    = MCP::Hub::Auth->new(config => $clients_config);
   my $profile = $clients_config->profiles->{research};
-  my $p = tools(qw(context7__ask serper__scrape secret__leak));
-  $auth->filter_aggregate_prompts($profile, $p);
+  my $p = tools(qw(context7__ask serper__scrape secret__leak context7__x__leak context7__orphan));
+  $auth->filter_aggregate_prompts($profile, $p, $AGGREGATE);
   is_deeply names($p), [qw(context7__ask serper__scrape)],
-    'drops the prompt of a server outside the profile; the tools deny of scrape does not apply';
+    'drops the prompts of servers outside the profile and of unknown origin; the tools deny of scrape does not apply';
+};
+
+subtest 'an aggregate entry of unknown origin is dropped even by a wildcard profile' => sub {
+  my $auth    = MCP::Hub::Auth->new(config => $clients_config);
+  my $profile = $clients_config->profiles->{full};
+  my $t = tools(qw(context7__resolve context7__orphan));
+  $auth->filter_aggregate($profile, $t, $AGGREGATE);
+  is_deeply names($t), ['context7__resolve'], 'the tool of no known origin is dropped';
+  my $p = tools(qw(context7__ask context7__orphan));
+  $auth->filter_aggregate_prompts($profile, $p, $AGGREGATE);
+  is_deeply names($p), ['context7__ask'], 'so is the prompt';
 };
 
 done_testing;

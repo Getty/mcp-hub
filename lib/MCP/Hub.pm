@@ -466,12 +466,12 @@ sub _build_aggregate ($self) {
   $agg->on(tools => sub ($srv, $tools, $ctx) {
     my $c       = $ctx->controller  or return;
     my $profile = $c->stash('mcp.profile') or return;
-    $self->auth->filter_aggregate($profile, $tools);
+    $self->auth->filter_aggregate($profile, $tools, $srv);
   });
   $agg->on(prompts => sub ($srv, $prompts, $ctx) {
     my $c       = $ctx->controller  or return;
     my $profile = $c->stash('mcp.profile') or return;
-    $self->auth->filter_aggregate_prompts($profile, $prompts);
+    $self->auth->filter_aggregate_prompts($profile, $prompts, $srv);
   });
   $self->aggregate($agg);
   return $self;

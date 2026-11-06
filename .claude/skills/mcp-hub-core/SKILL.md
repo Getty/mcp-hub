@@ -88,7 +88,9 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
 - **Tool-Filterung hängt am `tools`-Event und gilt für list UND call.** Ein durch das
   Profil verbotenes Tool ist „not found" (`-32602`), nicht nur unsichtbar. `/all` hängt
   zusätzlich am `prompts`-Event (nur `servers`, keine `tools`-Regel) — sonst listet und
-  liefert `/all` Prompts von Servern außerhalb des Profils.
+  liefert `/all` Prompts von Servern außerhalb des Profils. Beide `/all`-Filter
+  entscheiden nach der Herkunft (`Aggregate->origin`), **nie** nach dem Namenspräfix:
+  Servernamen dürfen `__` enthalten (`p` vs. `p__x`).
 - **Mode wird abgeleitet, nicht deklariert.** `clients` leer → *open* (kein Token,
   Admin-API offen). `clients` gesetzt → *clients* (Bearer nötig, sonst 401; ohne Token
   greift `public_profile`, falls gesetzt). Ein `.mcp.json` ganz ohne `hub`-Block ist ein

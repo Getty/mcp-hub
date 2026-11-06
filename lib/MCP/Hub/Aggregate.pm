@@ -6,26 +6,43 @@ use MCP::Hub::Facade;
 use MCP::Hub::Facade::Tool;
 use MCP::Prompt;
 use MCP::Server::Context;
+use Scalar::Util qw(refaddr);
 
 # ABSTRACT: The /all endpoint -- every upstream's tools and prompts, prefixed
+
+# Where each wrapped tool and prompt came from -- [server, its own name there] --
+# keyed by the wrapper itself. The profile filters decide by this, never by the
+# "<server>__<name>": a server name may contain "__" too, so splitting it can
+# name the wrong server, and two entries can even share one /all name.
+has _origins => sub { {} };
 
 sub new ($class, %args) {
   return $class->SUPER::new(name => 'all', version => $VERSION, %args);
 }
 
+sub origin ($self, $entry) {
+  my $origin = $self->_origins->{refaddr $entry} or return;
+  return @$origin;
+}
+
 sub rebuild ($self, $upstreams) {
-  my (@tools, @prompts, %pextra, @instructions);
+  my (@tools, @prompts, %pextra, %origins, @instructions);
 
   for my $upstream (@$upstreams) {
     my $server = $upstream->server or next;
-    my $prefix = $upstream->name . '__';
+    my $name   = $upstream->name;
+    my $prefix = $name . '__';
 
     my $textra = _listed_extra($server, 'tools');
-    push @tools, map { _wrap_tool($prefix, $_, $textra->{$_->name} // {}) } @{$server->tools};
+    for my $tool (@{$server->tools}) {
+      push @tools, _wrap_tool($prefix, $tool, $textra->{$tool->name} // {});
+      $origins{refaddr $tools[-1]} = [$name, $tool->name];
+    }
 
     my $listed = _listed_extra($server, 'prompts');
     for my $prompt (@{$server->prompts}) {
       push @prompts, _wrap_prompt($prefix, $prompt);
+      $origins{refaddr $prompts[-1]} = [$name, $prompt->name];
       $pextra{$prefix . $prompt->name} = $listed->{$prompt->name};
     }
 
@@ -36,6 +53,7 @@ sub rebuild ($self, $upstreams) {
 
   $self->tools(\@tools);
   $self->prompts(\@prompts);
+  $self->_origins(\%origins);
   $self->extra({prompts => \%pextra, resources => {}});
   $self->instructions(@instructions ? join("\n\n", @instructions) : undef);
   return $self;
@@ -119,23 +137,46 @@ Resources are not aggregated -- their URIs are opaque and would collide -- so us
 the per-server endpoint for those. The C<instructions> are the concatenation of
 each upstream's, headed by C<< ## <name> >>.
 
-The per-request filters use the prefix to apply the profile: to tools its
-C<servers> and C<tools> rules (L<MCP::Hub::Auth/filter_aggregate>), to prompts
-its C<servers> alone (L<MCP::Hub::Auth/filter_aggregate_prompts>). C<tools/call>
+The per-request filters apply the profile by the server each entry came from,
+as L</origin> records it: to tools its C<servers> and C<tools> rules
+(L<MCP::Hub::Auth/filter_aggregate>), to prompts its C<servers> alone
+(L<MCP::Hub::Auth/filter_aggregate_prompts>). They never read the server off the
+prefixed name, since a server name may contain C<__> itself: the tools of C<p__x>
+are C<p__x__...>, and a profile that allows C<p> must not reach them. C<tools/call>
 and C<prompts/get> look the name up in the filtered list, so an entry the
 profile hides is not found, as on its own endpoint.
+
+=head2 Known limit: colliding names
+
+Two servers can produce the same name here: the tool C<x__echo> of C<p> and the
+tool C<echo> of C<p__x> are both C<p__x__echo>. Both are listed, and a call
+reaches the first in server-name order -- here C<p>'s. Under a profile that sees
+only one of them the name means that one, as each is filtered by its own origin
+-- but the C<title>, C<icons> and C<_meta> shown for it are still looked up by
+name, so they are those of the last entry of that name, whichever one the
+profile sees. Refusing C<__> in server names would end the collision; the
+configuration does not, so far.
 
 =head1 METHODS
 
 L<MCP::Hub::Aggregate> inherits all methods from L<MCP::Hub::Facade::Server> and adds:
 
+=method origin
+
+  my ($server, $name) = $all->origin($entry);
+
+The name of the upstream a tool or prompt of this aggregate came from, and the
+entry's own name there -- C<('p__x', 'echo')> for the wrapper C<p__x__echo> of
+C<p__x>'s C<echo>. Keyed by the wrapper object, not its name, so colliding names
+keep apart. An empty list for anything L</rebuild> did not make.
+
 =method rebuild
 
   $all->rebuild(\@upstreams);
 
-Replace the aggregate's tools, prompts, their extras and instructions in place
-from the current upstreams. Called at start and after any manifest refresh,
-since a refresh replaces an upstream's tool objects.
+Replace the aggregate's tools, prompts, their extras, their L</origin> and the
+instructions in place from the current upstreams. Called at start and after any
+manifest refresh, since a refresh replaces an upstream's tool objects.
 
 =head1 SEE ALSO
 

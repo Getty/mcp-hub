@@ -122,10 +122,21 @@ so den Weg durch den Hub.
 `<name>__`-Präfix; die `instructions` sind die aneinandergehängten
 Upstream-Instructions, jeder Block mit `## <name>` überschrieben. Resources
 werden **nicht** aggregiert (opake URIs würden kollidieren). Die Filter des Profils
-benutzen das Präfix: am `tools`-Event `servers`- und `tools`-Regeln
-(`Auth::filter_aggregate`), am `prompts`-Event nur `servers`
-(`filter_aggregate_prompts`). `tools/call`/`prompts/get` suchen in der gefilterten
-Liste — Verborgenes ist „not found".
+entscheiden nach der **Herkunft** jedes Eintrags — `Aggregate->origin($entry)` liefert
+`(server, eigener Name)`, in `rebuild` per `refaddr` am Wrapper-Objekt gemerkt —, **nie**
+durch Splitten des Namens am ersten `__`: ein Servername darf selbst `__` enthalten
+(`p__x`), und ein Profil `[p]` darf dessen `p__x__…` nicht erreichen. Am `tools`-Event
+`servers`- und `tools`-Regeln (`Auth::filter_aggregate`), am `prompts`-Event nur
+`servers` (`filter_aggregate_prompts`); ein Eintrag ohne bekannte Herkunft fällt weg.
+`tools/call`/`prompts/get` suchen in der gefilterten Liste — Verborgenes ist „not found".
+
+Bekannte Grenze: zwei Server können denselben `/all`-Namen erzeugen (`p` mit Tool
+`x__echo`, `p__x` mit `echo` → beide `p__x__echo`). Beide werden gelistet, der Call trifft
+den ersten in Servernamen-Reihenfolge; sieht das Profil nur einen, ist es dieser — nur
+`title`/`icons`/`_meta` werden weiter per Name gesucht und sind die des letzten. Darum
+die Herkunft am Objekt und keine Name→Server-Map — die müsste einen der beiden falsch
+zuordnen. `t/aggregate-origin.t` hält das fest; `__` in Servernamen zu verbieten
+(Config) ist Entscheidung des Maintainers.
 
 Extras: `Aggregate` ist ein `Facade::Server`. `rebuild` liest `title`/`icons`/`_meta`
 aus dem **eigenen Rendering** jedes Upstream-Servers (`_handle_tools_list` /

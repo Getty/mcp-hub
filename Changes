@@ -142,3 +142,10 @@ Revision history for MCP-Hub
     not found. Before, any client -- a tokenless one under public_profile
     too -- could list and run every server's prompts on /all, starting a
     stdio server to do it.
+  - /all decides what a profile may see by the server each tool and prompt
+    came from, not by the part of its name before the first `__`. Before,
+    with servers `p` and `p__x`, a client whose profile allows only `p`
+    could list and run every tool and prompt of `p__x` on /all, and a
+    profile allowing `p__x` saw none of its own. Two servers can still
+    produce one /all name (`p`'s `x__echo`, `p__x`'s `echo`): both are
+    listed and a call reaches the first.

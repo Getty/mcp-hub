@@ -60,17 +60,23 @@ sub filter_tools ($self, $profile, $server_name, $tools) {
   return;
 }
 
-sub filter_aggregate ($self, $profile, $tools) {
+# On /all an entry is judged by the server the aggregate says it came from,
+# never by its "<server>__<name>" -- a server name may contain "__" itself. An
+# entry it knows no origin for is dropped.
+sub filter_aggregate ($self, $profile, $tools, $aggregate) {
   @$tools = grep {
-    my ($srv, $tool) = _aggregate_name($_->name);
-    $self->allows_server($profile, $srv) && $self->tool_visible($profile, $srv, $tool);
+    my ($srv, $tool) = $aggregate->origin($_);
+    defined $srv && $self->allows_server($profile, $srv) && $self->tool_visible($profile, $srv, $tool);
   } @$tools;
   return;
 }
 
 # Prompts follow servers alone, as on a server's own endpoint.
-sub filter_aggregate_prompts ($self, $profile, $prompts) {
-  @$prompts = grep { $self->allows_server($profile, (_aggregate_name($_->name))[0]) } @$prompts;
+sub filter_aggregate_prompts ($self, $profile, $prompts, $aggregate) {
+  @$prompts = grep {
+    my ($srv) = $aggregate->origin($_);
+    defined $srv && $self->allows_server($profile, $srv);
+  } @$prompts;
   return;
 }
 
@@ -80,12 +86,6 @@ sub tool_visible ($self, $profile, $server_name, $tool_name) {
   return 0 if grep { $_ eq $tool_name } @{$rule->{deny} // []};
   return 1 unless exists $rule->{allow};
   return (grep { $_ eq $tool_name } @{$rule->{allow}}) ? 1 : 0;
-}
-
-# The server and its own name of a /all entry "<server>__<name>".
-sub _aggregate_name ($name) {
-  my ($server, $own) = split /__/, $name, 2;
-  return ($server, $own // '');
 }
 
 sub _bearer ($c) {
@@ -174,18 +174,21 @@ token and no public profile it renders a C<401> and returns false.
 
 =method filter_aggregate
 
-  $auth->filter_aggregate($profile, $tools);
+  $auth->filter_aggregate($profile, $tools, $aggregate);
 
-Filter the C<< <server>__<tool> >>-prefixed tools of the C</all> endpoint in
-place, dropping any whose server the profile may not see or whose tool it denies.
+Filter the tools of the C</all> endpoint in place, dropping any whose server
+the profile may not see or whose tool it denies. Which server a tool came from,
+and its name there, is asked of C<$aggregate> (L<MCP::Hub::Aggregate/origin>)
+rather than read off its C<< <server>__<tool> >> name, since a server name may
+contain C<__> itself; a tool of unknown origin is dropped.
 
 =method filter_aggregate_prompts
 
-  $auth->filter_aggregate_prompts($profile, $prompts);
+  $auth->filter_aggregate_prompts($profile, $prompts, $aggregate);
 
-Filter the C<< <server>__<prompt> >>-prefixed prompts of the C</all> endpoint in
-place, dropping any whose server the profile may not see. The C<tools> rules do
-not apply to prompts.
+Filter the prompts of the C</all> endpoint in place, dropping any whose server
+the profile may not see -- by origin, as L</filter_aggregate> does. The
+C<tools> rules do not apply to prompts.
 
 =method filter_tools
 
