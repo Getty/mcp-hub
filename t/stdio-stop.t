@@ -216,6 +216,15 @@ subtest 'a child reaped before its grace is over gets no signal' => sub {
   # server it started answers, a process of its own holds the socket on. The
   # stop ends anyway (t/stdio.t); here, no signal goes to the pid once the
   # child's exit is in.
+  #
+  # The precondition is that the exit is in before the grace is over, and the
+  # reactors differ on it: under EV libev reaps the child at once, otherwise
+  # its status is collected only once its socket closes -- which the process
+  # holding the socket prevents -- or at the SIGKILL. The child's `collect` is
+  # what the socket's close calls; it polls without blocking until the child is
+  # reaped, and here it is called at the start, so that the reap happens
+  # before the stop under both. Without it, under Poll the child is a zombie at
+  # the SIGTERM, its pid cannot be another's, and the guard would measure nothing.
   my %reaped;
   no warnings 'redefine';
   my $on_reaped = \&MCP::Hub::Upstream::Stdio::_on_reaped;
@@ -239,11 +248,23 @@ subtest 'a child reaped before its grace is over gets no signal' => sub {
     cache_dir => $dir->to_string,
     log       => log_to([]),
   );
-  my ($pid, $t0, $took) = stop_and_wait($up, 20);
-  ok defined $took, sprintf 'the stop ends (%.2fs)', $took // -1;
-  ok $reaped{$pid}, 'the child was reaped';
-  my @late = grep { $_->[1] == $pid && $_->[2] >= ($reaped{$pid} // 0) } @KILLS;
-  is_deeply \@late, [], 'and signalled no more after that' or diag explain \@late;
+  my $r = await_bounded($up->start_p, 30);
+  ok !(ref $r eq 'HASH' && $r->{err}), 'started' or diag $r->{err};
+  my $pid = $up->stats->{pid};
+  $up->{child}{collect}->();
+  my $deadline = Time::HiRes::time() + 5;
+  settle(0.02) until $reaped{$pid} || Time::HiRes::time() > $deadline;
+  ok $reaped{$pid}, 'the child was reaped, with its socket still held';
+
+  my $t0 = Time::HiRes::time();
+  $up->stop;
+  my $done = await_bounded($up->stopped_p, 20);
+  my $took = Time::HiRes::time() - $t0;
+  ok !(ref $done eq 'HASH'), sprintf 'the stop ends (%.2fs)', $took;
+  cmp_ok $took, '>=', $EOF_GRACE - $SLACK, 'the stop outlasted the grace, when a SIGTERM would have gone out';
+  cmp_ok $reaped{$pid} // $t0, '<', $t0, 'the reap came before the stop, and so before the SIGTERM would go out';
+  my @late = grep { $_->[1] == $pid } @KILLS;
+  is_deeply \@late, [], 'and no signal went to the pid' or diag explain \@late;
 
   # The process that held the socket is the test's to end.
   my $sitter = -s $holder ? $holder->slurp : undef;
