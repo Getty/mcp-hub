@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-06T04:16:58Z
+created: 2026-11-06T02:55:27Z
+id: 70
+priority: medium
+started: 2026-11-06T03:15:02Z
+status: done
+tags:
+- auth
+- aggregate
+- security
+title: server/discover on /all returns the instructions of servers outside the profile
+updated: 2026-11-06T04:17:06Z
+---
+
+Found by mcp-hub-worker during k68 (2026-11-06). On /all, server/discover (the newer protocol) returns every upstream's instructions under '## <name>' headings, marked cacheScope: public, whatever the client's profile. That names servers outside the profile, which the 404 rule is meant to prevent. Legacy initialize carries no instructions. The advertised capabilities also include prompts whenever any upstream has prompts, even if the profile sees none. Done: /all's instructions (and, if cheap, its prompts capability) follow the profile per request; not cacheScope public when they depend on the caller; regression test in clients mode.
+
+2026-11-06 03:15 Started (mcp-hub-worker). MCP 0.15: server/discover is answered by MCP::Server::_dispatch from the unfiltered instructions/tools/prompts with cacheScope = $server->cache_scope ('public'); the legacy initialize (MCP::Server::Legacy::legacy_result) builds capabilities from the unfiltered lists too, and has no instructions. Neither gets an event. Plan: Aggregate keeps the instructions per server, emits a new 'instructions' event (server names, context) the hub filters by allows_server; Aggregate overrides _dispatch to rewrite the discover/initialize result per request (instructions, tools/prompts capability from the event-filtered lists) and marks discover private while anything filters it. Test: t/aggregate-discover.t.
+
+2026-11-06 03:18 Implemented. Before (t/aggregate-discover.t red, 8 assertions): server/discover on /all for a profile [bare] returned '## box\nToolbox things.\n\n## echo\nEcho things back.' (names + instructions of two servers whose own endpoints 404 for it), cacheScope public; prompts capability offered to a profile that sees no prompt, on discover and on legacy initialize; tools capability with every tool hidden. After: green. Aggregate overrides MCP::Server::_dispatch for server/discover + initialize and rewrites the result per request: tools/prompts capability only when the event-filtered list is non-empty (tools too -- my choice, same mechanism, one line), instructions from a new 'instructions' event (server names, upstream order) that MCP::Hub filters with allows_server, cacheScope private while any filter event has subscribers. The instructions attribute stays the full join. POD: Aggregate EVENTS/instructions + DESCRIPTION; skills: mcp-hub-runtime 'Selbstbeschreibung pro Request', mcp-hub-core 404 bullet.
+
+2026-11-06 03:38 Done (not committed). Security: before, server/discover on /all gave any client -- a public_profile one too -- every upstream's instructions under '## <name>', naming servers its profile hides (their endpoints 404), with cacheScope public; the prompts (and tools) capability, also in the legacy initialize, ignored the profile. Fix: Aggregate overrides MCP::Server::_dispatch for server/discover + initialize and rewrites the result per request: tools/prompts capability only if the event-filtered list is non-empty (tools too: my choice, same line); instructions from a new 'instructions' event (server names) that MCP::Hub filters with allows_server; cacheScope private while any filter event has subscribers. instructions attribute stays the full join. Files: lib/MCP/Hub/Aggregate.pm (+POD EVENTS), lib/MCP/Hub.pm (handler), t/aggregate-discover.t (NEW, untracked: needs git add), skills, design spec. Verified: t/aggregate-discover.t red on HEAD (4/4 subtests), green after; full suite as on k69. Patch: scratchpad/w-k69/k70.patch (applies on top of k69). Note: MCP 0.15's legacy initialize carries no instructions at all.
+
+Committed as 641d0a3.
