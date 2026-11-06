@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-11-06T03:20:39Z
+created: 2026-11-03T03:08:40Z
+id: 22
+priority: low
+started: 2026-11-06T02:47:04Z
+status: done
+tags:
+- bug
+- test
+- flakiness
+title: 't/stdio.t: ''a non-object error is reported, not swallowed'' gives spawn+handshake+call
+  only 5 s'
+updated: 2026-11-06T03:21:33Z
+---
+
+Found by the k20 worker on 2026-11-03. The subtest around t/stdio.t l.~118 uses `_await_bounded` with a 5 s limit for spawn + handshake + call. Under extreme load (32 CPU hogs, the file runs ~4x slower) it timed out in every run, on HEAD and on the k20 tree alike. It passed in every ordinary full-suite run.
+
+The limit only guards against a hang, so it can be generous (e.g. 30 s) without weakening the claim.
+
+## Done
+- The bound is long enough that load cannot trip it, and the subtest still fails when the error is swallowed (pending promise never settles).
+
+t/stdio.t: 'a non-object error is reported, not swallowed' bound 5 s -> 30 s (`_await_bounded(..., 30)`), with a comment why 30 s still proves the claim: it stands in for forever and ends before the request's own 60 s timeout. Swallow check: a scratch copy of the subtest, with Stdio::_on_response patched to take the pending request for a non-object error and settle nothing (the original bug), fails 6/6 on 'Promise timeout' after ~61 s (30 s per shape). Unpatched it passes under EV and Poll.
+
+Done, commit-ready (uncommitted). The bound in t/stdio.t 'a non-object error is reported, not swallowed' goes from 5 s to 30 s, with a comment on why 30 s still proves the claim. Simulating the swallow (Stdio::_on_response takes the pending request and settles nothing) fails the subtest 6/6 on 'Promise timeout' after about 61 s. One hunk: scratchpad w-k23/k22.patch. Verified in the full prove -lr t/ PASS.
+
+Committed as 7cf4bcc.
+
+Commit is now 9d035c5 (reworded from 7cf4bcc, trailer fix)
