@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-11-06T07:39:34Z
+created: 2026-11-06T06:48:55Z
+id: 100
+priority: medium
+started: 2026-11-06T07:02:56Z
+status: done
+tags:
+- http
+- upstream
+- spec
+- bug
+title: 'Streamable HTTP: a 404 on a request with a session id leaves the upstream
+  stuck on the dead session'
+updated: 2026-11-06T11:46:58Z
+---
+
+Found during k94 (probe against HEAD: scratchpad w-k94-probe/probe404.pl). When the remote has dropped the session (restart, timeout) it answers 404 to a request carrying Mcp-Session-Id. Today the call fails with "upstream NAME: Not Found", the upstream stays ready on the dead session, every later call 404s, and refresh_p re-lists over the same session and stays stuck; only a reload or daemon restart recovers. The MCP Streamable HTTP spec: on 404 for a request with a session id the client MUST start a new session with a fresh initialize (no session id).
+
+Done: a 404 on a request that carried a session id drops the session and re-initializes (once), then retries or fails the call with a clear reason; test with the fake HTTP server in t/http.t forgetting its session.
+
+Done in lib/MCP/Hub/Upstream/Http.pm + t/http.t only. A 404 on a request that carried an Mcp-Session-Id now drops that session (_session_gone): session_id cleared if it is still the current one, ending{sid} cleared so no DELETE ever goes out for it (also not the deferred one a stop left to its last call, and not for the session of a start whose tools/list 404s: both were DELETEd at HEAD). Then the request is sent once more on a new session: _http_request_p wraps one send (_http_send_p) plus at most one retry. Decision: retry, not fail. Spec 2025-06-18 session mgmt pt 3: after ending a session the server MUST answer 404 to requests carrying its id, so the request did not run there and cannot run twice; the agent gets its answer instead of an error it would only repeat. Retry only once; never for requests of a start (the start fails); a 404 on the retry fails the call with 'upstream NAME: the remote ended the session (Not Found)' and leaves the upstream stopped, so the next call opens a new session lazily. The re-init is start_p, so handshakes never overlap: requests that lose the same session share one start, a late 404 after the new session is up retries on it directly. A stop during the re-init rejects the call as 'upstream NAME: stopped', DELETEs only the new session if its initialize was answered. A call left to finish past a stop that comes back 404 does not start the upstream again (fails with the clear reason). 404 without a session id (stateless remote, wrong url): unchanged, plain error. A refresh that hits a dead session goes through on a new one. Session id still taken only from the initialize answer (k94). Tests: fake_http learned live/volatile/stateless/http_status; 5 new subtests (replace + retry + refresh, at most once/start not retried, no-session 404, concurrent 404s share one re-init, stop during re-init / stop before the 404). 38 assertions red against HEAD. Verified: t/http.t 5x EV + 5x Poll green; full prove -lr t/ on export green (34 files, skips: docker-live, npx, wiki-live). Patch: scratchpad w-k100/k100.patch. Drift (ticket for this board): the of_start test in _http_send_p is start_promise-at-send-time; a call whose start_p resolved but whose send runs a tick after another start began (stop+start, now also a re-init) goes out as a request of that start, with no session id before the initialize is answered (a stateful remote answers 400) and cuttable by a stop. Pre-existing, narrow; not fixed here. Also: mcp-hub-runtime skill's Http section says nothing of k94 DELETE / k100 re-init.
+
+Ready for review: 404 on a session re-initializes once via start_p and retries the request once; no DELETE for remote-ended sessions. Patch w-k100/k100.patch (from HEAD). Proposed subject: Open a new Streamable HTTP session when the remote has ended the old one (k100)
+
+Committed as 68ecb4d
+
+Commit reworded (trailer Opus 5.5), now 05ad2c8
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): 68ecb4d is now 05ad2c8 on local main.
