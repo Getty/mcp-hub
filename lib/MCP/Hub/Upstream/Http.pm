@@ -280,10 +280,13 @@ sub _http_send_p ($self, $method, $params, $of_start, $renewed = undef) {
     $self->_end_session($session) if delete $self->{ending}{$session};
   };
 
-  # A request that fails is rejected with its reason as it is -- as over
-  # HTTP+SSE, with no newline at its end for the agent to read. One the remote
-  # answers with a JSON-RPC error is rejected with that answer, which reads the
-  # same (MCP::Hub::Upstream::_error_answer); an HTTP error status is no answer.
+  # A request that fails is rejected with its reason after the name of the
+  # upstream -- as over HTTP+SSE, with no newline at its end for the agent to
+  # read. So is one that got no response at all: Mojo rejects start_p itself
+  # then, with its message alone ("Connection refused", "Request timeout"). One
+  # the remote answers with a JSON-RPC error is rejected with that answer, which
+  # reads the same (MCP::Hub::Upstream::_error_answer); an HTTP error status is
+  # no answer.
   my $fail = sub ($reason) { Mojo::Promise->reject("upstream @{[$self->name]}: $reason") };
   $self->req_ua->start_p($tx)->then(sub ($tx) {
     # Called off by a stop: the answer is turned away. An initialize the stop
@@ -318,7 +321,7 @@ sub _http_send_p ($self, $method, $params, $of_start, $renewed = undef) {
     return $fail->("no response for $method") unless ref $res eq 'HASH';
     return Mojo::Promise->reject($self->_error_answer($res->{error})) if $res->{error};
     return $res->{result} // {};
-  })->then(
+  }, $fail)->then(
     sub ($result) { $settled->(); $done->resolve($result); return },
     sub ($err)    { $settled->(); $done->reject($err);     return },
   );
@@ -729,6 +732,13 @@ in C<mcp-hub status> -- so a permanently dead remote is reported instead of
 reconnected on every call. L<MCP::Hub::Upstream/refresh_p> (C<mcp-hub refresh
 NAME>) clears the failure and tries once more, mirroring the crash-loop handling
 of L<MCP::Hub::Upstream::Stdio>.
+
+Whatever makes a request fail, on either transport, the reason starts with the
+name of the upstream, and that is what the agent reads in the error result of
+its call: C<upstream NAME: Connection refused> (over HTTP+SSE C<upstream NAME:
+connect failed: Connection refused>), C<upstream NAME: Request timeout> for a
+POST that outlasts the request timeout, C<upstream NAME:> and the message of a
+JSON-RPC error the remote answers with.
 
 A stop -- a configuration reload that replaces or removes the entry, or the
 daemon shutting down -- calls off a start under way, on both transports: the

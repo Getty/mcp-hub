@@ -315,6 +315,58 @@ subtest 'connect failures mark it failed after N, refresh clears it' => sub {
   $daemon2->stop;
 };
 
+subtest 'a connection error names the upstream, as every other rejection does' => sub {
+  # Mojo::UserAgent rejects a request that got no response -- refused, timed
+  # out -- with its own message alone, and the upstream passed that on: an
+  # agent read "Connection refused" or "Request timeout" with nothing to say
+  # where from.
+  my $probe = IO::Socket::INET->new(Listen => 5, LocalAddr => '127.0.0.1', LocalPort => 0, ReuseAddr => 1)
+    or plan skip_all => "cannot bind a probe socket: $!";
+  my $dead_port = $probe->sockport;
+  close $probe;
+
+  for my $type (qw(http sse)) {
+    my $path = $type eq 'sse' ? 'sse' : 'mcp';
+    my $up   = MCP::Hub::Upstream::Http->new(
+      name      => 'dead',
+      config    => {type => $type, url => "http://127.0.0.1:$dead_port/$path", request_timeout => 5},
+      cache_dir => tempdir->to_string,
+    );
+    $up->log->level('fatal');
+    my $r = _await_bounded($up->start_p, 10);
+    like ref $r eq 'HASH' ? $r->{err} : 'ready', qr/^upstream dead: (?:connect failed: )?Connection refused/,
+      "$type: a refused start names the upstream, once";
+    my $call = _await_bounded($up->call_tool('echo', {msg => 'hi'}), 10);
+    like _error_text($call), qr/^upstream dead: (?:connect failed: )?Connection refused/, "$type: so does a call";
+    unlike _error_text($call), qr/upstream dead: .*upstream dead:/, "$type: and not twice";
+  }
+
+  # A remote that takes the call and never answers it.
+  my $hang = MCP::Server->new(name => 'hang', version => '1.0.0');
+  $hang->tool(
+    name         => 'hang',
+    description  => 'Never answers',
+    input_schema => {type => 'object'},
+    code         => sub ($tool, $args) { Mojo::Promise->new },
+  );
+  my $app = Mojolicious->new;
+  $app->log->level('fatal');
+  $app->routes->post('/mcp' => $hang->to_action({streaming => 1}));
+  my $server = Mojo::Server::Daemon->new(app => $app, listen => ['http://127.0.0.1'], silent => 1);
+  $server->start;
+
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'slowpoke',
+    config    => {type => 'http', url => "http://127.0.0.1:@{[$server->ports->[0]]}/mcp", request_timeout => 1},
+    cache_dir => tempdir->to_string,
+  );
+  is _await_bounded($up->start_p, 10), $up, 'a remote that answers its handshake is ready';
+  my $call = _await_bounded($up->call_tool('hang', {}), 10);
+  is _error_text($call), 'upstream slowpoke: Request timeout', 'a call that times out names the upstream'
+    or diag explain $call;
+  $server->stop;
+};
+
 subtest 'sse upstream: a non-object error is reported, not swallowed' => sub {
   # "error": "text" and "error": [..] -- shapes that are out there in the wild.
   # Reading ->{message} from them dies under strict refs, and the request it

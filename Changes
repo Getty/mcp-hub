@@ -287,3 +287,5 @@ Revision history for MCP-Hub
     or `stopped` instead of waiting out request_timeout or the child's
     exit; a stop during a start fails the start as stopped without counting
     toward the crash loop.
+  - Streamable HTTP: a request that gets no response -- refused, timed out
+    -- reads `upstream NAME: ...` like every other failure.

@@ -68,6 +68,9 @@ der POST-UA mit `request_timeout` (Default 60 s) — sonst kappt der POST-Timeou
 den langlebigen SSE-Stream. `type: "http"` = Streamable HTTP (Antwort auf dem
 POST, JSON oder `text/event-stream`), `type: "sse"` = HTTP+SSE (langlebiger
 GET-Stream). `headers` trägt das Auth. Drei Fehlschläge binnen 5 s → `failed`.
+Jede Ablehnung liest `upstream NAME: …` — auch ohne Antwort (refused, `Request
+timeout`), wo Mojo `start_p` selbst nur mit seiner Meldung ablehnt: `_http_send_p`
+hängt dafür `$fail` als Reject-Handler an.
 
 Streamable-HTTP-Sessions: jeder Start öffnet eine **neue** Session — sein `initialize`
 trägt weder Session-Id noch `MCP-Protocol-Version`, die Id kommt nur aus dessen Antwort
