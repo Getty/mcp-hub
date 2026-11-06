@@ -569,14 +569,25 @@ entry exactly as to a `class` entry.
 
 **PAR specifics:**
 
-- **Archive fds.** A packed hub holds two read-only fds on its own binary
-  (Archive::Zip's `readFromFileHandle`), and a lazy `require` in a worker reads
-  through them.
-  - Sharing the hub's open file description would race the file offset.
-  - Nulling the fds would break the `require`.
-  - The reopen rule gives the worker its own description. This was verified in plain
-    perl only, not in a packed binary, because no `pp` build ran in this session.
-    That makes it a binary card.
+- **Archive fds** (corrected after k44, 2026-11-06 — the draft said a worker's lazy
+  `require` reads the archive through these fds). A packed hub holds two read-only
+  fds on its own binary: the loader's (fd 3 in the builds measured) and `_FH`, PAR's
+  bootstrap handle (fd 5), through which Archive::Zip read the zip's directory at
+  start-up. Measured with PAR 1.021 and PAR::Packer 1.064:
+  - **A `require` does not read through them.** The first start unpacks the whole
+    archive into `PAR_TEMP/inc` and puts its `lib` dirs first in `@INC`, so a
+    `require` — in the hub or in a worker — reads plain files from there. A member
+    read (`PAR::read_file`) reopens the binary by name; no member keeps a handle.
+    So the draft's reason against nulling the fds (a broken `require`) does not
+    hold; the reopen rule stays as built.
+  - **The reopen rule** gives the worker its own description of each fd. Verified in
+    the packed binary by the k44 smoke: a read on them in a worker leaves the hub's
+    offsets alone.
+  - **The hub's first `fork()` of any kind moves fd 5 once.** Perl flushes every
+    handle before a fork; `_FH` still holds read-ahead, so its fd is set back to
+    `_FH`'s own position (14285807 to 6027650 in one build). Later forks leave it.
+    "The hub's offset is unmoved" holds from the first fork on, which is what the
+    smoke compares against.
 - **PAR's END cleanup** (only with `--clean`, which is not used today) does not run
   in a worker, because of the END guard.
 
@@ -752,7 +763,8 @@ All six questions were answered with the recommendation:
   with a JSON path, or document them; see open question 5.
 - **Packed hub: smoke a forked worker** (binary-worker lane, after k36). Fork a native
   class from the packed binary, check that a lazy `require` in the worker reads the
-  archive through its reopened fds, and check that the hub's offset is unmoved.
+  archive through its reopened fds, and check that the hub's offset is unmoved
+  (premise corrected in **The packed binary**).
 - **Stop children with EOF first, TERM after a grace.** Today's `stop` sends TERM
   together with EOF and can kill a git commit halfway (`index.lock` left behind).
   This applies to stdio as much as to fork.
