@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-06T07:40:35Z
+id: 107
+priority: low
+status: backlog
+tags:
+- agents
+- release
+title: 'Release-manager agent: say which model the Co-Authored-By trailer names'
+updated: 2026-11-06T15:07:17Z
+---
+
+Twice tonight (k90/k91 and k100/k102) the mcp-hub-release-manager (model: sonnet) wrote "Co-Authored-By: Claude Sonnet 5.5" although the brief named Opus 5.5, reasoning that the trailer names the model the committing session runs as. The code was written by mcp-hub-worker (model: inherit, Opus 5.5); every other commit names that. Both pairs were reworded locally before any push. Done: .claude/agents/mcp-hub-release-manager.md (or the skill getty-git-commit-style it loads) says the trailer names the model that wrote the change -- the worker's -- not the release-manager's own, and that the trailer given in the brief wins. Agent-definition text: same deferred group as k54/k60.
+
+Fourth occurrence (2026-11-06, k133-k57b batch): the release-manager kept Sonnet on purpose, citing its harness attribution reminder and getty-git-commit-style ('use the harness trailer verbatim') over the brief. Main agent reworded 7 commits to Opus for consistency with the branch. Needs the maintainer's word in the agent definition or the commit-style skill.
