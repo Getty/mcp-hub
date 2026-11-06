@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T11:42:38Z
+created: 2026-11-06T10:06:23Z
+id: 122
+priority: medium
+started: 2026-11-06T10:44:12Z
+status: done
+tags:
+- stdio
+- bug
+title: A stdio child that dies mid-line leaves its partial line for the next child
+updated: 2026-11-06T11:47:13Z
+---
+
+Found during k26 (drift, not fixed there). When a stdio child crashes in the middle of writing a line, the partial line stays in the upstream inbuf and is glued onto the first line of the next child, which then fails to parse. Proposed fix (worker): reset inbuf when a new child is attached (_attach). Done: a regression test that kills a child mid-line and shows the next child first answer arrives intact; red on HEAD.
+
+inbuf reset in _attach (covers stdio, fork, docker-stdio). Regression in t/stdio.t via echo.pl --die-mid-line; red on HEAD (handshake timed out, malformed line logged), green under EV and Poll.
+
+Committed as af2ce9f
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): af2ce9f is now d0e013a on local main.
