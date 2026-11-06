@@ -158,3 +158,8 @@ Revision history for MCP-Hub
   - A reload that adds, removes or changes a server, or changes the access
     rules, also sends notifications/prompts/list_changed to /all
     listeners, not only tools/list_changed.
+  - A reload frees the upstreams it removes or replaces. A tool, prompt or
+    resource held its upstream for the daemon's lifetime, so every removed
+    or replaced stdio, http, sse, docker, compose or fork upstream stayed in
+    memory; a call to a primitive whose upstream is gone now answers with
+    an error naming it.
