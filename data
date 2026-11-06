@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-06T22:19:05Z
+created: 2026-11-06T20:31:19Z
+id: 154
+priority: medium
+started: 2026-11-06T21:09:54Z
+status: done
+tags:
+- http
+- reload
+- upstream
+- bug
+title: A reload that changes request_timeout drops HTTP requests in flight ('Premature
+  connection close')
+updated: 2026-11-06T22:19:10Z
+---
+
+Found by mcp-hub-worker during k150 (2026-11-06), reproduced under EV and Poll.
+Http::apply_timeouts (lib/MCP/Hub/Upstream/Http.pm, around line 194) deletes {req_ua} so the next request builds one with the new request_timeout. A request in flight on the old agent loses it: the Mojo::UserAgent is destroyed, its connections closed, and the call fails "upstream NAME: Premature connection close". So a reload that only changes request_timeout or idle_timeout ("applied in place, no restart", README) breaks the calls running at that moment. Docker::Http inherits it.
+Done when: a reload that changes the timeouts lets requests in flight finish on the agent they went out on (keep it alive until they settle, or set the new request_timeout on the existing agent for the requests that follow); the new timeout applies to the next request; a test in t/http.t (or t/reload.t) with a call in flight across such a reload, red on HEAD.
+
+Done (mcp-hub-worker): Http::apply_timeouts no longer deletes req_ua; it sets the new request_timeout (|| 60) on the existing agent. Mojo::UserAgent reads request_timeout in _start and arms a per-request timer, so a request in flight keeps its agent, connection and bound, the next one gets the new value; inactivity 0 holds (one agent only). Covers Streamable HTTP POSTs, SSE POSTs and the session DELETE; Docker::Http inherits. Worker's choices: set-on-agent over keeping old agents alive (one line, keeps connections and settings); an in-flight request finishes within the timeout it went out with, as stdio and the SSE timer do. Test t/http.t via a real MCP::Hub->reload (2 -> 1 s), http and sse, red 2/14 on HEAD ('Premature connection close'), +6 s. README reload row, POD, runtime skill updated. Not committed.
+
+Committed as fb7ce83
