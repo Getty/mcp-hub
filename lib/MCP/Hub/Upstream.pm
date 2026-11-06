@@ -4,6 +4,7 @@ use Mojo::Base 'Mojo::EventEmitter', -signatures;
 
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
+use Mojo::IOLoop;
 use Mojo::JSON   qw(encode_json);
 use Mojo::Loader qw(load_class);
 use Mojo::Log;
@@ -75,12 +76,52 @@ sub fail ($self, $reason) {
 # Resolves once what stop set in motion is over. Only an upstream whose stop
 # has to wait for something outside the process -- a container -- says so.
 sub stopped_p ($self) { return Mojo::Promise->resolve($self) }
-sub touch     ($self) { $self->last_used(time); return $self }
+
+sub touch ($self) {
+  $self->last_used(time);
+  $self->_arm_idle_timer if $self->state eq 'ready';
+  return $self;
+}
 
 # A configuration reload that only moved the timeouts must not restart anything:
 # the new values are applied to the live object instead of rebuilding it.
 sub apply_timeouts ($self, $timeouts) {
   $self->request_timeout($timeouts->{request_timeout}) if defined $timeouts->{request_timeout};
+  return $self unless $self->_idles && defined(my $idle = $timeouts->{idle_timeout});
+  $self->idle_timeout($idle);
+  # A running upstream is already counting down against the old value: drop
+  # that timer and arm a fresh one, so the new timeout takes effect without
+  # waiting for the next request -- and a timeout of 0 really does stop the
+  # countdown.
+  return $self unless $self->state eq 'ready';
+  $self->_clear_idle_timer;
+  $self->_arm_idle_timer;
+  return $self;
+}
+
+# --- idle stop -------------------------------------------------------------
+
+# Whether the upstream holds a process only while it is used, and stops it
+# after idle_timeout seconds without a request: a stdio child, a forked worker
+# and a container do, and have that attribute. The others never idle.
+sub _idles ($self) { return $self->can('idle_timeout') ? 1 : 0 }
+
+sub _arm_idle_timer ($self) {
+  return unless $self->_idles;
+  return if $self->always_on;
+  my $timeout = $self->idle_timeout;
+  return unless $timeout > 0;
+  $self->_clear_idle_timer;
+  $self->{idle_timer} = Mojo::IOLoop->timer($timeout => sub {
+    $self->log->info("[@{[$self->name]}] idle for ${timeout}s, stopping");
+    $self->stop;
+  });
+  return $self;
+}
+
+sub _clear_idle_timer ($self) {
+  Mojo::IOLoop->remove($self->{idle_timer}) if $self->{idle_timer};
+  delete $self->{idle_timer};
   return $self;
 }
 
@@ -384,8 +425,10 @@ entry's C<hub.always_on>.
 
 Apply new timeouts to the running upstream. Used by L<MCP::Hub/reload> when a
 reload changed nothing about an entry except its timeouts, so that a global
-C<hub.idle_timeout> edit does not restart every child. The stdio subclass also
-re-arms a running idle timer with the new value.
+C<hub.idle_timeout> edit does not restart every child. An upstream that stops
+when idle -- one with an C<idle_timeout> attribute: stdio, fork, docker and
+compose -- also takes the C<idle_timeout> and re-arms a running idle timer with
+it; C<0> ends the countdown.
 
 =method build
 
@@ -468,7 +511,8 @@ C<docker> CLI after L</stop> returns; the daemon waits for it on shutdown.
 
 =method touch
 
-Reset L</last_used> and the idle timer.
+Reset L</last_used> and, for a running upstream that stops when idle, its idle
+timer.
 
 =method type
 

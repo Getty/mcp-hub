@@ -162,22 +162,12 @@ sub refresh_p ($self) {
   return $self->start_p;
 }
 
-sub touch ($self) {
-  $self->last_used(time);
-  $self->_arm_idle_timer if $self->state eq 'ready';
-  return $self;
-}
-
+# The idle timer is the upstream's (MCP::Hub::Upstream); the request timeout
+# goes on to the engine that carries the requests.
 sub apply_timeouts ($self, $timeouts) {
   $self->SUPER::apply_timeouts($timeouts);
   $self->{engine}->apply_timeouts({request_timeout => $timeouts->{request_timeout}})
     if $self->{engine} && defined $timeouts->{request_timeout};
-
-  return $self unless defined(my $idle = $timeouts->{idle_timeout});
-  $self->idle_timeout($idle);
-  return $self unless $self->state eq 'ready';
-  $self->_clear_idle_timer;
-  $self->_arm_idle_timer;
   return $self;
 }
 
@@ -539,26 +529,6 @@ sub _with_output ($self, $engine, $err) {
   return length $tail ? $self->docker->explain("$err: $tail") : $err;
 }
 
-# --- idle timer ------------------------------------------------------------
-
-sub _arm_idle_timer ($self) {
-  return if $self->always_on;
-  my $timeout = $self->idle_timeout;
-  return unless $timeout > 0;
-  $self->_clear_idle_timer;
-  $self->{idle_timer} = Mojo::IOLoop->timer($timeout => sub {
-    $self->log->info("[@{[$self->name]}] idle for ${timeout}s, stopping");
-    $self->stop;
-  });
-  return $self;
-}
-
-sub _clear_idle_timer ($self) {
-  Mojo::IOLoop->remove($self->{idle_timer}) if $self->{idle_timer};
-  delete $self->{idle_timer};
-  return $self;
-}
-
 1;
 
 =encoding utf8
@@ -698,10 +668,6 @@ Stop the container. A start in progress is abandoned.
   $upstream->stopped_p->then(sub { ... });
 
 Resolves when every container of this server is gone.
-
-=method touch
-
-Record a call and re-arm the idle timer.
 
 =head1 SEE ALSO
 

@@ -186,6 +186,29 @@ subtest 'crash mid-call and restart' => sub {
   settle;
 };
 
+subtest 'a line over 16MB: the child is killed, once, and the next one starts clean' => sub {
+  # The answer to this call is one line of 17MB. The child is killed for it;
+  # what it sent after the limit used to go on piling up in the buffer -- and
+  # being reported, and killed for, again with every read -- and the next
+  # child got that buffer: killed on its first answer.
+  my @lines;
+  my $up = upstream(request_timeout => 30);    # room for 17MB, under load
+  $up->log(log_to(\@lines));
+  is _error_text(_await_bounded($up->call_tool('echo', {msg => 'before'}), 30)), 'before', 'it answers';
+
+  my $r = _await_bounded($up->call_tool('echo', {msg => 'x' x (17 * 1024 * 1024)}), 60);
+  ok $r->{isError}, 'the call whose answer is too long fails';
+  like _error_text($r), qr/exited \(signal 9\)/, 'as the child is killed';
+  is scalar(grep {/line buffer exceeded 16MB, killing child/} @lines), 1, 'which is reported once'
+    or diag explain [grep {/16MB/} @lines];
+
+  my $next = _await_bounded($up->call_tool('echo', {msg => 'after'}), 30);
+  is _error_text($next), 'after', 'the next call is answered, by a new child' or diag explain $next;
+  is scalar(grep {/line buffer exceeded 16MB/} @lines), 1, 'which nothing was left over for';
+  $up->stop;
+  settle;
+};
+
 subtest 'failed after three quick exits' => sub {
   my $up = upstream()->fail_window($WINDOW);
   _await($up->call_tool('exit', {})) for 1 .. 3;

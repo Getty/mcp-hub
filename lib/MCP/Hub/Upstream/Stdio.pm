@@ -137,25 +137,6 @@ sub _clear_failure ($self) {
   return $self;
 }
 
-sub touch ($self) {
-  $self->last_used(time);
-  $self->_arm_idle_timer if $self->state eq 'ready';
-  return $self;
-}
-
-sub apply_timeouts ($self, $timeouts) {
-  $self->SUPER::apply_timeouts($timeouts);
-  return $self unless defined(my $idle = $timeouts->{idle_timeout});
-  $self->idle_timeout($idle);
-  # A running child is already counting down against the old value: drop that
-  # timer and arm a fresh one, so the new timeout takes effect without waiting
-  # for the next request -- and a timeout of 0 really does stop the countdown.
-  return $self unless $self->state eq 'ready' && $self->{pid};
-  $self->_clear_idle_timer;
-  $self->_arm_idle_timer;
-  return $self;
-}
-
 # --- manifest hash ---------------------------------------------------------
 
 sub _hash ($self) {
@@ -196,9 +177,14 @@ sub _send ($self, $obj) {
 # --- reading ---------------------------------------------------------------
 
 sub _on_read ($self, $bytes) {
+  # A child over the limit is being killed: the rest of what it sent is let go
+  # of, and the buffer with it -- the next child starts on an empty one.
+  return if $self->{child} && $self->{child}{overflow};
   $self->{inbuf} .= $bytes;
   if (length $self->{inbuf} > MAX_LINE_BUFFER) {
     $self->log->error("[@{[$self->name]}] line buffer exceeded 16MB, killing child");
+    $self->{inbuf} = '';
+    $self->{child}{overflow} = 1 if $self->{child};
     $self->{stopping} = 1;
     return $self->_kill_now;
   }
@@ -464,26 +450,6 @@ sub _record_exit ($self) {
   return $self;
 }
 
-# --- idle timer ------------------------------------------------------------
-
-sub _arm_idle_timer ($self) {
-  return if $self->always_on;
-  my $timeout = $self->idle_timeout;
-  return unless $timeout > 0;
-  $self->_clear_idle_timer;
-  $self->{idle_timer} = Mojo::IOLoop->timer($timeout => sub {
-    $self->log->info("[@{[$self->name]}] idle for ${timeout}s, stopping");
-    $self->stop;
-  });
-  return $self;
-}
-
-sub _clear_idle_timer ($self) {
-  Mojo::IOLoop->remove($self->{idle_timer}) if $self->{idle_timer};
-  delete $self->{idle_timer};
-  return $self;
-}
-
 # --- helpers ---------------------------------------------------------------
 
 # A child that dies before the handshake is done is a configuration problem, so
@@ -603,11 +569,11 @@ Seconds of no requests before the child is stopped. Defaults to C<300>.
 
 L<MCP::Hub::Upstream::Stdio> inherits all methods from L<MCP::Hub::Upstream> and
 implements the lifecycle -- L<MCP::Hub::Upstream/start_p>,
-L<MCP::Hub::Upstream/stop>, L<MCP::Hub::Upstream/refresh_p>,
-L<MCP::Hub::Upstream/touch> and L<MCP::Hub::Upstream/apply_timeouts> (which
-re-arms a running child's idle timer) -- for a child process. The forwarding methods the
-facade calls (C<call_tool>, C<get_prompt>, C<read_resource>) are the inherited
-ones.
+L<MCP::Hub::Upstream/stop> and L<MCP::Hub::Upstream/refresh_p> -- for a child
+process. The idle timer of L</idle_timeout> is the base class's: set by
+L<MCP::Hub::Upstream/touch>, re-armed by L<MCP::Hub::Upstream/apply_timeouts>.
+The forwarding methods the facade calls (C<call_tool>, C<get_prompt>,
+C<read_resource>) are the inherited ones.
 
 =head1 SEE ALSO
 

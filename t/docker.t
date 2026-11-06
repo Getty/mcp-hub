@@ -239,6 +239,20 @@ subtest 'a stdio container: the docker run, the secret, idle stop' => sub {
   ok !(grep { /^(?:stop|rm)\b/ } @{commands($fake)}), 'a stdio container goes with its CLI, no stop or rm needed';
 };
 
+subtest 'new timeouts reach a running container: its idle timer and its engine' => sub {
+  my $fake = fake_docker(images => \%IMAGES);
+  my $up   = upstream($fake, {docker => 't/stdio'}, idle_timeout => 300);
+  my ($ok, $err) = await($up->start_p);
+  ok $ok, 'started' or diag $err;
+  ok echo_ok($up), 'it answers, with 300 seconds to go';
+
+  $up->apply_timeouts({idle_timeout => 1, request_timeout => 11});
+  is $up->request_timeout, 11, 'the request_timeout is applied';
+  is $up->{engine}->request_timeout, 11, 'to the engine that carries the requests, too';
+  ok wait_until(sub { $up->state eq 'stopped' }, 10), 'and the container stops after the new idle_timeout';
+  ok wait_until(sub { !@{records($fake)} }), 'and is gone';
+};
+
 subtest 'the image is pulled only when it is missing' => sub {
   my $fake = fake_docker(registry => {'t/pulled' => {kind => 'stdio'}});
   my $up   = upstream($fake, {docker => 't/pulled'});
