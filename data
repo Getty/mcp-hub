@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-06T05:28:11Z
+created: 2026-11-06T03:29:09Z
+id: 73
+priority: medium
+started: 2026-11-06T04:18:37Z
+status: done
+tags:
+- facade
+- reload
+- memory
+- bug
+title: 'Façade tool code holds its upstream strongly: a reload leaks every replaced
+  or removed upstream'
+updated: 2026-11-06T05:28:16Z
+---
+
+Found by mcp-hub-worker during k66 (2026-11-06). In lib/MCP/Hub/Facade.pm the code of each tool, prompt and resource closes over the upstream strongly: upstream -> façade server -> tool -> upstream is a cycle, so an upstream with at least one tool is never freed. A reload that replaces or removes such an upstream leaks it (and whatever it holds: manifest, façade, timers' closures). Confirmed in scratch: with no tools the upstream is freed, with one tool it stays alive. Done: the cycle is broken (weaken, or the façade looks the upstream up by name), a weak-ref regression test shows a replaced/removed upstream with tools is freed after reload, and the façade still re-merges extra (title/icons/_meta) as before.
+
+k73 progress: cycle confirmed on HEAD for stdio/http/sse/docker/compose/fork (perl in-process not affected: no façade). Fix in Facade.pm: each tool/prompt/resource closure holds its upstream weakly; a gone upstream answers an error result. New t/reload-free.t red on HEAD (5/5 subtests), green with the fix. Running suites next.
+
+k73 done, to review. Root cause: Facade::_tool/_prompt/_resource closed over the upstream strongly -> cycle upstream->server->primitive->code->upstream for every façade-backed type (stdio, http, sse, docker, compose, fork); perl in-process has no façade and was already freed. Fix (lib/MCP/Hub/Facade.pm only): each closure holds the upstream weakly; a primitive whose upstream is gone resolves to an error result ('upstream NAME: gone, a configuration reload removed or replaced it'). extra re-merge and /all untouched. Test: new t/reload-free.t (removed/replaced of every type with tools+prompts+resources served on own endpoint and /all; running child+fork worker; in-flight call via /echo and /all settles at once with isError 'upstream echo: exited (signal 15)' then upstream freed; gone-upstream unit). Red on HEAD 5/5 subtests, green with fix (HEAD export and shared tree). Suites reload/aggregate*/facade/fork/fork-lifecycle/native/hub green; full prove -lr t/: only t/docker.t fails (compose request_timeout races under load ~25), reproduced on pure HEAD export; skips docker-live/npx/wiki-live. Drift for main agent: (1) MCP::Server<->Transport::HTTP cycle from to_action keeps any served server (façade or in-process instance) alive after its upstream is freed -- seam Upstream::action (Upstream.pm), mcp-hub board; (2) natives' tool closures capture $self -> removed native instances leak; (3) k45 caller-forwarding edits these closures, must keep the weak ref. Proposed subject: 'Hold the upstream weakly in façade primitives, so a reload frees it (k73)'.
+
+Released claim.
+
+Committed as 6979729.
