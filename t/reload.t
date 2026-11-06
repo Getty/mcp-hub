@@ -14,6 +14,8 @@ use Scalar::Util      qw(refaddr);
 use MCP::Hub;
 use MCP::Client;
 
+use lib curfile->sibling('lib')->to_string;
+
 my $ECHO     = curfile->sibling('upstream', 'echo.pl')->to_string;
 my $FIXTURES = curfile->sibling('fixtures', 'claude')->to_string;
 
@@ -403,6 +405,43 @@ subtest 'a reload can flip open mode to clients mode' => sub {
   is $app->hub_config->mode, 'clients', 'now in clients mode';
   $t->post_ok('/history' => json => rpc())->status_is(401)->header_is('WWW-Authenticate' => 'Bearer');
   $t->post_ok('/history' => {Authorization => 'Bearer tok-main'} => json => rpc())->status_is(200);
+};
+
+# /all lists the prompts of every server too, filtered by the profile: a reload
+# that adds, drops or changes a server -- or moves the access rules -- may change
+# them as much as the tools, so a listener is told about both. A reload that
+# changes nothing tells it nothing.
+subtest 'a reload tells listeners on /all that tools and prompts may have changed' => sub {
+  my $dir   = tempdir;
+  my $file  = $dir->child('config.json');
+  my $cache = $dir->child('cache');
+  my $one   = {mcpServers => {a => {class => 'EchoServer'}}, hub => {cache_dir => "$cache"}};
+  write_config($file, $one);
+
+  my $app = MCP::Hub->new(hub_config_input => "$file");
+  my $t   = Test::Mojo->new($app);
+  # The guard for a notification that never comes: the stream then goes quiet
+  # and is dropped, instead of the test hanging.
+  $t->ua->inactivity_timeout(5);
+
+  my (@heard, @summaries);
+  client($t, '/all')->listen({toolsListChanged => \1, promptsListChanged => \1}, sub ($message) {
+    my $method = $message->{method} // '';
+    if ($method eq 'notifications/subscriptions/acknowledged') {
+      push @summaries, $app->reload;
+      write_config($file, {%$one, mcpServers => {%{$one->{mcpServers}}, b => {class => 'EchoServer'}}});
+      push @summaries, $app->reload;
+      return 1;
+    }
+    push @heard, $method;
+    return @heard < 2;
+  });
+
+  is_deeply [map { $_->{ok} } @summaries], [1, 1], 'both reloads applied';
+  is_deeply $summaries[0]{unchanged}, ['a'], 'the first changed nothing';
+  is_deeply $summaries[1]{added}, ['b'], 'the second added a server';
+  is_deeply [sort @heard], [qw(notifications/prompts/list_changed notifications/tools/list_changed)],
+    'the listener was told tools and prompts may have changed, once each';
 };
 
 subtest 'listen and cache_dir changes are reported, everything else applied' => sub {

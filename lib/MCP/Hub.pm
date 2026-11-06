@@ -243,8 +243,11 @@ sub _apply_config ($self, $new) {
   # is only notified when the access rules moved, because that is the only way
   # what it shows can have changed without it being rebuilt.
   if ($auth_changed) { $_->server->notify_list_changed('tools') for @ups }
-  $self->aggregate->notify_list_changed('tools')
-    if $auth_changed || grep { @{$summary{$_}} } qw(added removed changed);
+  # /all lists every server's prompts as well, filtered by the profile, so
+  # whatever may have changed its tools may have changed those too.
+  if ($auth_changed || grep { @{$summary{$_}} } qw(added removed changed)) {
+    $self->aggregate->notify_list_changed($_) for qw(tools prompts);
+  }
 
   $self->_sync_config_watch;
 
@@ -981,6 +984,11 @@ of that, so from a request's point of view the new access rules -- including a
 flip between open and clients mode -- take effect all at once, without a single
 upstream being restarted. L<MCP::Hub::Auth/last_seen> survives, and every
 affected server is sent a C<tools/list_changed> notification.
+
+C</all> is sent C<tools/list_changed> and C<prompts/list_changed> whenever a
+reload adds, removes or changes a server or moves the access rules: it lists
+the prompts of every server too, filtered by the profile, so either may have
+changed.
 
 C<hub.listen> and C<hub.cache_dir> cannot be applied to a running daemon.
 Everything else is applied and the summary's C<warnings> say what needs a

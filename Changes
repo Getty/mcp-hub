@@ -155,3 +155,6 @@ Revision history for MCP-Hub
     the profile leaves any. Before, any client of /all -- a tokenless one
     under public_profile too -- got every server's instructions under
     `## <name>`, naming servers its profile hides.
+  - A reload that adds, removes or changes a server, or changes the access
+    rules, also sends notifications/prompts/list_changed to /all
+    listeners, not only tools/list_changed.

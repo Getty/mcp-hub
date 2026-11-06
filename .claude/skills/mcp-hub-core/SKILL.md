@@ -176,6 +176,9 @@ Pfad-`stat`, Intervall = Hub-Attribut `auto_reload_interval`), `POST /_hub/reloa
   Neu → gewärmt wie beim Daemon-Start, d. h. mit gecachtem Manifest **kein Spawn**.
 - **profiles/clients/public_profile werden in place getauscht** (`auth->config($new)`);
   `Auth::last_seen` lebt auf `Auth`, nicht auf der Config, dann `notify_list_changed`.
+  `/all` bekommt `tools/` **und** `prompts/list_changed`, sobald ein Eintrag added/
+  removed/changed ist oder die Access-Regeln sich bewegt haben (`t/reload.t` hört per
+  `subscriptions/listen` mit).
 - **Broken Placeholder wird bei jedem Reload neu versucht**; ein crash-gelooptes stdio-
   `failed` oder ein gescheiterter erster Fetch nicht — dort bleibt `refresh` der Weg zurück.
 - `hub.listen`/`hub.cache_dir` sind nicht live anwendbar → Warnung in der Summary; der
