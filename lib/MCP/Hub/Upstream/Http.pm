@@ -76,6 +76,13 @@ sub _tls_missing ($self, $url) {
 
 sub start_p ($self) {
   return Mojo::Promise->resolve($self) if $self->state eq 'ready';
+
+  # A start asked for after a stop is a fresh one. The start the stop called
+  # off settles a few ticks after the stop (the catch below); the fresh one
+  # begins once it has, so that two handshakes never run at once, and whoever
+  # asks in the meantime shares it.
+  return $self->{next_start} //= $self->_start_after_p($self->{start_promise})
+    if $self->{start_promise} && $self->{stop_requested};
   return $self->{start_promise} if $self->{start_promise};
 
   # A dead remote is left only by an explicit refresh: an ordinary call against a
@@ -127,14 +134,32 @@ sub start_p ($self) {
   return $done;
 }
 
+# The start asked for after a stop: once the start the stop called off has
+# settled, it begins -- unless a stop called it off as well in the meantime
+# (stop). The last word counts: a start asked for after that stop is another
+# one, and this one no longer begins.
+sub _start_after_p ($self, $called_off) {
+  my $next  = Mojo::Promise->new;
+  my $begin = sub {
+    my $current = $self->{next_start};
+    return unless $current && $current == $next;
+    delete $self->{next_start};
+    $self->start_p->then(sub { $next->resolve(@_) }, sub { $next->reject(@_) });
+  };
+  $called_off->then($begin, $begin);
+  return $next;
+}
+
 # A stop calls off what it finds under way, as stopped: a start (see start_p's
-# catch), a connect still waiting for its endpoint (_close_sse) and the
-# requests in flight -- those first, before the closing stream fails them as
+# catch), the start asked for after an earlier stop that waits for it
+# (_start_after_p), a connect still waiting for its endpoint (_close_sse) and
+# the requests in flight -- those first, before the closing stream fails them as
 # closed. Over Streamable HTTP the requests in flight here are those of a start
 # (_http_request_p); a call is left to finish. The stop also ends the session
 # (_end_session).
 sub stop ($self) {
   $self->{stop_requested} = 1 if $self->{start_promise};
+  if (my $next = delete $self->{next_start}) { $next->reject("upstream @{[$self->name]}: stopped") }
   $self->_fail_pending("upstream @{[$self->name]}: stopped");
   $self->_close_sse;
   if (defined(my $sid = delete $self->{session_id})) { $self->_end_session($sid) }

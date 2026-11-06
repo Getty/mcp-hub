@@ -191,3 +191,6 @@ Revision history for MCP-Hub
     initialize no longer carrying the id of the session before. A stop ends
     the old session with a DELETE once no call is left on it, and a remote
     that refuses (405) or cannot be reached is fine.
+  - A start of an HTTP upstream asked for right after a stop is now a fresh
+    start, begun once the stopped start has settled, instead of failing as
+    stopped along with it.

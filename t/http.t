@@ -877,6 +877,106 @@ subtest 'streamable http upstream: a start opens a new session, a stop ends the 
   $fake->{daemon}->stop;
 };
 
+subtest 'a start after a stop is a fresh one, though the stopped start has not settled yet' => sub {
+  # A stop calls a start off, and the start settles a few ticks later. A start
+  # asked for in between was handed the start the stop had called off, and was
+  # rejected as stopped with it, though it came after the stop. It is a fresh
+  # start: it begins once the stopped one has settled -- never alongside it --
+  # and whoever asks in the meantime shares it. A stop before it begins calls
+  # it off as well: the last word counts.
+  for my $case (map { my $t = $_; map { [$t, $_] } 'at once', 'during the initialize' } qw(http sse)) {
+    my ($transport, $when) = @$case;
+    my $phase = "$transport, stopped $when";
+    my $hold  = '';
+    my $fake;
+    my $handshake = mcp_answer('unused');
+    if ($transport eq 'sse') {
+      $fake = fake_sse(answer => sub ($req) { ($req->{method} // '') eq $hold ? undef : $handshake->($req) });
+    }
+    else {
+      # (A held request never settles.)
+      $fake = fake_http(answer => sub ($req) { ($req->{method} // '') eq $hold ? Mojo::Promise->new : $handshake->($req) });
+    }
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => $transport, url => $fake->{url}, request_timeout => 5},
+      cache_dir => tempdir->to_string,
+    );
+    $up->log->level('fatal');
+
+    my $initializes = sub { scalar grep { ($_->{method} // '') eq 'initialize' } @{$fake->{posts}} };
+    my $until       = sub ($cond) {
+      my $deadline = time + 5;
+      Mojo::Promise->timer(0.01)->wait until $cond->() || time > $deadline;
+      return $cond->();
+    };
+    # A start that a stop calls off: at once, or with its initialize on the way.
+    my $stopped_start = sub {
+      $hold = $when eq 'at once' ? '' : 'initialize';
+      @{$fake->{posts}} = ();
+      my $start = $up->start_p;
+      ok $until->($initializes), "$phase: the initialize is on its way" if $hold;
+      $up->stop;
+      $hold = '';
+      @{$fake->{posts}} = ();
+      return $start;
+    };
+    my @order;
+    $up->req_ua->on(start => sub ($ua, $tx) {
+      push @order, 'initialize' if (eval { $tx->req->json->{method} } // '') eq 'initialize';
+    });
+
+    # (A block each: a start resolves with the upstream, which its promise
+    # would hold past the weak reference below.)
+    {    # Stop, and start again in the same tick.
+      my $old = $stopped_start->();
+      @order = ();
+      $old->catch(sub { push @order, 'stopped' });
+      my $new  = $up->start_p;
+      my $also = $up->start_p;
+      is $also, $new, "$phase: a second start in the meantime shares it";
+      is _await_bounded($old, 2)->{err}, 'upstream fake: stopped', "$phase: the start the stop called off is rejected";
+      is _await_bounded($new->then(sub { 'started' }), 5), 'started', "$phase: the fresh start connects";
+      is $up->state, 'ready', "$phase: ready";
+      is $initializes->(), 1, "$phase: with one handshake";
+      is_deeply \@order, ['stopped', 'initialize'], "$phase: which began once the stopped start had settled";
+      $up->stop;
+    }
+
+    {    # Stop, start, stop: the second stop calls the fresh start off before it begins.
+      my $old        = $stopped_start->();
+      my $called_off = $up->start_p;
+      $up->stop;
+      is _await_bounded($old, 2)->{err}, 'upstream fake: stopped', "$phase, stopped twice: the first start is rejected";
+      is _await_bounded($called_off, 2)->{err}, 'upstream fake: stopped', "$phase, stopped twice: so is the fresh one";
+      Mojo::Promise->timer(0.2)->wait;
+      is $initializes->(), 0, "$phase, stopped twice: which never began";
+      is $up->state, 'stopped', "$phase, stopped twice: stopped";
+    }
+
+    {    # Stop, start, stop, start: the start after the last stop is the one.
+      my $old   = $stopped_start->();
+      my $first = $up->start_p;
+      $up->stop;
+      my $last = $up->start_p;
+      isnt $last, $first, "$phase, stopped twice, started again: a new fresh start";
+      is _await_bounded($first, 2)->{err}, 'upstream fake: stopped',
+        "$phase, stopped twice, started again: the first is called off";
+      is _await_bounded($last->then(sub { 'started' }), 5), 'started',
+        "$phase, stopped twice, started again: the last connects";
+      Mojo::Promise->timer(0.1)->wait;
+      is $initializes->(), 1, "$phase, stopped twice, started again: with one handshake";
+      is $up->state, 'ready', "$phase, stopped twice, started again: ready";
+      $up->stop;
+    }
+
+    weaken(my $gone = $up);
+    undef $up;
+    is $gone, undef, "$phase: nothing holds the upstream";
+    $fake->{daemon}->stop;
+  }
+};
+
 subtest 'an https url without TLS is a failed upstream that names the fix' => sub {
   # A perl without IO::Socket::SSL 2.009+ (or with MOJO_NO_TLS) cannot speak
   # https. Before the fix the warming fetch failed once, the upstream went back
