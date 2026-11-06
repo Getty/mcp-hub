@@ -1,0 +1,32 @@
+---
+claimed_at: 2026-11-06T03:04:30Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T03:04:30Z
+created: 2026-11-06T02:36:42Z
+id: 68
+priority: high
+started: 2026-11-06T03:04:30Z
+status: done
+tags:
+- auth
+- aggregate
+- bug
+- security
+title: /all serves prompts of servers outside the client's profile
+updated: 2026-11-06T03:04:30Z
+---
+
+Found by mcp-hub-worker during k61 (2026-11-06), reachable today. The aggregate gets only a 'tools' event filter (Hub::_build_aggregate -> Auth::filter_aggregate). Probe, clients mode, profile servers: ['p'], entries p and q: POST /q prompts/get -> 404 (correct), but POST /all prompts/list lists q__greet and prompts/get q__greet -> 200 and runs q's prompt (a stdio q would be spawned). Auth POD: 'Prompts and resources follow servers alone'. Done: /all lists and serves only prompts of servers the profile allows (list and get), same 404-vs-hidden semantics as tools on /all; check tools/call on /all for a tool of a disallowed server too (is the tools filter applied to the call lookup, not only the list?); regression tests in clients mode for list and get/call, red on HEAD.
+
+2026-11-06 02:38 Start: reading Auth/Aggregate/Hub wiring and MCP::Server 0.15. MCP::Server looks tools/call, prompts/get and resources/read up through the event-filtered list (_tools/_prompts/_resources emit then first{}), so a filter on the event covers list AND call/get. The aggregate subscribes only 'tools' -> prompts unfiltered.
+
+2026-11-06 02:41 Probe on HEAD+k61 (clients mode, profile servers [p], in-process EchoServer p and q): POST /q prompts/get -> 404 (ok); /all prompts/list lists q__greet (LEAK); /all prompts/get q__greet -> 200 'Hello, x!' (LEAK, q's prompt runs); /all tools/call q__echo -> -32602 not found (holds: tools filter rides the 'tools' event, which tools/call looks up through). Also found: server names may contain '__' (Config allows [A-Za-z0-9_-]), and filter_aggregate splits on the first '__' -> entries p and p__x, profile [p]: /all tools/call p__x__echo SUCCEEDS (tool of a server outside the profile); profile [p__x] sees no tools at all. Also found: server/discover on /all returns instructions of every upstream ('## q ...', cacheScope public) -> names servers outside the profile.
+
+2026-11-06 02:44 Tests: new t/aggregate-auth.t (6 subtests, clients mode, in-process EchoServer p+q, profiles ponly/pecho/every + public_profile). On clean HEAD export: subtests 2,3,5,6 RED (prompts/list leak incl. cacheScope public, prompts/get runs q's prompt, public_profile path too); 1 (/q 404) and 4 (tools/list + tools/call q__echo -> -32602) GREEN = tools filter already covers the call lookup. Fix: Auth::filter_aggregate_prompts (servers alone, per POD) wired as a 'prompts' event on the aggregate in Hub::_build_aggregate; shared prefix split _aggregate_name for tools+prompts. Unit test in t/auth.t. POD Auth/Aggregate + mcp-hub-core/-runtime skill text updated. Running prove -lr on clean export.
+
+2026-11-06 02:49 Drift for the dispatcher to file (this board): (1) HIGH/security: '__' inside a server name breaks the /all prefix split (Config allows ^[A-Za-z0-9][A-Za-z0-9_-]*$). Repro: entries p and p__x, profile servers [p] -> /all tools/call p__x__echo succeeds (and p__x__greet is listed and served, since the prompt filter shares the split, Auth::_aggregate_name); profile [p__x] sees none of its own tools. Name collisions too: server a/tool b__t and server a__b/tool t are both 'a__b__t' on /all, first one wins. Options: reject '__' in server names in Config (error with JSON path; fixes the collisions too, but narrows the config surface), or have Aggregate record each wrapped entry's origin (refaddr -> [server, name]) and filter by that (no surface change, collisions remain). Maintainer's choice. (2) MED/security: server/discover on /all (new protocol; legacy initialize carries no instructions) returns the instructions of EVERY upstream as '## <name>' blocks, cacheScope public, whatever the profile, which names servers outside it, against the 404 rule. Capabilities also advertise prompts when any upstream has prompts. Needs per-request instructions on Aggregate. (3) LOW: reload sends only notify_list_changed('tools') on /all (auth change, add/remove/change); /all prompts now depend on the profile too, and no prompts/list_changed is sent.
+
+2026-11-06 02:54 Done. Leaked: /all prompts/list (and cacheScope public) and prompts/get. Any client could list every server's prompts and run them, whatever its profile allowed, including tokenless clients under public_profile; a stdio upstream would have been spawned. tools/list and tools/call on /all already held: MCP::Server looks the call up in the event-filtered list. Fix: Auth::filter_aggregate_prompts (servers alone, as the POD says prompts follow) wired as a 'prompts' event on the aggregate in Hub::_build_aggregate; filter_aggregate and the new filter share one prefix split, Auth::_aggregate_name. A hidden prompt is -32602 'not found', the same as a hidden tool. Files: lib/MCP/Hub.pm, lib/MCP/Hub/Auth.pm (+POD), lib/MCP/Hub/Aggregate.pm (POD only, on top of k61), t/aggregate-auth.t (new), t/auth.t (+1 subtest), .claude/skills/mcp-hub-core + mcp-hub-runtime SKILL.md, docs spec sentence. Verified: t/aggregate-auth.t red on a clean HEAD export (subtests 2,3,5,6), green with the fix. prove -lr t/ green on a clean HEAD export + k61 + these files (28 files, 250 tests) and on the shared tree (258 tests). Skipped themselves in both runs: docker-live.t, npx.t, wiki-live.t (env not set). Not covered: '__' in a server name (see drift note (1)), so prompts and tools of such a server are still misattributed.
+
+Committed as 21cecef
