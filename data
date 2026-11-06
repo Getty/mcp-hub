@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-11-06T02:05:48Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T02:05:48Z
+created: 2026-11-03T18:39:43Z
+id: 34
+priority: medium
+started: 2026-11-06T01:25:22Z
+status: done
+tags:
+- cli
+- hazard
+title: mcp-hub help lists Mojolicious' prefork command
+updated: 2026-11-06T02:05:48Z
+---
+
+Found by mcp-hub-binary-worker during k28. The command listing offers Mojolicious::Command::prefork, which contradicts the hazard 'one daemon process — never a prefork/hypnotoad path'. Hide or refuse it.
+
+2026-11-06 01:32 Findings: Mojolicious 9.49 command namespaces give cgi, daemon (ours shadows), eval, get, prefork, psgi, routes, version + Author::{cpanify,generate,inflate}. Mojolicious::Commands::detect also switches ANY command to psgi (PLACK_ENV set) or cgi (PATH_INFO/GATEWAY_INTERFACE set) — today 'PLACK_ENV=x mcp-hub daemon' silently returns a PSGI app and exits 0. Plan: MCP::Hub::Commands (subclass of Mojolicious::Commands, app->commands) refuses prefork/cgi/psgi — named, via 'help NAME', and when detected — with a why + 'mcp-hub daemon'; its own command listing skips them; namespaces = [MCP::Hub::Command, Mojolicious::Command] (Author dropped: scaffold/inflate/CPAN-upload tools, nothing for a hub). get/routes/version/eval stay.
+
+2026-11-06 01:46 Also found (for the dispatcher to file, this board): (1) 'hypnotoad bin/mcp-hub' still serves the hub pre-forked: Mojo::Server::Hypnotoad sets HYPNOTOAD_APP before load_app, and MCP::Hub::Commands::run hands the app to any MOJO_APP_LOADER caller; a refusal when HYPNOTOAD_APP is set would close the hypnotoad half of the hazard. (2) Stale text, prose/skill lanes: .claude/skills/mcp-hub-core/SKILL.md ~l.60 'es gibt bewusst kein prefork-Command' (now: refused by MCP::Hub::Commands) and the module map lacks MCP::Hub::Commands; spec 2026-08-25 l.84 lists only config/refresh/status/token. (3) binary lane: scripts/loaded-modules.pl's help/listing runs no longer load Mojolicious::Command::{prefork,cgi,psgi}, Mojolicious::Command::Author::* or Mojo::Server::{Prefork,CGI,PSGI}; the packed set shrinks accordingly, nothing to change.
+
+2026-11-06 01:46 Done. New lib/MCP/Hub/Commands.pm (Mojolicious::Commands subclass; MCP::Hub has commands => MCP::Hub::Commands, the startup unshift is gone): refuses prefork, cgi, psgi by name, as 'help NAME' and 'NAME --help', and when Mojolicious' detect would pick cgi/psgi from PATH_INFO/GATEWAY_INTERFACE/PLACK_ENV (before: 'PLACK_ENV=x mcp-hub daemon' exited 0 serving nothing). The message names the reason and 'Run "mcp-hub daemon" instead' (+ the env var / MOJO_NO_DETECT=1 when detected). Its own command list leaves them out; namespaces = [MCP::Hub::Command, Mojolicious::Command] (Author's generate/inflate/cpanify dropped). Kept: get, routes, eval, version. POD: bin/mcp-hub COMMANDS, MCP::Hub =attr commands, daemon.pm sentence fixed. Tests: t/command.t 4 new subtests (red on HEAD, green now; the real prefork/cgi/psgi run subs are replaced by dies so a regression cannot start a server in the test), t/00-load.t. prove -lr t/: Files=26 Tests=238 PASS; skipped: docker-live, npx, wiki-live (env-gated).
+
+Committed as 35d1c45
