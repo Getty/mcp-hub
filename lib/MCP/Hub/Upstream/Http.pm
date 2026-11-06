@@ -87,10 +87,7 @@ sub start_p ($self) {
 
   # A dead remote is left only by an explicit refresh: an ordinary call against a
   # failed upstream reports why instead of reconnecting to it all over again.
-  return Mojo::Promise->reject("upstream @{[$self->name]}: "
-      . ($self->error // 'failed')
-      . ", run 'mcp-hub refresh @{[$self->name]}' to try again")
-    if $self->state eq 'failed';
+  return Mojo::Promise->reject($self->_failed_message) if $self->state eq 'failed';
 
   $self->state('starting');
   my $done = Mojo::Promise->new;

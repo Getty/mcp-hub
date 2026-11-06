@@ -73,6 +73,16 @@ sub fail ($self, $reason) {
   return $self;
 }
 
+# What a call to a failed upstream is told: why, and how to try again. A
+# reason that ends a sentence of its own -- the hint for a command that cannot
+# be executed asks a question -- is followed by a second one, not a comma.
+sub _failed_message ($self) {
+  my $name  = $self->name;
+  my $error = $self->error // 'failed';
+  my $retry = "run 'mcp-hub refresh $name' to try again";
+  return "upstream $name: $error" . ($error =~ /[.!?]\z/ ? ' ' . ucfirst $retry : ", $retry");
+}
+
 # Resolves once what stop set in motion is over. Only an upstream whose stop
 # takes its time -- a child that is still to exit, a container -- says so.
 sub stopped_p ($self) { return Mojo::Promise->resolve($self) }

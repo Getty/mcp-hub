@@ -409,6 +409,14 @@ subtest 'a command that cannot be executed is logged loudly' => sub {
     'the missing command is named at warn level'
     or diag explain \@lines;
 
+  # The hub marks it failed with that reason (MCP::Hub's warming fetch), and a
+  # call is then told the reason and the way out -- in two sentences, as the
+  # reason ends in a question mark.
+  $up->fail($out->{err});
+  is _error_text(_await($up->call_tool('anything', {}))),
+    "upstream missing: exited (code 127) $hint Run 'mcp-hub refresh missing' to try again",
+    'a call to it is told why and how to try again';
+
   # Where SIGCHLD is ignored the kernel reaps the child itself, waitpid fails
   # with ECHILD and $? is -1 -- which must not be reported as "signal 127".
   {

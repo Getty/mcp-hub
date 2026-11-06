@@ -67,10 +67,7 @@ sub start_p ($self) {
   return $self->{start_promise} if $self->{start_promise};
 
   # A crash loop is left only by an explicit refresh, as for a stdio child.
-  return Mojo::Promise->reject("upstream @{[$self->name]}: "
-      . ($self->error // 'failed')
-      . ", run 'mcp-hub refresh @{[$self->name]}' to try again")
-    if $self->state eq 'failed';
+  return Mojo::Promise->reject($self->_failed_message) if $self->state eq 'failed';
 
   # A connection that went away on its own may have left its engine behind.
   $self->_drop_engine;
