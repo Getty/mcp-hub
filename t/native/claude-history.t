@@ -67,6 +67,30 @@ subtest 'get_conversation' => sub {
   is $missing->{total}, 0, 'unknown session is empty';
 };
 
+# Claude Code names a session's file <session_id>.jsonl, as a1 and a2 are named
+# here; b1 sits in sess-b1.jsonl on purpose, so the scan of the other files is
+# covered too.
+subtest 'get_conversation finds the file of a session' => sub {
+  my $reads = sub ($session_id) {
+    my @read;
+    no warnings 'redefine';
+    my $open = \&Mojo::File::open;
+    local *Mojo::File::open = sub ($p, @args) { push @read, "$p"; $open->($p, @args) };
+    my $conv = MCP::Hub::Native::ClaudeHistory->new(root => $root)->get_conversation({session_id => $session_id});
+    return $conv->{total}, [map { s{^\Q$root\E/projects/}{}r } @read];
+  };
+
+  my ($total, $read) = $reads->('a2');
+  is $total, 2, 'a session in the file named after it';
+  is_deeply $read, ['-home-tester-proj-a/a2.jsonl'], 'is read from that file alone';
+
+  ($total, $read) = $reads->('b1');
+  is $total, 2, 'a session in a file named otherwise';
+  is $read->[-1], '-home-tester-proj-b/sess-b1.jsonl', 'is read from it';
+  is_deeply [grep { !/sess-b1/ } @$read], ['-home-tester-proj-a/a1.jsonl', '-home-tester-proj-a/a2.jsonl'],
+    'after the other files';
+};
+
 subtest 'metadata cache' => sub {
   # Two identical calls should reuse the cache; assert the cache is populated.
   $h->list_sessions;

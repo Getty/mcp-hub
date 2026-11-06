@@ -11,8 +11,8 @@ my $root = curfile->sibling('..', 'fixtures', 'claude')->to_string;
 # The session picker uses mtime ("the newest .jsonl"); make it deterministic
 # regardless of how the fixtures were copied into place.
 my $proj_a = curfile->sibling('..', 'fixtures', 'claude', 'projects', '-home-tester-proj-a');
-utime time - 100, time - 100, $proj_a->child('sess-a1.jsonl')->to_string;
-utime time,       time,       $proj_a->child('sess-a2.jsonl')->to_string;
+utime time - 100, time - 100, $proj_a->child('a1.jsonl')->to_string or die "a1.jsonl: $!";
+utime time,       time,       $proj_a->child('a2.jsonl')->to_string or die "a2.jsonl: $!";
 
 # Build a fake /proc: pid 4242 is `claude` with cwd /home/tester/proj-a,
 # pid 9999 is something else, pid 4243 is `claude` in an unknown directory.
