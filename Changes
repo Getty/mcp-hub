@@ -171,3 +171,9 @@ Revision history for MCP-Hub
     longer leaves the next request waiting for request_timeout (forever with
     request_timeout 0) and the start stuck with it; a request with no
     stream to answer on fails at once.
+  - A stop during the start of a Streamable HTTP upstream calls the start
+    off: the request in flight is cut off, the upstream stays stopped
+    instead of going ready, and nothing is logged or counted as a failure.
+    The same holds for either HTTP transport when the stop lands during a
+    prompts/list or resources/list. A call in flight on a ready upstream is
+    still left to finish.

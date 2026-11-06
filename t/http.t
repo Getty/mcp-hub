@@ -133,6 +133,40 @@ sub mcp_answer ($error) {
   };
 }
 
+# A fake Streamable HTTP MCP server: every JSON-RPC request is a POST and its
+# answer the response. It records every POST it receives, with the session id
+# it carries (`session`), and gives every initialize a new one. The answer
+# callback returns the response, or a promise of it: one that never settles
+# holds the request, as a remote that takes its time does. `answered` counts
+# the answers, `cut` the POSTs whose connection went before they were answered.
+sub fake_http (%opt) {
+  my $app = Mojolicious->new;
+  $app->log->level('warn');
+  my $state = {posts => [], answered => 0, cut => 0, sessions => 0};
+
+  $app->routes->post('/mcp' => sub ($c) {
+    my $req = eval { $c->req->json } // {};
+    push @{$state->{posts}}, {%$req, session => $c->req->headers->header('Mcp-Session-Id')};
+    return $c->rendered(202) unless defined $req->{id};    # a notification
+    my $answered;
+    $c->on(finish => sub { $state->{cut}++ unless $answered });
+    $c->render_later;
+    Mojo::Promise->resolve($opt{answer}->($req))->then(sub ($res) {
+      return unless $c->tx;
+      $answered = ++$state->{answered};
+      $c->res->headers->header('Mcp-Session-Id' => 's' . ++$state->{sessions})
+        if ($req->{method} // '') eq 'initialize';
+      $c->render(json => $res);
+    });
+  });
+
+  my $daemon = Mojo::Server::Daemon->new(app => $app, listen => ['http://127.0.0.1'], silent => 1);
+  $daemon->start;
+  $state->{url}    = "http://127.0.0.1:@{[$daemon->ports->[0]]}/mcp";
+  $state->{daemon} = $daemon;
+  return $state;
+}
+
 subtest 'streamable http upstream: handshake and calls' => sub {
   my $up = MCP::Hub::Upstream::Http->new(
     name      => 'remote',
@@ -418,19 +452,28 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
   # went nowhere: it waited request_timeout for an answer that could not come,
   # with request_timeout 0 for good, and the start with it, which every later
   # start then waited on too. A request without an endpoint is rejected at once.
-  my @when = ('before it is connected', 'before the endpoint', 'during the handshake', 'between two requests');
+  #
+  # A stop during a prompts/list failed it, and the handshake takes a failed
+  # prompts/list (or resources/list) for an empty one: the upstream went
+  # `ready` after the stop, over the stream the stop had closed.
+  my @when = ('before it is connected', 'before the endpoint', 'during the handshake', 'between two requests',
+    'during a prompts/list');
   for my $case (map { my $timeout = $_; map { [$_, $timeout] } @when } 5, 0) {
     my ($when, $timeout) = @$case;
-    my $phase     = $timeout ? $when : "$when, request_timeout 0";
-    my $hold      = $when ne 'between two requests';    # the remote does not answer the initialize
+    my $phase = $timeout ? $when : "$when, request_timeout 0";
+    # The request the remote does not answer -- none between two requests.
+    my $hold = {'between two requests' => '', 'during a prompts/list' => 'prompts/list'}->{$when} // 'initialize';
     my $handshake = mcp_answer('unused');
     my $fake      = fake_sse(answer => sub ($req) {
       my $method = $req->{method} // '';
-      return undef if $hold && $method eq 'initialize';
+      return undef if $method eq $hold;
       # No tools: the code of a façade tool holds its upstream, which would
       # outlive the weak reference below whatever the stops left behind.
-      return {jsonrpc => '2.0', id => $req->{id}, result => {tools => []}} if $method eq 'tools/list';
-      return $handshake->($req);
+      return {jsonrpc => '2.0', id => $req->{id}, result => {tools => []}}   if $method eq 'tools/list';
+      return {jsonrpc => '2.0', id => $req->{id}, result => {prompts => []}} if $method eq 'prompts/list';
+      my $res = $handshake->($req);
+      $res->{result}{capabilities} = {prompts => {}} if $method eq 'initialize';    # a prompts/list follows
+      return $res;
     });
     $fake->{endpoint_delay} = 30 if $when eq 'before the endpoint';
 
@@ -468,9 +511,9 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
       my $start = $up->start_p;
       ok $until->(sub { $fake->{tx} }), "$phase, start $n: the stream is open"
         if $when eq 'before the endpoint';
-      ok $until->(sub { grep { ($_->{method} // '') eq 'initialize' } @{$fake->{posts}} }),
-        "$phase, start $n: the initialize is on its way"
-        if $when eq 'during the handshake';
+      ok $until->(sub { grep { ($_->{method} // '') eq $hold } @{$fake->{posts}} }),
+        "$phase, start $n: the $hold is on its way"
+        if $when =~ /^during /;
       $up->stop unless $stop_at;
 
       # Well inside the request_timeout of 5 s, and the endpoint wait of 30 s
@@ -489,7 +532,7 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
     ok !(grep {/timed out waiting for the SSE endpoint/} @logged), "$phase: no endpoint timeout";
 
     # Nor did they lock it out: the next start connects.
-    ($hold, $stop_at, $fake->{endpoint_delay}) = (0, '', 0);
+    ($hold, $stop_at, $fake->{endpoint_delay}) = ('', '', 0);
     # (Resolved to a string: the upstream it resolves with would be held here.)
     my $again = _await_bounded($up->start_p->then(sub { 'started' }), 5);
     is $again, 'started', "$phase: the next start connects" or diag explain $again;
@@ -543,6 +586,162 @@ subtest 'sse upstream: a request without the stream to answer on is rejected at 
   my $again = _await_bounded($up->start_p->then(sub { 'started' }), 5);
   is $again, 'started', 'the next start connects' or diag explain $again;
   $up->stop;
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: a stop while it starts calls the start off, it does not fail it' => sub {
+  # A stop did not reach a Streamable HTTP start: its requests were not in
+  # {pending}, and nothing between them asked whether the start was still
+  # wanted. The handshake went on, and the upstream went `ready` after the
+  # stop -- or, with a request in flight that the remote took its time over,
+  # stayed `starting` until request_timeout, and every start in between joined
+  # the one the stop had called off. The stop calls the start off, at once, as
+  # stopped: the request in flight is cut off, and the next is not sent.
+  #
+  # As the initialize goes out it is not connected yet, and there is nothing
+  # to cut off: it goes out all the same, and its answer is turned away -- the
+  # session id on it too, which the next start would have sent on.
+  my @when = ('before the first request', 'as the initialize goes out', 'during the initialize', 'between two requests',
+    'during a prompts/list');
+  for my $when (@when) {
+    # The request the remote does not answer, if any.
+    my $hold = {'during the initialize' => 'initialize', 'during a prompts/list' => 'prompts/list'}->{$when} // '';
+    my $fake = fake_http(answer => sub ($req) {
+      my ($id, $method) = ($req->{id}, $req->{method} // '');
+      return Mojo::Promise->new if $method eq $hold;    # never settles
+      return {jsonrpc => '2.0', id => $id, result => {
+        protocolVersion => '2025-06-18',
+        capabilities    => {prompts => {}},             # a prompts/list follows the tools/list
+        serverInfo      => {name => 'fake-http', version => '0.0.1'},
+      }} if $method eq 'initialize';
+      return {jsonrpc => '2.0', id => $id, result => {tools   => []}} if $method eq 'tools/list';
+      return {jsonrpc => '2.0', id => $id, result => {prompts => []}} if $method eq 'prompts/list';
+      return {jsonrpc => '2.0', id => $id, error => {code => -32601, message => "no $method"}};
+    });
+
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+      cache_dir => tempdir->to_string,
+    );
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+    $up->log($log);
+
+    my $until = sub ($cond, $within = 5) {
+      my $deadline = time + $within;
+      Mojo::Promise->timer(0.01)->wait until $cond->() || time > $deadline;
+      return $cond->();
+    };
+
+    # Every POST the hub sends, as it goes out. A stop lands as one of them
+    # does: as the initialize, before it is connected, or between two
+    # requests, as the notifications/initialized -- the initialize is answered,
+    # the tools/list not sent yet.
+    my $stop_at = {'as the initialize goes out' => 'initialize', 'between two requests' => 'notifications/initialized'}
+      ->{$when} // '';
+    my (@sent, %tx);
+    weaken(my $weak = $up);
+    $up->req_ua->on(start => sub ($ua, $tx) {
+      push @sent, my $method = eval { $tx->req->json->{method} } // '';
+      $tx{$method} = $tx;
+      $weak->stop if $stop_at && $method eq $stop_at;
+    });
+    my %sent = (
+      'before the first request'   => [],
+      'as the initialize goes out' => ['initialize'],
+      'during the initialize'      => ['initialize'],
+      'between two requests'       => ['initialize', 'notifications/initialized'],
+      'during a prompts/list'      => ['initialize', 'notifications/initialized', 'tools/list', 'prompts/list'],
+    );
+
+    # Three in a row: within the five seconds in which three connect failures
+    # mark the upstream failed.
+    for my $n (1 .. 3) {
+      @{$fake->{posts}} = @sent = ();
+      my ($cut, $answered) = @$fake{qw(cut answered)};
+      my $start = $up->start_p;
+      ok $until->(sub { grep { ($_->{method} // '') eq $hold } @{$fake->{posts}} }),
+        "$when, start $n: the $hold is on its way"
+        if $hold;
+      $up->stop unless $stop_at;
+
+      # Well inside the request_timeout of 5 s.
+      my $r = _await_bounded($start, 2);
+      is $r->{err}, 'upstream fake: stopped', "$when, start $n: rejected at once, as stopped" or diag explain $r;
+      is $up->state, 'stopped', "$when, start $n: stopped";
+      is_deeply \@sent, $sent{$when}, "$when, start $n: nothing went out after the stop" or diag explain \@sent;
+      # At once, too: well before request_timeout would cut it.
+      ok $until->(sub { $fake->{cut} > $cut }, 1), "$when, start $n: the $hold is cut off, not left to run"
+        if $hold;
+      next unless $when eq 'as the initialize goes out';
+      ok $until->(sub { $fake->{answered} > $answered }), "$when, start $n: the initialize is answered all the same";
+      # The hub has read the answer, and what it does with it is done.
+      ok $until->(sub { $tx{initialize}->is_finished }), "$when, start $n: the answer is read";
+      Mojo::Promise->timer(0.01)->wait;
+      is $up->state, 'stopped', "$when, start $n: and it changes nothing";
+    }
+    is $up->error, undef, "$when: no failure reason";
+    is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$when: nothing logged as a failure"
+      or diag explain \@logged;
+
+    # Nor did they lock it out: the next start connects.
+    ($hold, $stop_at) = ('', '');
+    @{$fake->{posts}} = ();
+    # (Resolved to a string: the upstream it resolves with would be held here.)
+    my $again = _await_bounded($up->start_p->then(sub { 'started' }), 5);
+    is $again, 'started', "$when: the next start connects" or diag explain $again;
+    is $up->state, 'ready', "$when: ready";
+    is $fake->{posts}[0]{session}, undef, "$when: with no session id of an answer that was turned away"
+      if $when eq 'as the initialize goes out';
+    $up->stop;
+
+    # And they left nothing behind: no POST a stop called off holds the
+    # upstream until request_timeout.
+    weaken(my $gone = $up);
+    undef $up;
+    is $gone, undef, "$when: nothing holds the upstream";
+
+    $fake->{daemon}->stop;
+  }
+};
+
+subtest 'streamable http upstream: a stop leaves a call in flight to finish' => sub {
+  # A stop calls off a start, not a call. Over Streamable HTTP a call does not
+  # need anything the stop takes down -- its answer comes on its own POST --
+  # and the remote may be carrying it out already: the call is left to finish,
+  # and its answer is the caller's.
+  my $fake = fake_http(answer => sub ($req) {
+    my ($id, $method) = ($req->{id}, $req->{method} // '');
+    return Mojo::Promise->timer(0.3)->then(sub {
+      {jsonrpc => '2.0', id => $id, result => {content => [{type => 'text', text => 'pong'}]}};
+    }) if $method eq 'tools/call';
+    return {jsonrpc => '2.0', id => $id, result => {
+      protocolVersion => '2025-06-18',
+      capabilities    => {},
+      serverInfo      => {name => 'fake-http', version => '0.0.1'},
+    }} if $method eq 'initialize';
+    return {jsonrpc => '2.0', id => $id, result => {tools => []}};
+  });
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+
+  my $call     = $up->call_tool('ping', {});
+  my $deadline = time + 5;
+  Mojo::Promise->timer(0.01)->wait
+    until (grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}}) || time > $deadline;
+  ok +(grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}}), 'the call is on its way';
+  $up->stop;
+
+  is _error_text(_await_bounded($call, 5)), 'pong', 'the stop leaves it to finish: it is answered';
+  is $fake->{cut}, 0, 'its POST was not cut off';
+  is $up->state, 'stopped', 'stopped';
   $fake->{daemon}->stop;
 };
 

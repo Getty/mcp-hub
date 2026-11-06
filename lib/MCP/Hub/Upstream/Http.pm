@@ -92,6 +92,10 @@ sub start_p ($self) {
 
   my $prep = $self->{transport} eq 'sse' ? $self->_open_sse_p : Mojo::Promise->resolve;
   $prep->then(sub { $self->_handshake_p })->then(sub ($manifest) {
+    # A stop after the last request, or during a prompts/list or
+    # resources/list -- whose failure the handshake takes for an empty list --
+    # calls the start off all the same.
+    die "stopped\n" if $self->{stop_requested};
     $self->_apply_manifest($manifest);
     delete $self->{failed};    # a live connection is never failed
     $self->error(undef);
@@ -102,8 +106,8 @@ sub start_p ($self) {
   })->catch(sub ($err) {
     # A start that a stop called off did not fail: it is neither logged nor
     # counted as a connect failure, and it is rejected as stopped, whichever
-    # step of it the stop cut short -- a request in flight, or the next one,
-    # which finds no connection to go out on (_sse_request_p).
+    # step of it the stop cut short -- a request in flight, the next one, which
+    # is not sent (_sse_request_p, _http_request_p), or none.
     my $stopped = delete $self->{stop_requested};
     $stopped
       ? $self->log->debug("[@{[$self->name]}] start called off by a stop")
@@ -122,7 +126,8 @@ sub start_p ($self) {
 # A stop calls off what it finds under way, as stopped: a start (see start_p's
 # catch), a connect still waiting for its endpoint (_close_sse) and the
 # requests in flight -- those first, before the closing stream fails them as
-# closed.
+# closed. Over Streamable HTTP the requests in flight here are those of a start
+# (_http_request_p); a call is left to finish.
 sub stop ($self) {
   $self->{stop_requested} = 1 if $self->{start_promise};
   $self->_fail_pending("upstream @{[$self->name]}: stopped");
@@ -170,6 +175,9 @@ sub _notify ($self, $method, $params = {}) {
 # --- Streamable HTTP (single endpoint, response on the POST) ---------------
 
 sub _http_request_p ($self, $method, $params) {
+  # The next request of a start that a stop called off is not sent.
+  return Mojo::Promise->reject("upstream @{[$self->name]}: stopped") if $self->{stop_requested};
+
   my $id  = ++$self->{id};
   my $req = {jsonrpc => '2.0', id => $id, method => $method, params => $params};
 
@@ -184,7 +192,17 @@ sub _http_request_p ($self, $method, $params) {
     $found = $msg if ref $msg eq 'HASH' && exists $msg->{id} && ($msg->{id} // '') eq $id;
   });
 
-  return $self->req_ua->start_p($tx)->then(sub ($tx) {
+  # A request of a start is in {pending} while it runs, so that a stop calls it
+  # off with the start, at once: _fail_pending rejects it and drops its
+  # connection, and an answer that comes all the same is not taken -- nor the
+  # session id on it. Any other request, a call on a ready upstream, is left
+  # to finish: the remote may be carrying it out already.
+  my $done     = Mojo::Promise->new;
+  my $of_start = $self->{start_promise} ? 1 : 0;
+  $self->{pending}{$id} = {promise => $done, tx => $tx} if $of_start;
+
+  $self->req_ua->start_p($tx)->then(sub ($tx) {
+    return undef if $of_start && !$self->{pending}{$id};    # called off by a stop
     if (my $err = $tx->error) {
       die "upstream @{[$self->name]}: " . $self->_error_message($err) . "\n" unless $found;
     }
@@ -197,7 +215,11 @@ sub _http_request_p ($self, $method, $params) {
     die "upstream @{[$self->name]}: no response for $method\n" unless ref $res eq 'HASH';
     die "upstream @{[$self->name]}: " . $self->_error_message($res->{error}) . "\n" if $res->{error};
     return $res->{result} // {};
-  });
+  })->then(
+    sub ($result) { delete $self->{pending}{$id}; $done->resolve($result); return },
+    sub ($err)    { delete $self->{pending}{$id}; $done->reject($err);     return },
+  );
+  return $done;
 }
 
 sub _http_post ($self, $obj) {
@@ -421,6 +443,11 @@ sub _fail_pending ($self, $reason) {
     my $pending = delete $self->{pending}{$id};
     Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
     $pending->{promise}->reject($reason);
+
+    # A Streamable HTTP POST still running goes with its connection. One that
+    # is still connecting has none yet: it runs to its end, unheeded.
+    my $tx = $pending->{tx};
+    Mojo::IOLoop->remove($tx->connection) if $tx && $tx->connection && !$tx->is_finished;
   }
   return $self;
 }
