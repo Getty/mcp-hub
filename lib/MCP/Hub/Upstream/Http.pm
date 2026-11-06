@@ -195,7 +195,9 @@ sub _hash ($self) {
 
 # --- transport: request / notify -------------------------------------------
 
-sub _request_p ($self, $method, $params = {}, $of_start = 0) {
+# A refresh is bound to nothing here: one that a stop and a start overtake
+# goes on, on the session the start opens (_http_request_p).
+sub _request_p ($self, $method, $params = {}, $of_start = 0, @) {
   return $self->{transport} eq 'sse'
     ? $self->_sse_request_p($method, $params)
     : $self->_http_request_p($method, $params, $of_start);

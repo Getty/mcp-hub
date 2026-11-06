@@ -140,8 +140,10 @@ sub _clear_idle_timer ($self) {
 
 # --- transport-agnostic MCP client (shared by stdio and http) --------------
 # Subclasses provide the transport: _request_p, _notify and _hash.
-# _request_p($method, $params, $of_start) is handed a true $of_start for the
-# requests of a start's handshake (_handshake_p), and for no other request.
+# _request_p($method, $params, $of_start, $on) is handed a true $of_start for
+# the requests of a start's handshake (_handshake_p), and for no other request.
+# $on is what the requests of a refresh are bound to, when the subclass binds
+# them to anything (_list_all_p): a stdio refresh, to the child it began on.
 
 sub call_tool ($self, $name, $args) {
   $self->stats->{calls}++;
@@ -295,30 +297,31 @@ sub _handshake_p ($self) {
 # answer -- it timed out, a stop cut it off, the child or the connection went --
 # says nothing about the list. A refresh fails there, and the manifest it was to
 # replace stays (refresh_p). A start takes either for an empty list, as it
-# always has: it has no manifest of its own to keep.
-sub _list_all_p ($self, $of_start = 0) {
+# always has: it has no manifest of its own to keep. Each request is handed
+# $on, what the refresh is bound to (_request_p).
+sub _list_all_p ($self, $of_start = 0, $on = undef) {
   my $caps  = $self->{capabilities} // {};
   my $empty = sub ($err, @) { return $of_start || $self->_answered($err) ? [] : Mojo::Promise->reject($err) };
   my %out;
-  return $self->_paginate_p('tools/list', 'tools', $of_start)->then(sub ($tools) {
+  return $self->_paginate_p('tools/list', 'tools', $of_start, $on)->then(sub ($tools) {
     $out{tools} = $tools;
-    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts', $of_start)->catch($empty) : [];
+    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts', $of_start, $on)->catch($empty) : [];
   })->then(sub ($prompts) {
     $out{prompts} = $prompts;
-    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources', $of_start)->catch($empty) : [];
+    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources', $of_start, $on)->catch($empty) : [];
   })->then(sub ($resources) {
     $out{resources} = $resources;
     return \%out;
   });
 }
 
-sub _paginate_p ($self, $method, $key, $of_start = 0, $cursor = undef, $acc = undef) {
+sub _paginate_p ($self, $method, $key, $of_start = 0, $on = undef, $cursor = undef, $acc = undef) {
   $acc //= [];
   my $params = defined $cursor ? {cursor => $cursor} : {};
-  return $self->_request_p($method, $params, $of_start)->then(sub ($result) {
+  return $self->_request_p($method, $params, $of_start, $on)->then(sub ($result) {
     push @$acc, @{$result->{$key} // []};
     my $next = $result->{nextCursor};
-    return (defined $next && length $next) ? $self->_paginate_p($method, $key, $of_start, $next, $acc) : $acc;
+    return (defined $next && length $next) ? $self->_paginate_p($method, $key, $of_start, $on, $next, $acc) : $acc;
   });
 }
 

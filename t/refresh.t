@@ -4,13 +4,15 @@ use Test::More;
 use Mojo::File    qw(curfile tempdir);
 use Mojo::Log;
 use Mojo::Promise;
+use Time::HiRes ();
 use MCP::Hub::Manifest;
 use MCP::Hub::Upstream::Stdio;
 
 # A refresh of a running stdio child asks it for its lists again, one after
 # another: the tools, then the prompts and the resources. What it does when it
 # is cut short between two of them -- and what it does when the child answers
-# one of them with an error, which is an answer.
+# one of them with an error, which is an answer. And when the child it began on
+# is gone between two of them, and another child may run in its place.
 
 my $ECHO = curfile->sibling('upstream', 'echo.pl');
 
@@ -25,6 +27,18 @@ my %ON;
   *MCP::Hub::Upstream::Stdio::_request_p = sub ($self, $method, @rest) {
     my $on = delete $ON{$method} or return $request_p->($self, $method, @rest);
     return $on->($self, sub (@request) { $request_p->($self, @request) }, $method, @rest);
+  };
+}
+
+# Every request that went out to a child, as [pid, method].
+my @SENT;
+{
+  no warnings 'redefine';
+  my $send = \&MCP::Hub::Upstream::Stdio::_send;
+  *MCP::Hub::Upstream::Stdio::_send = sub ($self, $obj) {
+    my $sent = $send->($self, $obj);
+    push @SENT, [$self->{pid}, $obj->{method}] if $sent && defined $obj->{id} && defined $obj->{method};
+    return $sent;
   };
 }
 
@@ -123,6 +137,57 @@ subtest 'a refresh cut short keeps the manifest, an error answer is an empty lis
       is_deeply \@NOTIFIED, [], "$how: nobody is told anything changed";
       is_deeply [map { $_->{name} } @{cached($up)->{prompts} // []}], ['greet'], "$how: the cache keeps the prompts";
     }
+
+    %ON = ();
+    $up->stop;
+    await_bounded($up->stopped_p);
+  }
+};
+
+subtest 'a refresh is bound to the child it began on' => sub {
+  # A refresh asks the running child for one list after another, and the
+  # loop may handle the child's exit -- and a call that starts the next child
+  # -- between the answer to one of them and the request for the next. The
+  # rest of the refresh went to whichever child ran then: the new child's
+  # lists were taken for the old one's, and with no child at all the next
+  # request waited out the request timeout. It fails at once instead, once the
+  # child it began on is gone.
+  for my $how ('a call starts the next child', 'nothing follows') {
+    my $up = upstream(request_timeout => 5);
+    is await_bounded($up->start_p), $up, "$how: started";
+    my $first = $up->{pid};
+
+    # The refresh's tools/list is answered; the answer is held back.
+    my ($answered, $gate) = (0, Mojo::Promise->new);
+    $ON{'tools/list'} = sub ($up, $send, @request) {
+      return $send->(@request)->then(sub ($res) { $answered = 1; $gate->then(sub { $res }) });
+    };
+    my $out;
+    $up->refresh_p->then(sub { $out = 'through' }, sub ($err) { $out = "$err" });
+    my $deadline = time + 10;
+    Mojo::Promise->timer(0.02)->wait until $answered || time > $deadline;
+    ok $answered, "$how: the child answers the refresh's tools/list";
+
+    # Its child goes; a call may start the next one -- one that gives the new
+    # child a prompt the old one did not have.
+    $up->stop;
+    await_bounded($up->stopped_p);
+    ok !$up->{pid}, "$how: the child it began on is gone";
+    if ($how eq 'a call starts the next child') {
+      my $res = await_bounded($up->call_tool('notify', {what => 'prompts', quiet => \1}));
+      is $res->{content}[0]{text}, 'notified', "$how: a call is answered";
+      ok $up->{pid} && $up->{pid} != $first, "$how: by a new child";
+    }
+
+    @SENT = ();
+    my $t0 = Time::HiRes::time();
+    $gate->resolve;
+    $deadline = time + 10;
+    Mojo::Promise->timer(0.02)->wait until defined $out || time > $deadline;
+    like $out // '', qr/^upstream echo: /, "$how: the refresh fails";
+    cmp_ok Time::HiRes::time() - $t0, '<', 1, "$how: at once";
+    is_deeply \@SENT, [], "$how: and asks no other child for anything" or diag explain \@SENT;
+    is_deeply names($up->server->prompts), ['greet'], "$how: the manifest is the one before";
 
     %ON = ();
     $up->stop;

@@ -275,3 +275,7 @@ Revision history for MCP-Hub
     its start or refresh found afterwards: it goes neither into the cache,
     which the new upstream shares when only env changed, nor to any
     listener.
+  - A stdio refresh is bound to the child it began on: once that child is
+    stopped or gone, the refresh fails at once instead of asking the next
+    child for the rest of its lists, or waiting out request_timeout when
+    none runs.

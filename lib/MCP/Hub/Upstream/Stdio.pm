@@ -136,9 +136,10 @@ sub stopped_p ($self) {
 
 sub refresh_p ($self) {
   # The running child is asked for its lists again, in flight like a call: an
-  # idle stop between two of them would refuse the next (_held_p).
+  # idle stop between two of them would refuse the next (_held_p). All of them
+  # are asked of that child, and of no other (_request_p).
   if ($self->state eq 'ready' && $self->{pid}) {
-    return $self->_held_p($self->_list_all_p->then(sub ($lists) {
+    return $self->_held_p($self->_list_all_p(0, $self->{child})->then(sub ($lists) {
       $self->_apply_manifest($self->_manifest_from($lists));
       return $self;
     }));
@@ -164,8 +165,18 @@ sub _hash ($self) {
 
 # --- JSON-RPC over the socket ----------------------------------------------
 
-# A request of a start's handshake goes to the child like any other.
-sub _request_p ($self, $method, $params = {}, @) {
+# A request of a start's handshake goes to the child like any other. One of a
+# refresh is bound to the child the refresh began on ($child), and fails at once
+# when that child is no longer the one running, or has been sent EOF. The loop
+# may handle the child's exit -- and a call that starts the next child --
+# between the answer to one list and the request for the next. Unbound, the
+# rest of the refresh would go to the next child, and its lists be taken for
+# those of the one before -- or, with no child at all, wait out the request
+# timeout.
+sub _request_p ($self, $method, $params = {}, $of_start = 0, $child = undef) {
+  return Mojo::Promise->reject("upstream @{[$self->name]}: the child the refresh began on is gone")
+    if $child && !($self->{child} && $self->{child} == $child && !$child->{eof});
+
   my $id      = ++$self->{id};
   my $promise = Mojo::Promise->new;
 
@@ -593,7 +604,10 @@ background refresh.
 A C<prompts/list> or C<resources/list> the child answers with an error is an
 empty list. One it does not answer -- it times out, a stop cuts it off, the
 child exits -- fails a refresh, and the manifest stays as it was; a start takes
-it for an empty list (L<MCP::Hub::Upstream/refresh_p>).
+it for an empty list (L<MCP::Hub::Upstream/refresh_p>). A refresh asks every
+list of the child it began on: once that child is stopped or gone -- whether or
+not a call has started the next one -- the refresh fails at once, and asks the
+next child nothing.
 
 =head1 ATTRIBUTES
 
