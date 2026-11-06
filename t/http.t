@@ -58,6 +58,22 @@ sub _await_bounded ($promise, $seconds = 5) {
   return $out;
 }
 
+# Run $cb in the running loop, as the daemon does, and return its promise. A
+# stop (its DELETE) or a refresh (its tools/list) at the top level has
+# Mojo::UserAgent run one loop tick of its own, and the callbacks queued so far
+# run partway through the call -- an order the daemon never sees.
+sub _in_loop ($cb) {
+  my $p = Mojo::Promise->new;
+  Mojo::IOLoop->next_tick(sub { eval { $p->resolve($cb->()); 1 } or $p->reject($@) });
+  return $p;
+}
+
+# A stop of $up in the running loop; the stop is done when it returns.
+sub _stop ($up) {
+  _await(_in_loop(sub { $up->stop; undef }));
+  return $up;
+}
+
 # The text of an error result -- or '' when the call did not answer at all.
 sub _error_text ($result) {
   return '' unless ref $result eq 'HASH';
@@ -692,7 +708,11 @@ subtest 'streamable http upstream: a stop while it starts calls the start off, i
       ok $until->(sub { grep { ($_->{method} // '') eq $hold } @{$fake->{posts}} }),
         "$when, start $n: the $hold is on its way"
         if $hold;
-      $up->stop unless $stop_at;
+      # Before the first request the stop lands in the tick of the start_p,
+      # with no session to end; during a prompts/list it ends the session
+      # the start was given, in the running loop.
+      if ($when eq 'during a prompts/list') { _stop($up) }
+      elsif (!$stop_at)                     { $up->stop }
 
       # Well inside the request_timeout of 5 s.
       my $r = _await_bounded($start, 2);
@@ -733,7 +753,7 @@ subtest 'streamable http upstream: a stop while it starts calls the start off, i
     is $up->state, 'ready', "$when: ready";
     is $fake->{posts}[0]{session}, undef, "$when: with no session id of an answer that was turned away"
       if $when eq 'as the initialize goes out';
-    $up->stop;
+    _stop($up);
 
     # And they left nothing behind: no POST a stop called off holds the
     # upstream until request_timeout.
@@ -794,7 +814,7 @@ subtest 'streamable http upstream: a stop leaves a call in flight to finish' => 
   is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'the next call is answered';
   is_deeply [map { $_->{session} } @{$fake->{posts}}], ['s2'],
     'on the new session, not on the ended one the old answer named';
-  $up->stop;
+  _stop($up);
   $fake->{daemon}->stop;
 };
 
@@ -841,7 +861,7 @@ subtest 'streamable http upstream: a start opens a new session, a stop ends the 
   is_deeply $sessions->(), ['initialize: none', 'notifications/initialized: s1', 'tools/list: s1'],
     'the remote gives the first start session s1';
 
-  $up->stop;
+  _stop($up);
   ok $until->(sub { @{$fake->{deletes}} }), 'the stop ends the session';
   is_deeply $fake->{deletes}, ['s1'], 'with one DELETE carrying its id';
   $up->stop;
@@ -854,7 +874,7 @@ subtest 'streamable http upstream: a start opens a new session, a stop ends the 
 
   # A start that fails after its initialize ends the session the remote gave
   # it; the next start does not send its id on.
-  $up->stop;
+  _stop($up);
   ok $until->(sub { @{$fake->{deletes}} == 2 }), 'the stop ends s2';
   $fail_list = 1;
   like _await_bounded($up->start_p, 5)->{err}, qr/not now/, 'a start fails after its initialize';
@@ -874,7 +894,7 @@ subtest 'streamable http upstream: a start opens a new session, a stop ends the 
     @logged = ();
     $fake->{delete_status} = $status;
     my $before = @{$fake->{deletes}};
-    $up->stop;
+    _stop($up);
     is $up->state, 'stopped', "$status: the stop is done at once";
     ok $until->(sub { grep {/did not end the session/} @logged }), "$status: the DELETE is over";
     is scalar @{$fake->{deletes}}, $before + 1, "$status: it was sent once";
@@ -887,7 +907,7 @@ subtest 'streamable http upstream: a start opens a new session, a stop ends the 
   # session is ended all the same.
   is $start->(), 'started', 'started once more';
   my $sid = "s$fake->{sessions}";
-  $up->stop;
+  _stop($up);
   weaken(my $gone = $up);
   undef $up;
   is $gone, undef, 'the DELETE in flight does not hold the upstream';
@@ -959,7 +979,7 @@ subtest 'a start after a stop is a fresh one, though the stopped start has not s
       is $up->state, 'ready', "$phase: ready";
       is $initializes->(), 1, "$phase: with one handshake";
       is_deeply \@order, ['stopped', 'initialize'], "$phase: which began once the stopped start had settled";
-      $up->stop;
+      _stop($up);
     }
 
     {    # Stop, start, stop: the second stop calls the fresh start off before it begins.
@@ -986,7 +1006,7 @@ subtest 'a start after a stop is a fresh one, though the stopped start has not s
       Mojo::Promise->timer(0.1)->wait;
       is $initializes->(), 1, "$phase, stopped twice, started again: with one handshake";
       is $up->state, 'ready', "$phase, stopped twice, started again: ready";
-      $up->stop;
+      _stop($up);
     }
 
     weaken(my $gone = $up);
@@ -1066,7 +1086,7 @@ subtest 'streamable http upstream: a session the remote ended is replaced, and t
 
   # A refresh lists over the session the upstream is on, and the same holds.
   delete $fake->{live}{s2};
-  my $refreshed = _await_bounded($up->refresh_p->then(sub { 'refreshed' }), 5);
+  my $refreshed = _await_bounded(_in_loop(sub { $up->refresh_p->then(sub { 'refreshed' }) }), 5);
   is $refreshed, 'refreshed', 'the remote ended s2: a refresh goes through all the same' or diag explain $refreshed;
   is_deeply posts_on($fake), ['tools/list: s2', 'initialize: none', 'tools/list: s3', 'tools/list: s3'],
     'on a new session, s3';
@@ -1076,7 +1096,7 @@ subtest 'streamable http upstream: a session the remote ended is replaced, and t
   # The sessions the remote ended are not ended again; the one it knows is.
   Mojo::Promise->timer(0.05)->wait;
   is_deeply $fake->{deletes}, [], 'no DELETE for a session the remote ended';
-  $up->stop;
+  _stop($up);
   ok until_true(sub { @{$fake->{deletes}} }), 'a stop ends the session';
   is_deeply $fake->{deletes}, ['s3'], 'the one the upstream is on, and only that one';
   is $up->error, undef, 'no failure reason';
@@ -1120,7 +1140,7 @@ subtest 'streamable http upstream: a request goes out once more at most, a reque
 
   # A remote that ends every session as soon as it gives it: the tools/list of
   # the next start 404s.
-  $up->stop;
+  _stop($up);
   ok until_true(sub { @{$fake->{deletes}} }), 'a stop ends s3';
   $fake->{volatile} = 1;
   my $s = _await_bounded($up->start_p, 5);
@@ -1231,7 +1251,7 @@ subtest 'streamable http upstream: requests that lose the same session share one
   is $up->state, 'ready', 'ready';
   is_deeply $fake->{deletes}, [], 'no DELETE for s1';
 
-  $up->stop;
+  _stop($up);
   $fake->{daemon}->stop;
 };
 
@@ -1278,7 +1298,7 @@ subtest 'streamable http upstream: a stop calls off the new session, and opens n
       $call = $up->call_tool('ping', {});
       ok until_true(sub { grep { ($_->{method} // '') eq $held } @{$fake->{posts}} }),
         "$when: the call came back 404, the new session opens";
-      $up->stop;
+      _stop($up);
     }
 
     my $r = _await_bounded($call, 2);
@@ -1306,7 +1326,7 @@ subtest 'streamable http upstream: a stop calls off the new session, and opens n
     is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', "$when: the next call is answered";
     my $posts = posts_on($fake);
     is $posts->[0], 'initialize: none', "$when: on a new session" or diag explain $posts;
-    $up->stop;
+    _stop($up);
 
     weaken(my $gone = $up);
     undef $up;
@@ -1514,7 +1534,7 @@ subtest 'an error reads the same over both transports: no trailing newline' => s
     'http: an HTTP error status';
 
   # A remote that ends every session as soon as it gives it: the start fails.
-  $up->stop;
+  _stop($up);
   $fake->{volatile} = 1;
   is _error_text(_await_bounded($up->call_tool('ping', {}), 5)),
     'upstream fake: the remote ended the session (Not Found)', 'http: a session the remote ended';
@@ -1572,13 +1592,13 @@ subtest 'streamable http upstream: the initialize carries no MCP-Protocol-Versio
     ['initialize: none', 'notifications/initialized: 2025-03-26', 'tools/list: 2025-03-26'],
     'the initialize carries none, the requests after it the version the remote answered';
 
-  $up->stop;
+  _stop($up);
   $version = '2025-06-18';
   is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started again';
   is_deeply $versions->(),
     ['initialize: none', 'notifications/initialized: 2025-06-18', 'tools/list: 2025-06-18'],
     'the initialize carries none of the session before, the requests after it the new one';
-  $up->stop;
+  _stop($up);
 
   $version = '2025-03-26';
   my $cached = $build->();
@@ -1587,7 +1607,7 @@ subtest 'streamable http upstream: the initialize carries no MCP-Protocol-Versio
   is_deeply $versions->(),
     ['initialize: none', 'notifications/initialized: 2025-03-26', 'tools/list: 2025-03-26'],
     'its initialize carries none of the manifest';
-  $cached->stop;
+  _stop($cached);
 
   $fake->{daemon}->stop;
 };
