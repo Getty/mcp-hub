@@ -26,8 +26,8 @@ lehnt das Promise ab.
 Handshake: `initialize` mit Protokoll `2025-06-18` (der Server antwortet, was er
 will — seine Version wird übernommen) → `notifications/initialized` →
 `tools/list` **mit Cursor-Pagination** (`nextCursor` wird verfolgt) →
-`prompts/list`/`resources/list` nur, wenn die Capabilities sie deklarieren;
-`-32601` wird toleriert.
+`prompts/list`/`resources/list` nur, wenn die Capabilities sie deklarieren; jeder
+Fehler darauf ist beim Start eine leere Liste (beim Refresh nicht, siehe Façade).
 
 stdout wird an Newlines gesplittet, jede Zeile als JSON dekodiert; eine kaputte
 Zeile wird übersprungen (debug). Der Line-Buffer ist bei 16 MB gekappt — dann
@@ -44,6 +44,14 @@ Stop: `shutdown` SHUT_WR (EOF) → nach `EOF_GRACE` (2 s) `SIGTERM` → nach `KI
 (5 s) `SIGKILL`; wer auf EOF endet, sieht nie ein Signal. Ein Kind, das stdout schließt
 und weiterlebt, wird nach `KILL_GRACE` gekillt. Es läuft immer höchstens ein Kind: ein
 Call während eines Stops wartet auf dessen Ende (`_gone_p`) und startet das nächste.
+
+Ein Refresh (`refresh_p`, nur bei `ready` mit pid) ist an das Kind gebunden, auf dem er
+begann: `_list_all_p(0, $self->{child})` reicht es als `$on` bis `_request_p`, und jeder
+seiner Requests scheitert sofort (`the child the refresh began on is gone`), sobald das
+Kind nicht mehr das laufende ist oder EOF bekam. Zwischen zwei Listen kann die Loop den
+Exit und einen Call samt neuem Kind abwickeln — ungebunden nähme der Refresh dessen Listen
+für die alten oder wartete ohne Kind den Request-Timeout ab. Fork und Docker-stdio erben
+das. Http bindet nicht (unten); die Transporte unterscheiden sich vorerst mit Absicht.
 
 ### Http — Streamable HTTP oder HTTP+SSE
 
@@ -68,7 +76,11 @@ einmal neu raus — nie ein Request des Starts, kein `DELETE` für die tote Sess
 Welche Requests die **des Starts** sind, sagt `_handshake_p` selbst (`$of_start` an
 `_request_p`, durch `_list_all_p`/`_paginate_p`) — nie aus dem Methodennamen
 geraten. Über Streamable HTTP wartet jeder andere Request, der einen Start antrifft
-(Call, nächste Seite eines Refreshs), auf ihn und geht auf dessen Session raus.
+(Call, nächste Seite eines Refreshs), auf ihn und geht auf dessen Session raus. Trifft
+er `stopped` ohne laufenden Start an, geht kein POST raus: er scheitert sofort als
+`upstream NAME: stopped` — der Stop hat die Session beendet und ihre Id vergessen. `$on`
+ignoriert Http: einen Refresh, den Stop und Start überholen, setzt die nächste Seite auf
+der neuen Session fort.
 
 Eine `https`-URL braucht TLS in diesem Perl: `IO::Socket::SSL` 2.009+ und
 `MOJO_NO_TLS` ungesetzt. `Mojo::IOLoop::TLS` entscheidet das einmal beim Laden —
@@ -193,6 +205,28 @@ das eigene Rendering der drei Listen vorher/nachher: der eigene Endpunkt bekommt
 `<kind>/list_changed` je geänderter Liste, `/all` über
 `Hub::rebuild_aggregate(@changed)` nur für `tools`/`prompts`. Unverändert →
 keine Notification — sonst schickte jeder Neustart nach dem Idle-Stop eine.
+
+Fehler-Antworten: beantwortet der Upstream einen Request mit einem JSON-RPC-Error, lehnt
+der Transport mit einer `Upstream::ErrorAnswer` ab (`_error_answer`; `error` = das
+Original, stringifiziert zu `upstream NAME: <message>`), ohne Antwort — Timeout, Stop,
+Kind oder Verbindung weg, HTTP-Fehlerstatus — mit einem String. Unterschieden wird per
+`_answered` (isa), nie am Text. In `_list_all_p` ist eine Error-Antwort auf
+`prompts/list`/`resources/list` eine leere Liste; keine Antwort lässt einen Refresh
+scheitern: das alte Manifest bleibt, nichts gespeichert, niemand benachrichtigt
+(`Http::refresh_p` fängt das selbst und loggt debug, Stdio lehnt ab). Ein Start nimmt
+beides als leer — offene Maintainer-Entscheidung. Ein Fehler auf `tools/list` lässt beide
+scheitern.
+
+Ein Upstream, den ein Reload ersetzt oder entfernt hat, ist gestoppt, aber ein laufender
+Start oder Refresh läuft zu Ende — und wendet nichts an: `_apply_manifest` (Basis und
+Fork; die Engine reicht an ihren Owner durch) fragt zuerst `_dropped`. Hält
+`upstreams_by_name` unter dem Namen nicht genau dieses Objekt (`refaddr`): kein
+Cache-Write (den der Nachfolger teilen kann, der Hash lässt `env` aus), keine
+Notification, nur ein debug-Log; ohne Hub ist nichts dropped. Sicher, weil `reload` die
+neue Map zwar erst nach `_warm_upstream` setzt, aber synchron, und jedes `_apply_manifest`
+in einem Promise-Callback läuft; der Cache-Load beim Build geht direkt über
+`Facade->apply`. Wer daran dreht, hält `_apply_manifest` aus jedem synchronen Pfad in
+`reload`/`_warm_upstream` heraus — sonst gälte der neue Upstream selbst als dropped.
 
 Extras: `title`, `icons` und `_meta` stehen am Manifest-Eintrag. Tool-Extras
 hängen an `Facade::Tool->extra`, Prompt-Extras (nach Name) und Resource-Extras

@@ -50,6 +50,7 @@ lib/MCP/Hub/Upstream/Docker.pm  # Image als Upstream: pro Start stdio oder HTTP,
 lib/MCP/Hub/Upstream/Compose.pm # ein Service eines Compose-Projekts; Docker-Subklasse, nur die Kommandos anders
 lib/MCP/Hub/Upstream/Docker/Engine.pm      # was beide Engines vor ihren Transport legen (Owner, Hash, Teardown)
 lib/MCP/Hub/Upstream/Docker/{Stdio,Http}.pm # die Engines: Stdio- bzw. Http-Transport eines Container-Laufs
+lib/MCP/Hub/Upstream/ErrorAnswer.pm        # Rejection für eine JSON-RPC-Error-Antwort; liest sich wie der String, `_answered` erkennt sie
 lib/MCP/Hub/Docker.pm           # der einzige Weg zum docker-CLI (run_p), Name/Labels, owner_id, hash_input, Orphan-Cleanup
 lib/MCP/Hub/Child.pm            # jedes Kind: fds > 2 zu, Env ohne MOJO_REUSE, Exit per watch_exit
 lib/MCP/Hub/Facade.pm           # baut die MCP::Server-Façade aus einem Manifest
@@ -210,6 +211,9 @@ Pfad-`stat`, Intervall = Hub-Attribut `auto_reload_interval`), `POST /_hub/reloa
   Stats, selber Idle-Timer** (`t/reload.t` prüft `refaddr`); nur Timeouts →
   `apply_timeouts` in place. Geändert → nur dieser Upstream neu, Entfernt → `stop` + 404.
   Neu → gewärmt wie beim Daemon-Start, d. h. mit gecachtem Manifest **kein Spawn**.
+- **Ein ersetzter oder entfernter Upstream wendet nichts mehr an**: ein Start oder Refresh,
+  der seinen `stop` überlebt, schreibt keinen Cache und benachrichtigt niemanden
+  (`Upstream::_dropped`, per `refaddr` gegen `upstreams_by_name`).
 - **profiles/clients/public_profile werden in place getauscht** (`auth->config($new)`);
   `Auth::last_seen` lebt auf `Auth`, nicht auf der Config, dann `notify_list_changed`.
   `/all` bekommt `tools/` **und** `prompts/list_changed`, sobald ein Eintrag added/
