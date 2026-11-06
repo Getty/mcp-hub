@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-11-06T07:19:28Z
+id: 104
+priority: low
+started: 2026-11-06T10:08:11Z
+status: backlog
+tags:
+- upstream
+- reload
+- memory
+title: 'Upstream::Perl: a third-party in-process class whose tools capture their instance
+  leaks on reload'
+updated: 2026-11-06T10:27:35Z
+---
+
+Found during k93. k93 made the native classes hold themselves weakly in their tool code; any other perl class served in-process (class entry without hub.fork) whose tools close over $self still leaks when a reload drops the entry -- the instance holds its tools, the tools hold the instance. Upstream::Perl could break it from the outside when it is dropped/stopped: empty the server's tools/prompts/resources lists, as Upstream::Fork already does for its throwaway manifest instance. Done: t/reload-free.t with a test class that closes over $self, freed after the reload.
+
+2026-11-06 11:35: the worker for k104/k89/k75 was stopped by an API safeguard error (request req_011CgmWnQmdqQskD15HPfsSg), not by a problem in the work. No change in the repo; its partial scratch work is in scratchpad/w-hub7. Back to backlog for the maintainer.
