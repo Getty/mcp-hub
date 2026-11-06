@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-06T14:53:06Z
+created: 2026-11-06T12:56:48Z
+id: 132
+priority: low
+started: 2026-11-06T13:23:52Z
+status: done
+tags:
+- stdio
+- upstream
+title: 'Stdio: a refresh crossing a stop and a restart can send its next page to the
+  new child'
+updated: 2026-11-06T15:07:07Z
+---
+
+Found during k113 (worker), by reading only -- not reproduced. The stdio analogue of k113: Stdio::refresh_p asks the running child for one list after another; if the child is stopped and a call starts a new one between two pages, _request_p sends the next page (with the old child's cursor) to the new child. Since k129 a refresh holds the idle countdown off, so only an explicit stop or a reload can get between two pages. Done: first a test that shows it (or shows it cannot happen); if it happens, a refresh is bound to the child it began on and fails when that child is gone.
+
+Shown, then fixed. t/refresh.t holds back the tools/list answer to stand in for the I/O interleaving (child exit and a call in the same round); red 4/16 on HEAD: the new child's lists were taken for the old one's (greet2), or the refresh waited out request_timeout (5.02 s). Stdio::refresh_p now passes $self->{child} through _list_all_p/_paginate_p to _request_p, which fails at once when that child is gone, no longer the running one, or sent EOF. Http accepts and ignores it (k113 unchanged). Green under EV and Poll. The card's premise ("only an explicit stop or a reload") missed a child that exits on its own. Transport difference -> decision card k140. -> review.
+
+commit-ready: w-five snapshots
+
+Committed as 07d48e3. Skill text in 43760d2.
+
+Trailer reworded to Opus by the main agent (backup refs/backup/pre-reword-k133-k57b): 07d48e3 is now a22c18d; skill text 43760d2 is now 7175354.
