@@ -1,0 +1,36 @@
+---
+class: standard
+completed: 2026-11-06T06:11:46Z
+created: 2026-11-06T05:14:10Z
+id: 91
+priority: low
+started: 2026-11-06T05:21:23Z
+status: done
+tags:
+- http
+title: 'Streamable HTTP: a stop during the handshake is ignored and the upstream goes
+  ready'
+updated: 2026-11-06T11:46:53Z
+---
+
+Found by mcp-hub-worker during k74 (2026-11-06). For the Streamable HTTP transport (not SSE), a stop while start_p's handshake is in flight does not call the start off; the handshake completes and the upstream goes ready after the stop. Done: as k74 did for SSE -- a stop during the start rejects it as stopped, without logging or counting a failure, state stays stopped; test in t/http.t.
+
+Done, at review. Root cause: Streamable HTTP requests were not in {pending}, and nothing in the handshake checked stop_requested. A stop during the start did nothing: the handshake ran on and the upstream went ready after the stop. With a POST the remote held, the start hung until request_timeout instead. A second root cause, shared with SSE: _list_all_p takes a failed prompts/list or resources/list for an empty list. So a stop during one of them (SSE fails it as stopped) still reached the success handler, and SSE went ready over the stream the stop had closed.
+Decision: remove the transaction. A request made while a start runs goes into {pending} with its tx. stop's _fail_pending rejects it at once as stopped and closes its connection (Mojo::IOLoop->remove(tx->connection), unless the tx is finished). A POST still connecting has no connection to close: it runs to its end, and its answer is ignored, session id included (the guard in _http_request_p).
+Also (Upstream/Http.pm): _http_request_p rejects at once when stop_requested is set, so the next request is never sent. start_p's success handler dies "stopped" when stop_requested is set, which covers a stop after the last request and the swallowed prompts/list or resources/list, for both transports.
+tools/call on a ready upstream is unchanged: it is not in {pending}, and a stop leaves it to finish. A remote may already be carrying it out, so cancelling it was not an improvement. New guard test pins this.
+Tests (t/http.t): new fake_http helper. New subtest 'streamable http upstream: a stop while it starts calls the start off' with 5 phases x 3 stops: before the first request, as the initialize goes out (not connected yet), during the initialize (held, cut), between two requests, during a prompts/list. Each asserts rejected at once as stopped, nothing sent after the stop, the held POST cut within 1s, no failure logged or counted, the next start connects, a late answer's session id not taken, and the weak ref freed. The SSE k74 subtest gains 'during a prompts/list'. Red against the k90 Http.pm (subtests 9 and 11), green after; mutation check: each piece is load-bearing. Guard subtest 'a stop leaves a call in flight to finish' is green before and after, by design. 5x EV + 5x Poll green; full prove -lr t/ green (410 tests, 3 expected skips). The Docker::Http engine inherits the change: a stop during a container's HTTP handshake now settles at once; t/docker.t green on a HEAD export with only my files on top.
+Patch: scratchpad/w-k90/k91.patch (applies on the k90 state).
+Proposed subject: Call off a Streamable HTTP start that a stop lands in (k91)
+Changes: "A stop during the start of a Streamable HTTP upstream calls the start off: the request in flight is cut off, the upstream stays stopped instead of going ready, and nothing is logged or counted as a failure. The same holds for either HTTP transport when the stop lands during a prompts/list or resources/list. A call in flight on a ready upstream is still left to finish."
+Drift, for the main agent to file (p5-mcp-hub board):
+(1) Http start_p never clears session_id: a restart after a stop or a failed start sends initialize with the old Mcp-Session-Id, but the spec says a new initialize goes without one. No DELETE ends the session on stop either.
+(2) In the k74 subtest, the comment 'No tools: the code of a façade tool holds its upstream' has been stale since k73.
+(3) Http POD says nothing about stop: an SSE stop fails calls in flight; Streamable HTTP leaves them to finish.
+(4) A start_p called after a stop, before the called-off start's catch runs (a few ticks), joins that start and is rejected as stopped. This has been the case since k74.
+
+Committed as f9c69ba
+
+Commit reworded (trailer Opus 5.5), now f10b9a2
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): f9c69ba is now f10b9a2 on local main.
