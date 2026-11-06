@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-06T21:08:00Z
+created: 2026-11-06T18:52:01Z
+id: 150
+priority: medium
+started: 2026-11-06T19:16:02Z
+status: done
+tags:
+- http
+- upstream
+- timeout
+- bug
+title: 'Streamable HTTP: Mojo''s 40 s inactivity timeout cuts a quiet request before
+  request_timeout'
+updated: 2026-11-06T21:08:05Z
+---
+
+Found by mcp-hub-worker during k147 (2026-11-06); confirmed by the main agent in the code.
+Http's req_ua (lib/MCP/Hub/Upstream/Http.pm, has req_ua) sets request_timeout (request_timeout || 60) and max_response_size, but not inactivity_timeout, so Mojo's default applies: 40 s (or $MOJO_INACTIVITY_TIMEOUT). A Streamable HTTP request whose remote sends nothing for 40 s -- a long tool call answered with a plain JSON body, or an event stream with no keep-alive -- fails "upstream NAME: Inactivity timeout" at 40 s, though request_timeout says 60 s by default, and whatever an entry configures (request_timeout: 300 for a slow tool still dies at 40 s). README and POD promise "Seconds to wait for an upstream response".
+Done when: request_timeout is the only bound on a Streamable HTTP request (inactivity_timeout of req_ua at least as long, or 0 with request_timeout bounding it); a reload that changes request_timeout applies to both (req_ua is rebuilt, around line 185); a test in t/http.t with a remote that stays silent past the inactivity default but within request_timeout, red on HEAD (set MOJO_INACTIVITY_TIMEOUT low in the test rather than wait 40 s, or set the attribute); k147's cancel on 'Inactivity timeout' stays meaningful or is dropped with it.
+
+Done (mcp-hub-worker): req_ua sets inactivity_timeout(0), so request_timeout (|| 60, unchanged; k152) is the only bound on a request; a reload re-applies it (apply_timeouts drops req_ua, the builder sets inactivity 0 again; tested). TIMED_OUT narrowed to 'Request timeout' (the k147 Inactivity branch can no longer happen; its test case removed). SSE POSTs bounded the same way; SSE GET unchanged. Worker's choices: inactivity 0 rather than equal to request_timeout (two equal timers race under Poll); connect_timeout left; idle kept-alive connections are now closed by the remote's keep-alive, not the hub. Test t/http.t (MOJO_INACTIVITY_TIMEOUT=0.5, silence within request_timeout, then across a reload), red 2/3 on HEAD. Http POD, README, runtime skill updated. Found on the way: k154, k155. Not committed.
+
+Committed as 4762448
