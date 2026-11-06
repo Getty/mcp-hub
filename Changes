@@ -256,3 +256,6 @@ Revision history for MCP-Hub
     upstream's own endpoint gets a list_changed for each list that changed,
     resources included. A start or refresh that changes nothing no longer
     sends tools/list_changed.
+  - Streamable HTTP: when a stop and a new start overtake a refresh, its
+    next page now waits for that start and goes out on the new session,
+    instead of going out mid-handshake without a session id.

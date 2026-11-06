@@ -162,7 +162,8 @@ sub _hash ($self) {
 
 # --- JSON-RPC over the socket ----------------------------------------------
 
-sub _request_p ($self, $method, $params = {}) {
+# A request of a start's handshake goes to the child like any other.
+sub _request_p ($self, $method, $params = {}, @) {
   my $id      = ++$self->{id};
   my $promise = Mojo::Promise->new;
 

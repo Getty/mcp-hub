@@ -139,6 +139,8 @@ sub _clear_idle_timer ($self) {
 
 # --- transport-agnostic MCP client (shared by stdio and http) --------------
 # Subclasses provide the transport: _request_p, _notify and _hash.
+# _request_p($method, $params, $of_start) is handed a true $of_start for the
+# requests of a start's handshake (_handshake_p), and for no other request.
 
 sub call_tool ($self, $name, $args) {
   $self->stats->{calls}++;
@@ -242,45 +244,49 @@ sub _listing ($self) {
   return \%listing;
 }
 
+# A start's handshake. What it sends are the start's own requests (_request_p's
+# $of_start): over Streamable HTTP any other request that finds a start under
+# way waits for it (MCP::Hub::Upstream::Http).
 sub _handshake_p ($self) {
   return $self->_request_p('initialize', {
     protocolVersion => $self->protocol_version,
     capabilities    => {},
     clientInfo      => {name => 'mcp-hub', version => $VERSION},
-  })->then(sub ($result) {
+  }, 1)->then(sub ($result) {
     $self->{server_protocol} = $result->{protocolVersion} // $self->protocol_version;
     $self->{capabilities}    = $result->{capabilities}    // {};
     $self->{server_info}     = $result->{serverInfo}      // {name => $self->name, version => '0.0.0'};
     $self->{instructions}    = $result->{instructions};
     $self->_notify('notifications/initialized');
-    return $self->_list_all_p;
+    return $self->_list_all_p(1);
   })->then(sub ($lists) {
     return $self->_manifest_from($lists);
   });
 }
 
-sub _list_all_p ($self) {
+# The lists of the upstream, for a start ($of_start) or a refresh.
+sub _list_all_p ($self, $of_start = 0) {
   my $caps = $self->{capabilities} // {};
   my %out;
-  return $self->_paginate_p('tools/list', 'tools')->then(sub ($tools) {
+  return $self->_paginate_p('tools/list', 'tools', $of_start)->then(sub ($tools) {
     $out{tools} = $tools;
-    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts')->catch(sub {[]}) : [];
+    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts', $of_start)->catch(sub {[]}) : [];
   })->then(sub ($prompts) {
     $out{prompts} = $prompts;
-    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources')->catch(sub {[]}) : [];
+    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources', $of_start)->catch(sub {[]}) : [];
   })->then(sub ($resources) {
     $out{resources} = $resources;
     return \%out;
   });
 }
 
-sub _paginate_p ($self, $method, $key, $cursor = undef, $acc = undef) {
+sub _paginate_p ($self, $method, $key, $of_start = 0, $cursor = undef, $acc = undef) {
   $acc //= [];
   my $params = defined $cursor ? {cursor => $cursor} : {};
-  return $self->_request_p($method, $params)->then(sub ($result) {
+  return $self->_request_p($method, $params, $of_start)->then(sub ($result) {
     push @$acc, @{$result->{$key} // []};
     my $next = $result->{nextCursor};
-    return (defined $next && length $next) ? $self->_paginate_p($method, $key, $next, $acc) : $acc;
+    return (defined $next && length $next) ? $self->_paginate_p($method, $key, $of_start, $next, $acc) : $acc;
   });
 }
 

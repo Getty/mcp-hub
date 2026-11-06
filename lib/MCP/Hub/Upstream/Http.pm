@@ -98,10 +98,8 @@ sub start_p ($self) {
   # earlier one, and the remote assigns one.
   delete $self->{session_id};
 
-  # From here on until the start settles, its handshake runs: what it sends are
-  # the start's own requests (_http_request_p).
   my $prep = $self->{transport} eq 'sse' ? $self->_open_sse_p : Mojo::Promise->resolve;
-  $prep->then(sub { $self->{handshake} = 1; $self->_handshake_p })->then(sub ($manifest) {
+  $prep->then(sub { $self->_handshake_p })->then(sub ($manifest) {
     # A stop after the last request, or during a prompts/list or
     # resources/list -- whose failure the handshake takes for an empty list --
     # calls the start off all the same.
@@ -110,7 +108,7 @@ sub start_p ($self) {
     delete $self->{failed};    # a live connection is never failed
     $self->error(undef);
     $self->state('ready');
-    delete @$self{qw(start_promise handshake)};
+    delete $self->{start_promise};
     $self->touch;
     $done->resolve($self);
   })->catch(sub ($err) {
@@ -129,7 +127,7 @@ sub start_p ($self) {
     if (defined(my $sid = delete $self->{session_id})) { $self->_end_session($sid) }
     $self->_record_failure unless $stopped;
     $self->state($self->{failed} ? 'failed' : 'stopped');
-    delete @$self{qw(start_promise handshake)};
+    delete $self->{start_promise};
     $done->reject($stopped ? "upstream @{[$self->name]}: stopped" : "$err");
     return;    # never hand the rejected promise back into the chain
   });
@@ -195,10 +193,10 @@ sub _hash ($self) {
 
 # --- transport: request / notify -------------------------------------------
 
-sub _request_p ($self, $method, $params = {}) {
+sub _request_p ($self, $method, $params = {}, $of_start = 0) {
   return $self->{transport} eq 'sse'
     ? $self->_sse_request_p($method, $params)
-    : $self->_http_request_p($method, $params);
+    : $self->_http_request_p($method, $params, $of_start);
 }
 
 sub _notify ($self, $method, $params = {}) {
@@ -208,34 +206,29 @@ sub _notify ($self, $method, $params = {}) {
 
 # --- Streamable HTTP (single endpoint, response on the POST) ---------------
 
-# What a call sends: MCP::Hub::Upstream's call_tool, get_prompt and
-# read_resource. A handshake sends none of them -- and a request of the
-# handshake taken for a call would wait for its own start, for good.
-my %CALL = map { $_ => 1 } qw(tools/call prompts/get resources/read);
-
-# A request is one of a start's when the start's handshake sends it: while the
-# handshake runs ({handshake}, start_p), any request but a call. Any other
-# request that finds a start under way waits for it and goes out on the
-# session it opens, as a call made while the upstream starts does (start_p).
-# Such is a call let through just before a start began -- after a stop, or for
-# the new session a 404 asks for (_session_gone). Sent at once, it went out in
-# the middle of the handshake, with no session id before the initialize was
-# answered, and was taken for a request of the start: a stop cut it off, and it
-# kept no session from the stop's DELETE (_http_send_p). A stop that calls the
-# start off fails it as stopped.
+# A request is one of a start's when the start's handshake sends it
+# ($of_start, MCP::Hub::Upstream::_handshake_p). Any other request that finds a
+# start under way waits for it and goes out on the session it opens, as a call
+# made while the upstream starts does (start_p). Such is a call let through just
+# before a start began -- after a stop, or for the new session a 404 asks for
+# (_session_gone) -- and the next page of a refresh that a stop and a start
+# overtook. Sent at once, it would go out in the middle of the handshake, with
+# no session id before the initialize is answered, as a request of the start: a
+# stop would cut it off, and it would keep no session from the stop's DELETE
+# (_http_send_p). A stop that calls the start off fails it as stopped.
 #
 # A request that comes back 404 because the remote has ended its session
 # (_session_gone) is sent once more, on the new session -- not again after
 # that. The 404 says it did not run on the old one, so it does not run twice.
-sub _http_request_p ($self, $method, $params, $again = 0) {
-  my $of_start = $self->{handshake} && !$CALL{$method} ? 1 : 0;
-  return $self->{start_promise}->then(sub { $self->_http_request_p($method, $params, $again) })
+# A request of a start is not sent again: the start fails.
+sub _http_request_p ($self, $method, $params, $of_start, $again = 0) {
+  return $self->{start_promise}->then(sub { $self->_http_request_p($method, $params, 0, $again) })
     if !$of_start && $self->{start_promise};
 
   my $renewed;
   return $self->_http_send_p($method, $params, $of_start, $again ? undef : \$renewed)->catch(sub ($err) {
     return Mojo::Promise->reject($err) unless $renewed;
-    return $renewed->then(sub { $self->_http_request_p($method, $params, 1) });
+    return $renewed->then(sub { $self->_http_request_p($method, $params, 0, 1) });
   });
 }
 
@@ -738,9 +731,10 @@ What a stop does to a call in flight depends on the transport. Over HTTP+SSE
 the call fails as stopped: its answer would come on the stream, and the stop
 closes the stream. Over Streamable HTTP a call on a ready upstream is left to
 finish: its answer comes on its own POST, and the remote may already be
-carrying it out. Nor does a call go out in the middle of a start there: one
-that comes upon a start under way waits for it and goes out on the session it
-opens, or fails with it.
+carrying it out. Nor does a call, or the next page of a refresh, go out in the
+middle of a start there: a request that comes upon a start under way, and is
+not one the start's handshake sends, waits for it and goes out on the session
+it opens, or fails with it.
 
 Over Streamable HTTP a stop also ends the session. Once no call is left on it,
 one C<DELETE> to the endpoint with its C<Mcp-Session-Id> tells the remote that

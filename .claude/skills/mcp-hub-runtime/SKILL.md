@@ -44,6 +44,11 @@ POST, JSON oder `text/event-stream`), `type: "sse"` = HTTP+SSE (langlebiger
 GET-Stream). `headers` trägt das Auth; eine Session-Id aus `Mcp-Session-Id` wird
 mitgeschickt. Drei Fehlschläge binnen 5 s → `failed`.
 
+Welche Requests die **des Starts** sind, sagt `_handshake_p` selbst (`$of_start` an
+`_request_p`, durch `_list_all_p`/`_paginate_p`) — nie aus dem Methodennamen
+geraten. Über Streamable HTTP wartet jeder andere Request, der einen Start antrifft
+(Call, nächste Seite eines Refreshs), auf ihn und geht auf dessen Session raus.
+
 Eine `https`-URL braucht TLS in diesem Perl: `IO::Socket::SSL` 2.009+ und
 `MOJO_NO_TLS` ungesetzt. `Mojo::IOLoop::TLS` entscheidet das einmal beim Laden —
 fehlt es, stirbt `Upstream::Http->new` mit einem Grund, der den Fix nennt, und

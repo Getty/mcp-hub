@@ -1425,6 +1425,104 @@ subtest 'streamable http upstream: a call let through just before a start goes o
   }
 };
 
+subtest 'streamable http upstream: a refresh that a stop and a start overtake is no request of that start' => sub {
+  # A refresh lists page by page. One that a stop and a start overtook between
+  # two of its pages sent the next one in the middle of the new start's
+  # handshake: while a handshake ran, any request but a call was taken for one
+  # of the start's own. It went out with no session id before the initialize
+  # was answered -- a stateful remote answers that 400 -- and a stop cut it off
+  # with the start. A start's own requests are those its handshake sends: the
+  # refresh's next page waits for the start, and goes out on the session it
+  # opens, or fails with it.
+  for my $how ('the start goes through', 'a stop calls the start off') {
+    my %hold;     # what the remote holds back: the next such request waits for its promise
+    my $next = 0;
+    my $fake;
+    $fake = fake_http(answer => sub ($req) {
+      my ($id, $method) = ($req->{id}, $req->{method} // '');
+      my $cursor = $req->{params}{cursor};
+      return {http_status => 400} if $method ne 'initialize' && !defined $fake->{posts}[-1]{session};
+      my $result
+        = $method eq 'initialize'
+        ? {protocolVersion => '2025-06-18', capabilities => {}, serverInfo => {name => 'fake-http', version => '0.0.1'}}
+        : $method ne 'tools/list' ? {content => [{type => 'text', text => 'pong'}]}
+        : $cursor                 ? {tools => [{name => 'pong' . ++$next, inputSchema => {type => 'object'}}]}
+        :                           {tools => [{name => 'ping', inputSchema => {type => 'object'}}], nextCursor => 'p2'};
+      my $answer = {jsonrpc => '2.0', id => $id, result => $result};
+      my $held   = delete $hold{$cursor ? 'next page' : $method} or return $answer;
+      return $held->then(sub { $answer });
+    });
+    my $sent = sub {
+      return [map { "$_->{method}" . ($_->{params}{cursor} ? " $_->{params}{cursor}" : '') . ': ' . ($_->{session} // 'none') }
+        grep { ($_->{method} // '') ne 'notifications/initialized' } splice @{$fake->{posts}}];
+    };
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+      cache_dir => tempdir->to_string,
+    );
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+    $up->log($log);
+    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$how: started";
+    is_deeply $sent->(), ['initialize: none', 'tools/list: s1', 'tools/list p2: s1'], "$how: it lists page by page, on s1";
+
+    # A refresh, whose first page the remote holds back.
+    my $page = $hold{'tools/list'} = Mojo::Promise->new;
+    my $refreshed;
+    Mojo::IOLoop->next_tick(sub { $up->refresh_p->then(sub { $refreshed = 1 }) });
+    ok until_true(sub { @{$fake->{posts}} }), "$how: the refresh asks for its first page";
+    is_deeply $sent->(), ['tools/list: s1'], "$how: on s1";
+
+    # A stop and a start overtake it, in the running loop as in the daemon;
+    # the remote holds back the start's initialize.
+    my $init = $hold{initialize} = Mojo::Promise->new;
+    my $start;
+    Mojo::IOLoop->next_tick(sub { $up->stop; $start = $up->start_p; $start->catch(sub { }) });
+    ok until_true(sub { @{$fake->{posts}} }), "$how: the new start asks for a session";
+
+    # The first page comes back, and the stop's DELETE, which waited for it,
+    # ends s1. The handshake is still under way.
+    $page->resolve;
+    ok until_true(sub { @{$fake->{deletes}} }), "$how: s1 is ended once the first page is through";
+    Mojo::Promise->timer(0.2)->wait;
+    is_deeply $sent->(), ['initialize: none'], "$how: the next page does not go out while the start's handshake runs";
+
+    if ($how eq 'the start goes through') {
+      $init->resolve;
+      is _await_bounded($start->then(sub { 'started' }), 5), 'started', "$how: the start is through";
+      ok until_true(sub { $refreshed }), "$how: and so is the refresh";
+      is_deeply $sent->(), ['tools/list: s2', 'tools/list p2: s2', 'tools/list p2: s2'],
+        "$how: its next page went out after the start's lists, on the session the start opened";
+      is_deeply [map { $_->name } @{$up->server->tools}], ['ping', 'pong3'], "$how: and the lists it found are shown";
+      ok !(grep {/refresh failed/} @logged), "$how: the refresh did not fail" or diag explain \@logged;
+    }
+    else {
+      _stop($up);
+      is _await_bounded($start->then(sub { 'started' }, sub ($err) { $err }), 5), 'upstream fake: stopped',
+        "$how: the start is called off";
+      ok until_true(sub { $refreshed }), "$how: the refresh is over";
+      Mojo::Promise->timer(0.1)->wait;
+      is_deeply $sent->(), [], "$how: and its next page never went out";
+      is scalar(grep {/^debug: \[fake\] refresh failed: upstream fake: stopped$/} @logged), 1,
+        "$how: it failed with the start, as stopped, at debug level"
+        or diag explain \@logged;
+      $init->resolve;
+    }
+    is $up->error, undef, "$how: no failure reason";
+    is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$how: nothing logged as a failure"
+      or diag explain \@logged;
+
+    _stop($up);
+    weaken(my $gone = $up);
+    undef $up;
+    undef $start;
+    is $gone, undef, "$how: nothing holds the upstream";
+    $fake->{daemon}->stop;
+  }
+};
+
 subtest 'streamable http upstream: a start that fails, or that a stop calls off, ends the session it was given' => sub {
   # A start whose initialize was answered with a session id, and which failed
   # after that, left the session open on the remote until its own timeout. So
