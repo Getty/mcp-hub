@@ -87,7 +87,10 @@ sub _error_text ($result) {
 # the servers the hub's SSE transport talks to behave. It records every POST it
 # receives, so a test can prove that a request did not reach it. With
 # endpoint_delay set it holds the endpoint event back that many seconds, as a
-# slow remote does.
+# slow remote does. A POST is accepted with `post_status` (202); an answer
+# {http_status => N} answers it with status N instead, and puts nothing on the
+# stream, {drop => 1} closes its connection unanswered, {hold => 1} leaves it
+# unanswered.
 sub fake_sse (%opt) {
   my $app = Mojolicious->new;
   $app->log->level('warn');
@@ -110,12 +113,11 @@ sub fake_sse (%opt) {
     my $req = eval { $c->req->json } // {};
     push @{$state->{posts}}, $req;
     my $res = $opt{answer} ? $opt{answer}->($req) : undef;
-    if ($res && defined $res->{id}) {
-      my $content = $state->{tx}->res->content;
-      $content->write_sse({type => 'message', text => encode_json($res)});
-      $state->{tx}->resume;
-    }
-    $c->render(text => 'ok', status => 202);
+    return $c->rendered($res->{http_status}) if ref $res eq 'HASH' && $res->{http_status};
+    return Mojo::IOLoop->stream($c->tx->connection)->close if ref $res eq 'HASH' && $res->{drop};
+    return $c->render_later if ref $res eq 'HASH' && $res->{hold};
+    sse_send($state, $res) if $res && defined $res->{id};
+    $c->render(text => 'ok', status => $state->{post_status} // 202);
   });
 
   my $daemon = Mojo::Server::Daemon->new(app => $app, listen => ['http://127.0.0.1'], silent => 1);
@@ -124,6 +126,14 @@ sub fake_sse (%opt) {
   $state->{url}    = "http://127.0.0.1:$state->{port}/sse";
   $state->{daemon} = $daemon;
   return $state;
+}
+
+# A message from the fake HTTP+SSE server to the hub, on its stream: an answer,
+# or a request of its own.
+sub sse_send ($fake, $msg) {
+  $fake->{tx}->res->content->write_sse({type => 'message', text => encode_json($msg)});
+  $fake->{tx}->resume;
+  return $fake;
 }
 
 # The MCP conversation of the fake server: a proper handshake, and a tools/call
@@ -679,6 +689,138 @@ subtest 'sse upstream: a request without the stream to answer on is rejected at 
   $drop = 0;
   my $again = _await_bounded($up->start_p->then(sub { 'started' }), 5);
   is $again, 'started', 'the next start connects' or diag explain $again;
+  $up->stop;
+  $fake->{daemon}->stop;
+};
+
+subtest 'sse upstream: a POST the remote does not take fails its request at once' => sub {
+  # Every request is a POST whose answer comes on the stream. The POST went out
+  # with an empty callback, and nobody looked at one that failed -- an error
+  # status, no response, a refused connection: the remote never got the
+  # request, and the request waited out the request timeout for an answer that
+  # could not come, then failed "timed out after 30s". It fails at once, with
+  # the reason of the POST, as over Streamable HTTP. All within 5 s here, well
+  # inside the request timeout of 30.
+  my $probe = IO::Socket::INET->new(Listen => 5, LocalAddr => '127.0.0.1', LocalPort => 0, ReuseAddr => 1)
+    or plan skip_all => "cannot bind a probe socket: $!";
+  my $dead_port = $probe->sockport;
+  close $probe;
+
+  my ($init_status, $fake) = (0);
+  my $handshake = mcp_answer('unused');
+  $fake = fake_sse(answer => sub ($req) {
+    my $method = $req->{method} // '';
+    return {http_status => $init_status} if $method eq 'initialize' && $init_status;
+    # The hub's own answer to the ping below: answered 500, and the call the
+    # ping came with answered a little later.
+    if (!exists $req->{method} && ($req->{id} // '') eq ($fake->{pinged} // '')) {
+      my $id = delete $fake->{pinged};
+      Mojo::IOLoop->timer(0.3 => sub {
+        sse_send($fake, {jsonrpc => '2.0', id => $id, result => {content => [{type => 'text', text => 'pinged'}]}});
+      });
+      return {http_status => 500};
+    }
+    return $handshake->($req) unless $method eq 'tools/call';
+    my $name = $req->{params}{name};
+    return {http_status => 500} if $name eq 'status500';
+    return {http_status => 400} if $name eq 'status400';
+    return {drop => 1}          if $name eq 'drop';
+    return {hold => 1}          if $name eq 'hold';
+    # A ping of the remote's own, with the id of the call it came with.
+    if ($name eq 'ping_me') {
+      sse_send($fake, {jsonrpc => '2.0', id => $req->{id}, method => 'ping'});
+      $fake->{pinged} = $req->{id};
+      return undef;
+    }
+    return {jsonrpc => '2.0', id => $req->{id}, result => {content => [{type => 'text', text => "pong $name"}]}};
+  });
+
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 30},
+    cache_dir => tempdir->to_string,
+  );
+  my @logged;
+  my $log = Mojo::Log->new(level => 'debug');
+  $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+  $up->log($log);
+  my @warnings;
+  local $SIG{__WARN__} = sub { push @warnings, @_ };
+  is _await_bounded($up->start_p, 5), $up, 'started';
+
+  for my $case (
+    ['status500', 'upstream fake: Internal Server Error', 'an error status'],
+    ['status400', 'upstream fake: Bad Request',           'a client error status'],
+    ['drop',      'upstream fake: Premature connection close', 'no response'],
+  ) {
+    my ($name, $reason, $what) = @$case;
+    my $r = _await_bounded($up->call_tool($name, {}), 5);
+    ok ref $r eq 'HASH' && $r->{isError}, "$what: an error result" or diag explain $r;
+    is _error_text($r), $reason, "$what: at once, with the reason of the POST";
+  }
+
+  # Accepted -- 202, or any other 2xx -- the request is answered on the stream.
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong ping', 'a POST accepted with 202 is answered';
+  $fake->{post_status} = 200;
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong ping', 'so is one accepted with 200';
+  $fake->{post_status} = 202;
+
+  # The hub's own answer -- to a ping of the remote's -- has nothing waiting
+  # for it: a POST of it that fails is logged, and rejects nothing, not even a
+  # request of the hub's with the same id.
+  my $pinged = _await_bounded($up->call_tool('ping_me', {}), 5);
+  is _error_text($pinged), 'pinged', 'a failed POST of an answer rejects no request, not one with its id'
+    or diag explain $pinged;
+  is scalar(grep {/^debug: \[fake\] POST of the answer to request \d+ failed: Internal Server Error$/} @logged), 1,
+    'it is logged at debug' or diag explain \@logged;
+
+  # A remote that no longer takes connections -- one that shuts down
+  # gracefully, its stream not closed yet. (The fake cannot: a stopped
+  # Mojo::Server::Daemon keeps its listening socket, and the POSTs before left
+  # kept-alive connections. So the endpoint is moved to a port no one listens on.)
+  {
+    local $up->{endpoint} = "http://127.0.0.1:$dead_port/messages";
+    is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'upstream fake: Connection refused',
+      'a refused POST: at once, as refused';
+  }
+  is $up->state, 'ready', 'none of them stopped the upstream';
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong ping', 'which answers the next call';
+
+  # A start, too, fails at once when its initialize is not taken -- and counts
+  # as a failed connect, as it did when it waited out the request timeout:
+  # three within five seconds mark the upstream failed.
+  _stop($up);
+  $init_status = 503;
+  for my $n (1 .. 3) {
+    my $s = _await_bounded($up->start_p, 5);
+    is ref $s eq 'HASH' ? $s->{err} : 'ready', 'upstream fake: Service Unavailable',
+      "start $n: its initialize not taken, it fails at once";
+  }
+  is $up->state, 'failed', 'three of them: failed';
+  like $up->error, qr/^3 connect failures within 5s/, 'as connect failures';
+  is_deeply [grep {/^error:/} @logged], [('error: [fake] handshake failed: upstream fake: Service Unavailable') x 3],
+    'each logged as the failure it is, and the only errors' or diag explain \@logged;
+
+  # The POST is looked at, but it holds no upstream: one a reload has dropped
+  # goes at once, whatever the remote does with a POST of it still in flight.
+  $init_status = 0;
+  my $held = MCP::Hub::Upstream::Http->new(
+    name      => 'held',
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 30},
+    cache_dir => tempdir->to_string,
+  );
+  $held->log->level('fatal');
+  is _await_bounded($held->start_p->then(sub { 'started' }), 5), 'started', 'another upstream started';
+  my $call = $held->call_tool('hold', {});
+  ok until_true(sub { grep { ($_->{params}{name} // '') eq 'hold' } @{$fake->{posts}} }), 'its call is posted, and held';
+  _stop($held);
+  is _error_text(_await_bounded($call, 5)), 'upstream held: stopped', 'a stop fails the call';
+  undef $call;
+  weaken(my $gone = $held);
+  undef $held;
+  is $gone, undef, 'nothing holds the upstream, not its POST in flight';
+  is_deeply \@warnings, [], 'nothing died on the way' or diag explain \@warnings;
+
   $up->stop;
   $fake->{daemon}->stop;
 };

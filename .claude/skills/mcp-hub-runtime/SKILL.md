@@ -74,6 +74,16 @@ Jede Ablehnung liest `upstream NAME: …` — auch ohne Antwort (refused, `Reque
 timeout`), wo Mojo `start_p` selbst nur mit seiner Meldung ablehnt: `_http_send_p`
 hängt dafür `$fail` als Reject-Handler an.
 
+Über SSE kommt jede Antwort auf dem Stream, der POST trägt nur den Request. Nimmt die
+Gegenseite ihn nicht (Fehlerstatus, keine Antwort, refused), scheitert sein Request sofort
+mit `upstream NAME: <Grund>` wie über Streamable HTTP (`_sse_post_failed`), statt den
+Request-Timeout abzuwarten; 202 oder jedes andere 2xx heißt angenommen. Ein Request des Hubs
+ist nur ein Objekt mit `method` **und** `id`: eine eigene Antwort (ping, roots/list) trägt
+die id des Remote-Requests, die der eines eigenen gleichen kann — ihr gescheiterter POST,
+wie der einer Notification, wird nur auf debug geloggt. Der Callback hält den Upstream
+schwach. Zur Connect-Failure-Loop zählt ein gescheiterter POST nur über den gescheiterten
+Start, wie jeder andere.
+
 Streamable-HTTP-Sessions: jeder Start öffnet eine **neue** Session — sein `initialize`
 trägt weder Session-Id noch `MCP-Protocol-Version`, die Id kommt nur aus dessen Antwort
 (`Mcp-Session-Id`), spätere Requests tragen Id und ausgehandelte Version. Ein Stop

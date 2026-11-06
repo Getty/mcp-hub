@@ -295,3 +295,6 @@ Revision history for MCP-Hub
   - A stdio, forked-class or Docker-stdio start that a stop calls off (say,
     a reload that replaces a starting entry) is logged at debug, no longer
     as an error 'handshake failed'.
+  - HTTP+SSE: a request whose POST the remote refuses, drops or answers
+    with an error status fails at once with that reason, instead of waiting
+    out request_timeout.

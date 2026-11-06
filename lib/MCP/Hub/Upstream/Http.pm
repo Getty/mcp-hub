@@ -10,6 +10,7 @@ use Mojo::Promise;
 use Mojo::SSE qw(parse_event);
 use Mojo::URL;
 use Mojo::UserAgent;
+use Scalar::Util qw(weaken);
 
 # ABSTRACT: An HTTP MCP server (Streamable HTTP or HTTP+SSE) mounted as an upstream
 
@@ -571,10 +572,37 @@ sub _sse_request_p ($self, $method, $params) {
   return $promise;
 }
 
+# A POST the remote does not take -- an HTTP error status, no response, a
+# refused connection -- carries nothing on to the stream, and a request in it
+# would wait out the request timeout for an answer that cannot come. It fails
+# at once instead, with the reason after the name of the upstream, as over
+# Streamable HTTP (_http_send_p). What the remote accepts -- 202, or any other
+# 2xx -- is answered on the stream. A POST of the hub's own answer to a request
+# of the remote (ping, roots/list) or of a notification has nothing waiting for
+# it: its failure is only logged, at debug. Only a request of the hub's has a
+# method and an id; an answer carries the id of the remote's request, which may
+# well be that of one of the hub's. The callback holds the upstream weakly: a
+# POST in flight keeps no upstream a reload has dropped.
 sub _sse_post ($self, $obj) {
   my $endpoint = $self->{endpoint} or return undef;
-  $self->req_ua->post($endpoint => {%{$self->{headers}}, 'Content-Type' => 'application/json'} => json => $obj => sub { });
+  weaken(my $weak = $self);
+  $self->req_ua->post($endpoint => {%{$self->{headers}}, 'Content-Type' => 'application/json'} => json => $obj => sub ($ua, $tx) {
+    my $err = $tx->error or return;
+    $weak->_sse_post_failed($obj, $weak->_error_message($err)) if $weak;
+  });
   return 1;
+}
+
+sub _sse_post_failed ($self, $obj, $reason) {
+  my $request = defined $obj->{method} && defined $obj->{id};
+  if (my $pending = $request ? delete $self->{pending}{$obj->{id}} : undef) {
+    Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
+    $pending->{promise}->reject("upstream @{[$self->name]}: $reason");
+    return $self;
+  }
+  my $what = defined $obj->{method} ? $obj->{method} : "the answer to request @{[$obj->{id} // '?']}";
+  $self->log->debug("[@{[$self->name]}] POST of $what failed: $reason");
+  return $self;
 }
 
 sub _on_message ($self, $msg) {
@@ -739,6 +767,17 @@ its call: C<upstream NAME: Connection refused> (over HTTP+SSE C<upstream NAME:
 connect failed: Connection refused>), C<upstream NAME: Request timeout> for a
 POST that outlasts the request timeout, C<upstream NAME:> and the message of a
 JSON-RPC error the remote answers with.
+
+Over HTTP+SSE every request is a POST whose answer comes on the stream. A POST
+the remote does not take -- an HTTP error status, no response, a refused
+connection -- fails its request at once, with that reason (C<upstream NAME:
+Internal Server Error>, C<upstream NAME: Connection refused>), as over
+Streamable HTTP, instead of leaving it to wait out the request timeout. A POST
+the remote accepts, with C<202> or any other C<2xx>, is answered on the stream.
+A failed POST of the hub's own answer to a request of the remote's (C<ping>,
+C<roots/list>), or of a notification, has no request to fail: it is only logged
+at debug level. A start whose request is not taken fails as any failed start
+does, and counts as a connect failure.
 
 A stop -- a configuration reload that replaces or removes the entry, or the
 daemon shutting down -- calls off a start under way, on both transports: the
