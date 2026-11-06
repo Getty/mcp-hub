@@ -47,6 +47,10 @@ my @edge = (
   user('1e-7'),                                            # a number, stringified "1e-07"
   user('1e999'),                                           # a number too large, stringified "Inf"
   assistant(q([{"type":"tool_use","id":"t6","name":-1e999,"input":{}}])),          # "[tool_use -Inf]"
+  assistant(q([{"type":"text","text":"Empty name"},{"type":"tool_use","id":"t7","name":"","input":{}}])),    # "[tool_use]"
+  assistant(q([{"type":"text","text":{"a":1},"text":6e6}])),                      # the later key wins: "6000000"
+  assistant(q([{"type":"tool_use","id":"t8","name":["x"],"name":4e4,"input":{}}])),    # "[tool_use 40000]"
+  user(q({"a":1},"content":9e9)),                                                  # content "9000000000"
   user(q("path C:\\\\Users\\\\tester")),                 # escaped backslashes
   user(q("the needle is only in a field","x":"zanzibar")), # a raw hit that is no text hit
   '{"type":"user", not json zanzibar',
@@ -85,7 +89,7 @@ my @queries = (
   '[tool_result]', 'tool_result', '100000', '1', '42', '70000000', '3000', 'c:\\users', 'zanzibar', 'ZANZIBAR', 'quux', ' ', '',
   'nameless', '[tool_use]', 'tool_use]', 'e]', '0', 'null', 'hash(0x', 'hash', '0x1', 'in an object',
   'array(0x', 'array', '(0x', '(', ')', 'x', 'y', 's', 'r', 'b', 'd', 'k', 'n', 'e+', '1e+20', '1.5', 'e-0',
-  'inf', '-inf', 'nan',
+  'inf', '-inf', 'nan', 'empty name', '[tool_use ]', '6000000', '40000', '9000000000',
 );
 for my $q (@queries) {
   for my $roles (['user'], ['user', 'assistant']) {
@@ -102,7 +106,8 @@ subtest 'words that only match after decoding still match' => sub {
   } (['abc'], ['lib/mcp'], ['kelvin'], ['taksi'], ['café'], ['use bash', 'assistant'], ['[tool_result]'],
      ['100000'], ['42', 'assistant'], ['70000000', 'assistant'], ['3000', 'assistant'], ['zanzibar'],
      ['nameless', 'assistant'], ['hash(0x'], ['(0x', 'assistant'], ['1e+20', 'assistant'], ['1.5'], ['e-0'],
-     ['inf'], ['-inf', 'assistant']);
+     ['inf'], ['-inf', 'assistant'], ['[tool_use ]', 'assistant'], ['6000000', 'assistant'],
+     ['40000', 'assistant'], ['9000000000']);
   is $count{abc},             1, 'an escaped ASCII letter';
   is $count{'lib/mcp'},       1, 'an escaped slash';
   is $count{kelvin},          2, 'KELVIN SIGN, raw and escaped';
@@ -123,6 +128,10 @@ subtest 'words that only match after decoding still match' => sub {
   is $count{'e-0'},           1, 'a number stringified with a negative exponent';
   is $count{inf},             1, 'a number too large, stringified';
   is $count{'-inf'},          1, 'a number too large as tool name, stringified';
+  is $count{'[tool_use ]'},   0, 'not an empty tool name, which renders as [tool_use]';
+  is $count{6000000},         1, 'a number as block text after an object under the same key';
+  is $count{40000},           1, 'a number as tool name after an array under the same key';
+  is $count{9000000000},      1, 'a number as content after an object under the same key';
 };
 
 subtest 'only candidate lines are decoded' => sub {
@@ -130,6 +139,9 @@ subtest 'only candidate lines are decoded' => sub {
   my $pd    = $plain->child('projects', '-home-tester-plain')->make_path;
   $n = 0;
   my @lines = map { user(qq("ordinary prompt number $_")) } 1 .. 40;
+  $lines[5]  = user(q([{"type":"text","text":{"n":1}},{"type":"tool_use","id":"t","name":["x"],"input":{}}]));
+  $lines[6]  = user(q({"n":1}));
+  $lines[7]  = user(q([{"type":"text","text":["x"]},{"type":"tool_use","id":"t","name":{"n":1},"input":{}}]));
   $lines[17] = user(q("this one has the needle in it"));
   $lines[23] = user(qq("${U}0041 escaped, decoded for any word"));
   $lines[30] = user(q("a path a\/b, decoded for a word with a slash"));
@@ -149,6 +161,7 @@ subtest 'only candidate lines are decoded' => sub {
   is_deeply [$count->('absent')],      [1, 0],  'a missing needle decodes only the escaped line';
   is_deeply [$count->('a/b')],         [2, 1],  'a needle with a slash decodes the escaped slash too';
   is_deeply [$count->('100000')],      [2, 1],  'a needle that could be a number decodes the number too';
+  is_deeply [$count->('12345')],       [2, 0],  'but no object or array as text, name or content';
   is_deeply [$count->('nëedle')],      [40, 0], 'a non-ASCII needle decodes every line';
   is_deeply [$count->('the "needle')], [40, 0], 'a needle with a quote decodes every line';
   is_deeply [$count->('back\\slash')], [40, 0], 'a needle with a backslash decodes every line';

@@ -98,9 +98,10 @@ for my $case (@cases) {
   };
 }
 
-# A tool_use block whose name is not a string: [JSON of the name, the marker it
-# renders as, what the case shows].
+# A tool_use block whose name is empty or not a string: [JSON of the name, the
+# marker it renders as, what the case shows].
 my @names = (
+  [q(""),              '[tool_use]',      'an empty string as name renders as a tool_use without one'],
   [q({"name":"Bash"}), '[tool_use]',      'an object as name renders as a tool_use without one'],
   [q({}),              '[tool_use]',      'an empty object too'],
   [q(["Bash"]),        '[tool_use]',      'an array too'],

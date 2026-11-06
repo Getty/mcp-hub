@@ -239,3 +239,7 @@ Revision history for MCP-Hub
   - A text block whose `text`, or a tool_use whose `name`, is an object or
     array now renders as empty text or as `[tool_use]`, instead of a
     `HASH(0x...)` memory address that differed on every read.
+  - A session line whose `sessionId`, `cwd` or `timestamp` is an object or
+    array no longer breaks finding, filtering or ordering that session: the
+    next line's value is used, a number counts as its string, and a
+    `tool_use` with an empty name renders as `[tool_use]`.

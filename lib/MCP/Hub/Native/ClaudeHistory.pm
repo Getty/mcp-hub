@@ -15,12 +15,14 @@ has meta_cache => sub { {} };
 # ASCII, U+0130 and U+212A (see _raw_skip); and text, name and content values
 # that are not strings but that _text makes into one: a number or boolean, as
 # any of the three, into its string (1e5 is "100000", 1e999 "Inf", true "1").
-# Null and an object, as any of the three, and an array as text or name, _text
-# makes into no text; these tests let them through all the same.
+# Null _text makes into no text; these tests let it through all the same. An
+# object, as any of the three, and an array as text or name, _text makes into
+# no text too, and these tests do not let them through; nor an array as
+# content, whose blocks' text and names they test.
 my $ESCAPE        = qr/\\u(?:00[2-7][0-9a-fA-F]|0130|212[aA])/;
-my $TEXT_VALUE    = qr/"text"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\x20\t\r\n]/;
-my $NAME_VALUE    = qr/"name"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\x20\t\r\n]/;
-my $CONTENT_VALUE = qr/"content"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[\x20\t\r\n]/;
+my $TEXT_VALUE    = qr/"text"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
+my $NAME_VALUE    = qr/"name"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
+my $CONTENT_VALUE = qr/"content"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
 
 sub new ($class, %args) {
   my $self = $class->SUPER::new(name => 'claude-history', version => $VERSION, %args);
@@ -115,7 +117,7 @@ sub list_projects ($self) {
   for my $dir ($self->_project_dirs) {
     my @sessions = $self->_sessions_in($dir);
     next unless @sessions;
-    my $last = (sort { $b->{last_activity} cmp $a->{last_activity} } @sessions)[0];
+    my $last = (sort { ($b->{last_activity} // '') cmp($a->{last_activity} // '') } @sessions)[0];
     push @projects, {
       project       => $last->{project},
       dir           => $dir->basename,
@@ -143,7 +145,7 @@ sub _sessions ($self, $args) {
   }
   @sessions = grep { !defined $args->{project} || $_->{project} eq $args->{project} } @sessions;
   @sessions = grep { _in_range($_->{last_activity}, $args->{since}, $args->{until}) } @sessions;
-  @sessions = sort { $b->{last_activity} cmp $a->{last_activity} } @sessions;
+  @sessions = sort { ($b->{last_activity} // '') cmp($a->{last_activity} // '') } @sessions;
   @sessions = @sessions[0 .. $limit - 1] if @sessions > $limit;
   return [@sessions];
 }
@@ -281,12 +283,16 @@ sub _refresh ($self, $file, $skip = undef, $visit = undef) {
   return 1;
 }
 
+# A record's sessionId, cwd and timestamp are made into strings by _string, so
+# one that is an object or array counts as absent and a later record's fills
+# it; the lookups, filters and sorts compare strings only.
 sub _absorb ($state, $rec) {
-  $state->{session_id} //= $rec->{sessionId};
-  $state->{project}    //= $rec->{cwd};
+  my $timestamp = _string($rec->{timestamp});
+  $state->{session_id} //= _string($rec->{sessionId});
+  $state->{project}    //= _string($rec->{cwd});
   $state->{branch}     //= $rec->{gitBranch};
-  $state->{started}    //= $rec->{timestamp};
-  $state->{last} = $rec->{timestamp} if defined $rec->{timestamp};
+  $state->{started}    //= $timestamp;
+  $state->{last} = $timestamp if defined $timestamp;
 
   my $type = $rec->{type} // '';
   $state->{title} = $rec->{aiTitle} if $type eq 'ai-title';
@@ -412,8 +418,8 @@ sub _raw_skip ($needle) {
 # A message's text. Content that is not an array is the text itself: a string
 # as it is, a number or boolean as its string, an object as no text; null stays
 # undef. Of an array, the text blocks and a marker for each tool_use block
-# ("[tool_use]" if it has no name) and tool_result block; a block's text or
-# name is made into a string by _string.
+# ("[tool_use]" if its name is missing or empty) and tool_result block; a
+# block's text or name is made into a string by _string.
 sub _text ($message) {
   return '' unless ref $message eq 'HASH';
   my $content = $message->{content};
@@ -427,15 +433,16 @@ sub _text ($message) {
     if    ($type eq 'text')        { push @parts, _string($block->{text}) // '' }
     elsif ($type eq 'tool_use')    {
       my $name = _string($block->{name});
-      push @parts, defined $name ? "[tool_use $name]" : '[tool_use]';
+      push @parts, defined $name && length $name ? "[tool_use $name]" : '[tool_use]';
     }
     elsif ($type eq 'tool_result') { push @parts, '[tool_result]' }
   }
   return join "\n", @parts;
 }
 
-# A text or name value as a string: a string as it is, a number or boolean as
-# its string; undef for null, an object or an array, which make no text.
+# A value read as a string -- a block's text or name, a record's sessionId, cwd
+# or timestamp: a string as it is, a number or boolean as its string; undef for
+# null, an object or an array, which make no text and count as absent.
 sub _string ($value) {
   return undef if !defined $value || ref $value eq 'HASH' || ref $value eq 'ARRAY';
   return "$value";
@@ -525,8 +532,8 @@ characters.
 Arguments C<session_id> (required), C<offset> (0), C<limit> (50), C<roles>
 (C<["user","assistant"]>). Returns C<< {entries, total, has_more} >>, with
 C<tool_use> blocks rendered as C<[tool_use <name>]> (C<[tool_use]> for one
-without a name) and C<tool_result> as C<[tool_result]>. An entry's C<text> is
-a string, or null for a message without content.
+without a name or with an empty one) and C<tool_result> as C<[tool_result]>.
+An entry's C<text> is a string, or null for a message without content.
 
 =back
 

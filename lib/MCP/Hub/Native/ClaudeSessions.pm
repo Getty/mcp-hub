@@ -99,6 +99,8 @@ sub _session_file ($self, $cwd) {
 # the last timestamp and user prompt from its tail: read forward until the first
 # three are known, then backward from the end until the last two are, or until
 # the two meet. The result is that of reading every line, whatever the file size.
+# A sessionId or timestamp is made into a string by _string, as ClaudeHistory
+# makes it: one that is an object or array counts as absent.
 sub _session_meta ($self, $file) {
   my ($session_id, $started, $last, $branch, $last_prompt);
   my $fh   = path($file)->open('<:raw');
@@ -107,11 +109,12 @@ sub _session_meta ($self, $file) {
   while (my $line = <$fh>) {
     chomp $line;
     next unless length $line;
-    my $rec = _record($line) or next;
-    $session_id //= $rec->{sessionId};
+    my $rec       = _record($line) or next;
+    my $timestamp = _string($rec->{timestamp});
+    $session_id //= _string($rec->{sessionId});
     $branch     //= $rec->{gitBranch};
-    $started    //= $rec->{timestamp};
-    $last = $rec->{timestamp} if defined $rec->{timestamp};
+    $started    //= $timestamp;
+    $last = $timestamp if defined $timestamp;
     $last_prompt = _text($rec->{message}) if ($rec->{type} // '') eq 'user';
     last if defined $session_id && defined $branch && defined $started;
   }
@@ -131,8 +134,9 @@ sub _session_meta ($self, $file) {
     $buf = $pos > $head ? shift @lines : '';
     for my $line (reverse @lines) {
       next unless length $line;
-      my $rec = _record($line) or next;
-      if (!$last_found && defined $rec->{timestamp}) { $last = $rec->{timestamp}; $last_found = 1 }
+      my $rec       = _record($line) or next;
+      my $timestamp = _string($rec->{timestamp});
+      if (!$last_found && defined $timestamp) { $last = $timestamp; $last_found = 1 }
       if (!$prompt_found && ($rec->{type} // '') eq 'user') {
         $last_prompt  = _text($rec->{message});
         $prompt_found = 1;
@@ -170,8 +174,9 @@ sub _text ($message) {
   return join "\n", map { _string($_->{text}) // '' } grep { ref $_ eq 'HASH' && ($_->{type} // '') eq 'text' } @$content;
 }
 
-# A text value as a string: a string as it is, a number or boolean as its
-# string; undef for null, an object or an array, which make no text.
+# A value read as a string -- a block's text, a record's sessionId or
+# timestamp: a string as it is, a number or boolean as its string; undef for
+# null, an object or an array, which make no text and count as absent.
 sub _string ($value) {
   return undef if !defined $value || ref $value eq 'HASH' || ref $value eq 'ARRAY';
   return "$value";

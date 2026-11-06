@@ -16,10 +16,11 @@ sub every_line ($file) {
   for my $line (split /\n/, $file->slurp) {
     next unless length $line;
     my $rec = eval { decode_json($line) } or next;
-    $session_id //= $rec->{sessionId};
+    my $timestamp = MCP::Hub::Native::ClaudeSessions::_string($rec->{timestamp});
+    $session_id //= MCP::Hub::Native::ClaudeSessions::_string($rec->{sessionId});
     $branch     //= $rec->{gitBranch};
-    $started    //= $rec->{timestamp};
-    $last = $rec->{timestamp} if defined $rec->{timestamp};
+    $started    //= $timestamp;
+    $last = $timestamp if defined $timestamp;
     $last_prompt = MCP::Hub::Native::ClaudeSessions::_text($rec->{message}) if ($rec->{type} // '') eq 'user';
   }
   return {session_id => $session_id // $file->basename =~ s/\.jsonl$//r, started_at => $started,
@@ -48,6 +49,8 @@ my %cases = (
   'gitBranch first on a later line'   => [rec(type => 'file-history-snapshot', timestamp => undef, sessionId => undef, gitBranch => undef),
     user('one', gitBranch => undef), user('two', gitBranch => 'late'), filler($CHUNK), user('three')],
   'no user line'                      => [assistant('a'), filler($CHUNK), assistant('b')],
+  'an object or array as id or time'  => [user('one', sessionId => {id => 'x'}, timestamp => ['x']), user('two', timestamp => {}),
+    filler($CHUNK), user('three'), assistant('a', timestamp => [])],
   'trailing lines without a timestamp' => [user('one'), user('two'), map { rec(type => 'summary', timestamp => undef) } 1 .. 3],
   'blank, broken and CRLF lines'      => [user('one'), '', '{"broken', user('crlf') . "\r", '', 'not json'],
   'non-ASCII prompt'                  => [user('one'), user("Grüße \x{2192} caf\x{e9} \x{1F600}"), assistant('done')],
