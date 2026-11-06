@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-11-06T10:04:46Z
+created: 2026-11-06T09:07:10Z
+id: 120
+priority: low
+started: 2026-11-06T09:22:07Z
+status: done
+tags:
+- native
+- bug
+title: 'ClaudeHistory: non-string sessionId/cwd/timestamp compared as HASH(0x...)
+  in lookups, filters and sorts'
+updated: 2026-11-06T10:05:17Z
+---
+
+Found during k117.
+1. A sessionId, cwd or timestamp that is an object/array (or number) in a session line is compared stringified -- HASH(0x...) -- in the get_conversation lookup (_file_for_session), the project filter, the sorts by last_activity and _in_range. Never shows on the wire, but lookup, filters and ordering go wrong for such a session. Apply the _string rule (k117) when absorbing these fields, or skip non-string values.
+2. A tool_use whose name is the empty string renders "[tool_use ]" with a trailing space; render as "[tool_use]" like a nameless one.
+3. Optional speed-up: $TEXT_VALUE / $NAME_VALUE (k84 raw test) still let lines with { or [ values through as candidates, although objects/arrays make no text since k117.
+
+Done, all three items. (1) _absorb (ClaudeHistory) and the ClaudeSessions head/tail scan run sessionId, cwd and timestamp through _string: an object or array counts as absent and a later line fills it; a number or boolean becomes its string, so a numeric sessionId goes out as "42", not 42. Both last_activity sorts now treat undef as '': a session with no string timestamp sorts last without the uninitialized-value warnings, which already fired at HEAD for a session with no timestamp at all. Wire output of every tool over t/fixtures/claude is byte-identical to HEAD (text and structuredContent, cold and warm). (2) An empty tool_use name renders [tool_use]. (3) Speed-up done: $TEXT_VALUE/$NAME_VALUE exclude { and [, and $CONTENT_VALUE also excludes { (my choice: an object as content makes no text either). The k84 equivalence test stays green with an empty name, later duplicate keys (text/name/content) and the existing object/array values in its corpus. Tests: new t/native/claude-session-fields.t (untracked, needs git add); extended claude-history-search.t, claude-text-values.t, and claude-sessions-tail.t (its every_line oracle applies the same rule). All of them fail against HEAD. A mutation run killed all 19 mutants. Deliberately left as is: gitBranch/aiTitle and per-hit/entry timestamp/uuid still go out raw; they are never compared.
+
+Ready for review: k120.patch in the w-native6 scratchpad. Full prove -lr t/ on a HEAD export with only these files on top: PASS (40 files, 537 tests), under the default reactor and under MOJO_REACTOR=Mojo::Reactor::Poll. Only docker-live.t, npx.t and wiki-live.t skip. Proposed subject: Read an object or array as sessionId, cwd or timestamp as absent (k120).
+
+Committed as 3c3fe2a
