@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-06T07:27:07Z
+created: 2026-11-06T06:37:13Z
+id: 98
+priority: low
+started: 2026-11-06T06:46:03Z
+status: done
+tags:
+- native
+- performance
+title: 'ClaudeHistory get_conversation: try SESSION_ID.jsonl before scanning every
+  file'
+updated: 2026-11-06T07:27:07Z
+---
+
+Found during k85. _file_for_session walks every project dir and refreshes the metadata of each session file until one has the asked-for session_id. On a cold cache (first call after a start, or a forked worker restart) that reads every file. Claude Code names the file after the session (<session_id>.jsonl), so checking that basename in each project dir first -- and confirming its sessionId -- would answer at once; fall back to the scan when it is not found.
+
+Done: get_conversation on a cold cache reads only the matching file when the name matches; test that counts files read (as t/native/claude-history-incremental.t does).
+
+2026-11-06 07:18 Fix: _file_for_session lists the session files of every project dir once. It tries the file whose basename is <session_id>.jsonl first, confirming its sessionId through the metadata cache, then the rest in the old order. The session_id is only compared with basenames and never joined into a path, so it cannot reach outside projects/. My choice: when two files start with the same sessionId (e.g. a copy), the file named after it now wins; before, the first in sort order did. POD DESCRIPTION has one sentence on this. Test t/native/claude-history-session-file.t: on a cold cache only b/target.jsonl is opened, twice (metadata, then lines). Before, a/a1..a5 and a/copy were read first and the copy answered. A warm cache opens it once. Fallbacks: a file named after no session, and a named file that holds another session. 7 path-like session_ids read nothing outside projects/. Mutation-checked: returning the named file unconfirmed, and a lookup that builds a path, both fail. Also found: on a cold cache get_conversation still reads its file twice (_refresh for the metadata, then _entries). That could be one pass.
+
+2026-11-06 07:18 Done, not committed. Files: lib/MCP/Hub/Native/ClaudeHistory.pm, new t/native/claude-history-session-file.t (needs git add). Patch: w-native2/k98.patch, applies on top of k97. Verified with the same runs as k97: native and full prove -lr pass on f8d6d62 and 19ce671, and under the Poll reactor; only docker-live, npx and wiki-live self-skip. Proposed subject: "Read the file named after the session first in get_conversation (k98)".
+
+Committed as d144cc9
