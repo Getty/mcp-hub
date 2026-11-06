@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-11-06T00:14:53Z
+claimed_by: p5-mcp-hub
+class: standard
+created: 2026-11-05T23:26:41Z
+id: 51
+priority: low
+started: 2026-11-05T23:58:56Z
+status: review
+tags:
+- skill
+- docs
+- drift
+title: 'Skill and spec drift: entry kinds and hub-block keys'
+updated: 2026-11-06T16:14:03Z
+---
+
+Found by mcp-hub-worker during k46 (prose/skill text, no behavior).
+(1) docs/superpowers/specs/2026-08-25-mcp-hub-design.md, "mcpServers entries": says "Exactly one of command, class or url" and lists no refusals -- stale since docker/compose, k38 and k46. It is a dated design record; whether to update or leave as history is open.
+(2) skill mcp-hub-core: "Genau eines von command, class oder url je Eintrag" -- docker and compose missing.
+(3) skill mcp-hub-runtime, "Die Stellschrauben": the hub-block key list ("kennt genau") lacks docker_command and docker_network (Config.pm %HUB_KEYS).
+
+More from k48 (2026-11-06): (4) the same 2026-08-25 design spec (around lines 238 and 339) is now wrong about a failed first manifest fetch -- it now leaves the upstream failed with the reason. (5) .claude/rules/mcp-hub-rules.md hazard row says 503 = still-fetching; 503 now also means failed (with reason) or 'no tool list yet, run mcp-hub refresh' -- rules wording is the maintainer's call.
+
+2026-11-06 00:09 (2) done: mcp-hub-core Config paragraph now says exactly one of command, class, url, docker or compose, a compose entry may carry url as its address (Config.pm _parse_entry). (3) done: mcp-hub-runtime 'Die Stellschrauben' hub-block list now ends with docker_command, docker_network; checked against %HUB_KEYS (10 keys, all listed) and %ENTRY_HUB_KEYS (idle_timeout, always_on, request_timeout, fork -- already complete). (1), (4), (5) left open, as briefed: the dated 2026-08-25 design spec and the rules-file 503 wording are the maintainer's call.
+
+2026-11-06 00:13 Done (2)+(3): mcp-hub-core Config paragraph lists command, class, url, docker or compose (compose may carry url); mcp-hub-runtime Stellschrauben hub-block list adds docker_command, docker_network, checked complete against %HUB_KEYS and %ENTRY_HUB_KEYS. Still open, the maintainer's call: (1) and (4) the dated 2026-08-25 design spec, (5) the 503 wording in .claude/rules/mcp-hub-rules.md. Skill text only, no Changes entry. Not committed.
+
+Committed as 44824f9; stays in review, items 1/4/5 open with the maintainer
+
+(6) From k136 (2026-11-06): the same 2026-08-25 design spec, 'MCP::Hub::Native::ClaudeSessions' (around line 303), still says '(or pgrep -x claude as fallback)'; k136 removed that fallback. The k136 worker had changed the line to '(no pgrep: it reads the same names)'; the main agent reverted that hunk so as not to pre-empt (1). The hunk is kept in scratchpad w-six/spec-hunk-reverted.patch. Open with (1)/(4).
