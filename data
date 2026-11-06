@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-11-06T02:06:07Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T02:06:07Z
+created: 2026-11-03T18:39:30Z
+id: 31
+priority: low
+started: 2026-11-06T01:25:27Z
+status: done
+tags:
+- cli
+- bug
+title: 'bin/mcp-hub takes -c anywhere in argv as --config: ''mcp-hub get -c JSON URL''
+  breaks'
+updated: 2026-11-06T02:06:07Z
+---
+
+Found by mcp-hub-binary-worker during k28. Mojolicious' get command has its own -c/--content; bin/mcp-hub's global --config parsing grabs -c wherever it appears, so the content is read as a config path. --content works. Only the global option before the command should be taken.
+
+2026-11-06 01:32 Findings: no tracked file (README incl. systemd unit, bin/mcp-hub POD, docs/, t/, Dockerfile/compose, scripts/) nor the live ~/.config/systemd/user/mcp-hub.service uses --config/-c after the command; all use 'mcp-hub --config X CMD' or $MCP_HUB_CONFIG. Second victim of today's parsing: 'mcp-hub daemon -c N' (Mojolicious daemon's -c/--clients) is taken as config path N. Plan: bin/mcp-hub takes --config X / -c X / --config=X only while they lead argv, stops at the first other arg; after the command, -c/--config belong to the command (config/status/refresh/reload/daemon then fail loudly on --config; token ignores args).
+
+2026-11-06 01:47 Also found (for the dispatcher): (1) 'mcp-hub --config' with no value sets MCP_HUB_CONFIG to '' (undef assigned, warning) and goes on, unchanged by this card. (2) README.md ~l.349 says only 'A global --config PATH ... for every command'; could add 'before the command name' (prose lane). (3) mcp-hub-core SKILL.md module map: 'zieht globales --config/-c' -> only before the command.
+
+2026-11-06 01:47 Done. bin/mcp-hub takes --config X / -c X / --config=X only while they lead argv (last one wins) and stops at the first other argument; after the command every option is the command's own. Fixes 'mcp-hub get -c JSON URL' and also 'mcp-hub daemon -c N' (daemon's --clients was read as config path N). After-command --config dropped on purpose: no tracked file (README incl. systemd unit, POD, docs, t/, Dockerfile, compose, scripts) nor the live user unit uses it; it now fails loudly (config/status/refresh/reload/daemon: Unknown option + usage; token ignores args). $MCP_HUB_CONFIG unchanged. POD of bin/mcp-hub says where the option goes. Test: new t/cli.t runs bin/mcp-hub as a child with this test's @INC and a temp HOME/XDG: global forms + env + precedence (green on HEAD too, claims kept); get -c JSON reaches /alpha as the request body, config --config FILE refused (red on HEAD, green now). prove -lr t/: Files=26 Tests=238 PASS; skipped: docker-live, npx, wiki-live (env-gated).
+
+Committed as b213744
