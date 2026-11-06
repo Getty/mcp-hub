@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-06T16:40:39Z
+created: 2026-11-06T14:41:20Z
+id: 141
+priority: low
+started: 2026-11-06T15:08:06Z
+status: done
+tags:
+- fork
+title: 'Fork: an error answer to prompts/list fails the whole class listing'
+updated: 2026-11-06T16:41:31Z
+---
+
+Found during k130 (worker). Upstream::Fork: an error answer to prompts/list (or resources/list) from the class fails the whole class listing, where stdio and http take it for an empty list (k130: only an answered error is an empty list). Done: Fork's listing treats an answered error on prompts/list or resources/list as an empty list, like the other transports; test in t/fork.t.
+
+Done (mcp-hub-worker): the in-process _class_manifest passes $lenient to _handle_list/_handle for prompts/list and resources/list: an answered error is an empty list, an error on tools/list still fails the entry. Worker's choices: only an answered error is lenient (a promise or no answer still fails); an error on any page empties the whole list, as _paginate_p does. The forked worker path was already lenient, now covered. Test t/fork.t (inline ListsFail class), red 1. Not committed.
+
+Committed as 24ac9fb
