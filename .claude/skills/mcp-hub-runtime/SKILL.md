@@ -145,6 +145,16 @@ Objekten: ein In-process-Server hat plain `MCP::Tool`s ohne `extra` und rendert 
 selbst. Sie landen am gewrappten `Facade::Tool->extra` bzw. in
 `extra->{prompts}{<u>__<p>}` und werden nach dem Filter zurückgemischt.
 
+Selbstbeschreibung pro Request: `MCP::Server` beantwortet `server/discover` (und das
+Legacy-`initialize`, `MCP::Server::Legacy::legacy_result`) aus den **ungefilterten**
+Listen, ohne Event, mit `cacheScope` = `$server->cache_scope` (`public`). `Aggregate`
+überschreibt darum `_dispatch` und schreibt das Ergebnis pro Request um: `tools`/
+`prompts`-Capability nur, wenn die per Event gefilterte Liste etwas enthält; bei
+`server/discover` nur die `## <name>`-Abschnitte, die das neue `instructions`-Event
+übrig lässt (der Hub filtert die Servernamen mit `allows_server`), und `cacheScope:
+private`, sobald ein Filter-Event Abonnenten hat. Das `instructions`-Attribut bleibt die
+volle Verkettung. Das Legacy-`initialize` trägt in MCP 0.15 gar keine Instructions.
+
 ## Server-initiierter Verkehr
 
 Der Hub terminiert alles, was der Upstream anfordert:

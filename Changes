@@ -149,3 +149,9 @@ Revision history for MCP-Hub
     profile allowing `p__x` saw none of its own. Two servers can still
     produce one /all name (`p`'s `x__echo`, `p__x`'s `echo`): both are
     listed and a call reaches the first.
+  - /all answers server/discover per client profile: only the instructions
+    of servers the profile allows, not marked publicly cacheable, and the
+    tools and prompts capabilities (in the legacy initialize too) only when
+    the profile leaves any. Before, any client of /all -- a tokenless one
+    under public_profile too -- got every server's instructions under
+    `## <name>`, naming servers its profile hides.

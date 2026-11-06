@@ -97,7 +97,8 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   gültiger open-mode-Config. Tokens werden konstant-zeitig verglichen (`slow_eq` aus
   `Crypt::Misc`).
 - **404 vs 401 vs 503 tragen Bedeutung.** Server nicht im Profil → **404** (der Client
-  soll nicht erfahren, dass es ihn gibt). Fehlendes/falsches Token in clients mode →
+  soll nicht erfahren, dass es ihn gibt) — darum zeigt auch `/all` per `server/discover`
+  nur die `## <name>`-Instructions der Server im Profil. Fehlendes/falsches Token in clients mode →
   **401** + `WWW-Authenticate: Bearer`. Upstream ohne erstes Manifest oder `failed` →
   **503** mit Grund — `not ready yet` nur, solange der Fetch läuft (`starting`).
   Admin-API ohne `admin`-Profil → **403**.

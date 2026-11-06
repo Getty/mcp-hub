@@ -474,6 +474,13 @@ sub _build_aggregate ($self) {
     $self->auth->filter_aggregate_prompts($profile, $prompts, $srv);
   });
   $self->aggregate($agg);
+  # server/discover: each section of the instructions is headed by its server's
+  # name, so only those of the servers the profile may see.
+  $agg->on(instructions => sub ($srv, $servers, $ctx) {
+    my $c       = $ctx->controller  or return;
+    my $profile = $c->stash('mcp.profile') or return;
+    @$servers = grep { $self->auth->allows_server($profile, $_) } @$servers;
+  });
   return $self;
 }
 

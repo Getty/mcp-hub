@@ -16,6 +16,10 @@ use Scalar::Util qw(refaddr);
 # name the wrong server, and two entries can even share one /all name.
 has _origins => sub { {} };
 
+# Each upstream's instructions as [server, text], in upstream order. What
+# server/discover shows of them is narrowed per request (the instructions event).
+has _sections => sub { [] };
+
 sub new ($class, %args) {
   return $class->SUPER::new(name => 'all', version => $VERSION, %args);
 }
@@ -47,7 +51,7 @@ sub rebuild ($self, $upstreams) {
     }
 
     if (defined(my $instructions = $server->instructions)) {
-      push @instructions, "## @{[$upstream->name]}\n$instructions";
+      push @instructions, [$name, $instructions];
     }
   }
 
@@ -55,8 +59,46 @@ sub rebuild ($self, $upstreams) {
   $self->prompts(\@prompts);
   $self->_origins(\%origins);
   $self->extra({prompts => \%pextra, resources => {}});
-  $self->instructions(@instructions ? join("\n\n", @instructions) : undef);
+  $self->_sections(\@instructions);
+  $self->instructions(_join_sections(\@instructions));
   return $self;
+}
+
+# server/discover and the legacy initialize describe the whole server, and
+# MCP::Server answers them from its unfiltered lists. Here what a caller may see
+# is filtered per request, so the answer is narrowed to that: a tools or prompts
+# capability only when the filter leaves any, the instructions only of the
+# servers it may see -- and, depending on the caller, the answer is not public.
+sub _dispatch ($self, $request, $id, $context) {
+  my $response = $self->SUPER::_dispatch($request, $id, $context);
+  my $method   = $request->{method} // '';
+  return $response unless $method eq 'server/discover' || $method eq 'initialize';
+  my $result = ref $response eq 'HASH' && $response->{result} or return $response;
+
+  my $capabilities = $result->{capabilities} // {};
+  delete $capabilities->{tools}   unless @{$self->_tools($context)};
+  delete $capabilities->{prompts} unless @{$self->_prompts($context)};
+  return $response unless $method eq 'server/discover';
+
+  my $instructions = $self->_instructions($context);
+  if (defined $instructions) { $result->{instructions} = $instructions }
+  else                       { delete $result->{instructions} }
+  $result->{cacheScope} = 'private' if grep { $self->has_subscribers($_) } qw(instructions prompts tools);
+  return $response;
+}
+
+# The instructions this request may see: the instructions event narrows the
+# server names, as the tools and prompts events narrow those lists.
+sub _instructions ($self, $context) {
+  my $servers = [map { $_->[0] } @{$self->_sections}];
+  $self->emit(instructions => $servers, $context);
+  my %shown = map { $_ => 1 } @$servers;
+  return _join_sections([grep { $shown{$_->[0]} } @{$self->_sections}]);
+}
+
+# Each section headed by its server's name, or undef for none.
+sub _join_sections ($sections) {
+  return @$sections ? join("\n\n", map { "## $_->[0]\n$_->[1]" } @$sections) : undef;
 }
 
 # The title, icons and _meta of each entry the server itself lists, by name.
@@ -135,7 +177,11 @@ from a manifest has none to keep, as C<tools/list> does not carry them.
 
 Resources are not aggregated -- their URIs are opaque and would collide -- so use
 the per-server endpoint for those. The C<instructions> are the concatenation of
-each upstream's, headed by C<< ## <name> >>.
+each upstream's, headed by C<< ## <name> >>. Those headings name servers, so
+C<server/discover> answers each request with only the sections of the servers
+its profile may see (the L</instructions> event), and marks that answer
+C<private>. Its C<tools> and C<prompts> capabilities -- and those of the legacy
+C<initialize> -- are offered only when the profile leaves any of them.
 
 The per-request filters apply the profile by the server each entry came from,
 as L</origin> records it: to tools its C<servers> and C<tools> rules
@@ -156,6 +202,20 @@ only one of them the name means that one, as each is filtered by its own origin
 name, so they are those of the last entry of that name, whichever one the
 profile sees. Refusing C<__> in server names would end the collision; the
 configuration does not, so far.
+
+=head1 EVENTS
+
+L<MCP::Hub::Aggregate> inherits all events from L<MCP::Hub::Facade::Server> and
+emits the following new one.
+
+=head2 instructions
+
+  $all->on(instructions => sub ($all, $servers, $context) { ... });
+
+Emitted on every C<server/discover> with an array reference of the names of the
+upstreams that have instructions, in upstream order. A name removed from it
+leaves that server's section out of the answer; L<MCP::Hub> removes those the
+request's profile may not see.
 
 =head1 METHODS
 
