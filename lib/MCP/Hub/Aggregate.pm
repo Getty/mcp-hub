@@ -16,6 +16,11 @@ use Scalar::Util qw(refaddr);
 # name the wrong server, and two entries can even share one /all name.
 has _origins => sub { {} };
 
+# The title, icons and _meta of each wrapped prompt, keyed by the wrapper as
+# well: by name, two prompts of one name would show the same. A wrapped tool
+# carries its own (Facade::Tool->extra).
+has _prompt_extras => sub { {} };
+
 # Each upstream's instructions as [server, text], in upstream order. What
 # server/discover shows of them is narrowed per request (the instructions event).
 has _sections => sub { [] };
@@ -28,6 +33,8 @@ sub origin ($self, $entry) {
   my $origin = $self->_origins->{refaddr $entry} or return;
   return @$origin;
 }
+
+sub _prompt_extra ($self, $prompt) { return $self->_prompt_extras->{refaddr $prompt} }
 
 sub rebuild ($self, $upstreams) {
   my (@tools, @prompts, %pextra, %origins, @instructions);
@@ -47,7 +54,7 @@ sub rebuild ($self, $upstreams) {
     for my $prompt (@{$server->prompts}) {
       push @prompts, _wrap_prompt($prefix, $prompt);
       $origins{refaddr $prompts[-1]} = [$name, $prompt->name];
-      $pextra{$prefix . $prompt->name} = $listed->{$prompt->name};
+      $pextra{refaddr $prompts[-1]}  = $listed->{$prompt->name};
     }
 
     if (defined(my $instructions = $server->instructions)) {
@@ -58,7 +65,7 @@ sub rebuild ($self, $upstreams) {
   $self->tools(\@tools);
   $self->prompts(\@prompts);
   $self->_origins(\%origins);
-  $self->extra({prompts => \%pextra, resources => {}});
+  $self->_prompt_extras(\%pextra);
   $self->_sections(\@instructions);
   $self->instructions(_join_sections(\@instructions));
   return $self;
@@ -197,11 +204,11 @@ profile hides is not found, as on its own endpoint.
 Two servers can produce the same name here: the tool C<x__echo> of C<p> and the
 tool C<echo> of C<p__x> are both C<p__x__echo>. Both are listed, and a call
 reaches the first in server-name order -- here C<p>'s. Under a profile that sees
-only one of them the name means that one, as each is filtered by its own origin
--- but the C<title>, C<icons> and C<_meta> shown for it are still looked up by
-name, so they are those of the last entry of that name, whichever one the
-profile sees. Refusing C<__> in server names would end the collision; the
-configuration does not, so far.
+only one of them the name means that one, as each is filtered by its own origin.
+Each is listed with its own C<title>, C<icons> and C<_meta>: like the origin,
+they are kept by the wrapper object, never looked up by name, so a profile is
+never shown the fields of an entry it does not see. Refusing C<__> in server
+names would end the collision; the configuration does not, so far.
 
 =head1 EVENTS
 
