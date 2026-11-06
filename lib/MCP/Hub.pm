@@ -525,8 +525,9 @@ sub start_background_fetches ($self) {
 }
 
 # Stop every upstream, and resolve once what the stops set in motion is over:
-# a container is stopped and removed by the docker CLI after stop returns. The
-# daemon waits for this on its way out, so that no container it started
+# a stdio child or forked worker exits -- given up to seven seconds after its
+# EOF -- and a container is stopped and removed by the docker CLI after stop
+# returns. The daemon waits for this on its way out, so that nothing it started
 # outlives it.
 #
 # From here on the hub reloads no more: a reload while it waits would build
@@ -1020,11 +1021,11 @@ C<refresh> never spawn a child just by loading the application.
 
   $hub->shutdown_p->then(sub { ... });
 
-Stop every upstream and resolve once the stops are over -- once every container
-the hub started is stopped and removed. The C<daemon> command waits for it, for
-a bounded time, after the server has stopped listening. From then on the hub
-reloads no more: the config watcher stops, and a SIGHUP, a changed file or
-L</reload> is refused.
+Stop every upstream and resolve once the stops are over -- once every stdio
+child and forked worker the hub started has exited and every container is
+stopped and removed. The C<daemon> command waits for it, for a bounded time,
+after the server has stopped listening. From then on the hub reloads no more:
+the config watcher stops, and a SIGHUP, a changed file or L</reload> is refused.
 
 =method start_config_watch
 
