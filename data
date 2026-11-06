@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-11-06T00:14:38Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T00:14:38Z
+created: 2026-11-04T03:04:21Z
+id: 49
+priority: low
+started: 2026-11-05T23:58:48Z
+status: done
+tags:
+- compose
+- tls
+title: compose entry with an https url is not caught by the k32 TLS check
+updated: 2026-11-06T00:14:38Z
+---
+
+Found during k32. Upstream::Http's constructor refuses an https url on a perl without TLS, but a compose entry's Docker::Http engine gets its URL only at start, so the check never sees it. Without TLS it fails at start through compose's own failure path — so it is reported, only later and with a less specific reason. Decide whether to check at start with the same reason text.
+
+2026-11-06 00:04 Cause: a compose entry's url is in its config from the build on (Config normalizes it), only the Docker::Http engine gets it at start -- with url undef at engine build, so Http->new's _tls_missing never fires. Without TLS the start ran compose config, ps, up -d, then polled the https url until request_timeout: 'no MCP answer from https://... within Ns'. Plain docker has no gap: Config has no url key for docker, and the hub builds the address itself, always http:// (loopback publish or container name on docker_network); type is only the http/sse flavour. Compose without url is http:// too. Decision (pushed back on 'at start'): check at build, in Compose->new, exactly where a url entry checks -- earlier than any start, runs no docker command, and the hub's placeholder path gives failed + the reason in status and 503 as for a url entry. Red test in t/docker.t (8 failures, incl. 'no MCP answer ... within 2s').
+
+2026-11-06 00:08 Fix: Upstream::Http::_tls_missing now takes the url to check ($self, $url); Http->new passes its config url, and new Upstream::Compose->new calls MCP::Hub::Upstream::Http->_tls_missing($self->config->{url}) after SUPER::new and dies with the same text. The hub's build path turns that into a failed placeholder: state failed, error = the url-entry reason word for word, 503 'upstream NAME failed: <reason>', refresh still failed, warm-up and refresh run no docker command. POD in Compose (url item) and Http comment updated; README Requirements names the compose case. Tests: t/docker.t 'compose: an https url without TLS ...' (red before, green now) and 'docker: the hub builds the address, always http, so TLS is never needed' (pins the no-gap claim for plain docker).
+
+2026-11-06 00:13 Done: a compose entry with an https url on a perl without TLS is refused when built (Upstream::Compose->new, via the shared Upstream::Http::_tls_missing($url)) -> failed placeholder with the url-entry reason word for word, 503 'upstream NAME failed: <reason>', refresh stays failed, no docker/compose command runs. Plain docker: no gap (no url key, hub-built http:// address), pinned by a test. Files: lib/MCP/Hub/Upstream/Compose.pm, lib/MCP/Hub/Upstream/Http.pm, t/docker.t, README.md. Verified: new t/docker.t subtest red before the fix (8 failures), green after; prove -lr t/ PASS (Files=22, Tests=215), skipped: t/docker-live.t, t/npx.t, t/wiki-live.t (opt-in env vars). Not committed.
+
+Committed as 7c7315a
