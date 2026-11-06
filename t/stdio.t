@@ -316,12 +316,21 @@ subtest 'a stop ends even while a process the child started holds its socket' =>
   # The child exits at once; one process it leaves behind serves (echo.pl),
   # another only sits on the socket. A stop ends the server, but the socket
   # never closes -- so once the grace is over the hub lets go of it, instead
-  # of waiting with the upstream stuck on its way out.
-  my $up = MCP::Hub::Upstream::Stdio->new(
+  # of waiting with the upstream stuck on its way out. The one that sits on
+  # the socket writes its pid down: the hub is done with it, the test is not.
+  my $dir    = tempdir;
+  my $holder = $dir->child('holder.pid');
+  my $up     = MCP::Hub::Upstream::Stdio->new(
     name      => 'holder',
     config    => {type => 'stdio', command => $^X,
-      args => ['-e', 'exit 0 if fork; if (fork) { exec $^X, "-Ilib", $ARGV[0] } sleep 20', "$ECHO"]},
-    cache_dir => tempdir->to_string,
+      args => ['-e', <<~'CODE', "$ECHO", "$holder"]},
+        exit 0 if fork;
+        if (fork) { exec $^X, '-Ilib', $ARGV[0] }
+        open my $fh, '>', $ARGV[1] or exit 9;
+        print $fh $$; close $fh;
+        sleep 20;
+        CODE
+    cache_dir => $dir->to_string,
     log       => log_to([]),
   );
   _await_bounded($up->start_p, 30);
@@ -331,6 +340,14 @@ subtest 'a stop ends even while a process the child started holds its socket' =>
   settle(0.1) while $up->stats->{pid} && time < $deadline;
   is $up->stats->{pid}, undef, 'the stop ends';
   is $up->state, 'stopped', 'stopped';
+
+  # Ended here, or it would sit on for 20 seconds after the test.
+  my $sitter = -s $holder ? $holder->slurp : undef;
+  ok $sitter, 'the socket was held';
+  kill 'KILL', $sitter if $sitter;
+  $deadline = time + 10;
+  settle(0.05) while $sitter && kill(0, $sitter) && time < $deadline;
+  ok !($sitter && kill(0, $sitter)), 'and the process that held it is gone';
 };
 
 subtest 'a call while the child is stopped starts the next one' => sub {
