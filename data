@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-06T08:53:48Z
+created: 2026-11-06T08:14:55Z
+id: 114
+priority: low
+started: 2026-11-06T08:26:05Z
+status: done
+tags:
+- tests
+- http
+title: 'Test audit: t/http.t top-level stop/start calls whose assertions depend on
+  tick order'
+updated: 2026-11-06T08:53:48Z
+---
+
+Found during k101/k106. In t/http.t a stop() called at the top level (outside a running loop) can run queued callbacks partway through the stop: the k94 DELETE makes Mojo::UserAgent run one loop tick when the loop is not running -- an order the daemon never sees. Assertions that depend on that order can pass or fail for test-only reasons. Audit (mcp-hub-test-writer): find top-level stop/start calls whose assertions depend on tick order and drive them from inside the loop instead.
+
+Audited t/http.t: only an HTTP-transport stop with a session id (k94 DELETE) and a top-level refresh_p of a ready upstream run a loop tick outside the loop; start_p never does. 18 stop sites + 1 refresh moved into the loop via _stop/_in_loop helpers. No assertion claim was wrong; no code bug found. prove -lr green, http.t 5x EV + 5x Poll green.
+
+t/http.t only; patch + sha1 in w-k114 scratchpad
+
+Committed as 72b81aa
