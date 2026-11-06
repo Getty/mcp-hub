@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-06T06:59:03Z
+created: 2026-11-06T06:04:21Z
+id: 94
+priority: medium
+started: 2026-11-06T06:16:06Z
+status: done
+tags:
+- http
+- upstream
+- spec
+title: 'Streamable HTTP: a restart sends initialize with the previous Mcp-Session-Id'
+updated: 2026-11-06T06:59:03Z
+---
+
+Found during k91. Upstream::Http::start_p never clears $self->{session_id}, so a start after a stop or a failed start sends initialize carrying the old Mcp-Session-Id header. The MCP Streamable HTTP spec says a new initialize is sent without a session id (the server assigns a new one). Also no DELETE ends the session on stop, so the remote keeps it until its own timeout.
+
+Done: start_p (or stop) drops session_id before the next initialize; decide whether stop sends DELETE to the endpoint with the session id (spec: SHOULD when the client no longer needs the session). Test against the fake HTTP server in t/http.t: restart after stop -> initialize has no Mcp-Session-Id.
+
+Done in Upstream/Http.pm + t/http.t (patch: scratchpad w-k94/k94.patch). start_p drops session_id before initialize. The session id is now taken from the initialize answer only: the reference server names it on every answer, and a call left to finish after a stop put the upstream back on the ended session. stop ends the session with one DELETE (Mcp-Session-Id, MCP-Protocol-Version and configured headers) through req_ua, fire and forget, 405 or any error at debug only, never over SSE. It holds the user agent, not the upstream. While a call is still in flight on that session (k91 leaves it to finish), the DELETE waits for the last such call, so it cannot cut it. Tests: new subtest 'a start opens a new session, a stop ends the old one'; the call-in-flight and stop-during-start subtests also check the DELETE. Drift for this board: (1) a 404 on a request with a session id is not handled: the upstream stays ready on the dead session and refresh does not recover (spec MUST re-initialize). (2) On daemon shutdown the DELETE most likely never gets out: Http inherits stopped_p, which resolves at once. Option: Http::stopped_p waits for it, bounded; needs a decision.
+
+Ready for review: new session per start, initialize without the old id; session id taken from the initialize answer only; DELETE on stop, deferred while calls are in flight on that session. prove -lr t/ green on HEAD export + these files; t/http.t 5x EV / 5x Poll green. Commit subject proposed: 'Start every Streamable HTTP session afresh and end it on stop (k94)'.
+
+Committed as 4031ab1
