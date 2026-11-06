@@ -187,3 +187,7 @@ Revision history for MCP-Hub
     grew, only what was appended; a cold search reads each file once. Peak
     memory no longer follows the largest file (59 MB instead of 266 MB for
     8 x 73 MB).
+  - A Streamable HTTP upstream opens a new session on every start, its
+    initialize no longer carrying the id of the session before. A stop ends
+    the old session with a DELETE once no call is left on it, and a remote
+    that refuses (405) or cannot be reached is fine.

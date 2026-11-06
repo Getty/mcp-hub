@@ -90,6 +90,10 @@ sub start_p ($self) {
   $self->{start_promise} = $done;
   delete @$self{qw(failure_reason stop_requested)};    # both belong to this attempt only
 
+  # A start opens a new session: its initialize goes without the id of an
+  # earlier one -- that a failed start left, say -- and the remote assigns one.
+  delete $self->{session_id};
+
   my $prep = $self->{transport} eq 'sse' ? $self->_open_sse_p : Mojo::Promise->resolve;
   $prep->then(sub { $self->_handshake_p })->then(sub ($manifest) {
     # A stop after the last request, or during a prompts/list or
@@ -127,11 +131,13 @@ sub start_p ($self) {
 # catch), a connect still waiting for its endpoint (_close_sse) and the
 # requests in flight -- those first, before the closing stream fails them as
 # closed. Over Streamable HTTP the requests in flight here are those of a start
-# (_http_request_p); a call is left to finish.
+# (_http_request_p); a call is left to finish. The stop also ends the session
+# (_end_session).
 sub stop ($self) {
   $self->{stop_requested} = 1 if $self->{start_promise};
   $self->_fail_pending("upstream @{[$self->name]}: stopped");
   $self->_close_sse;
+  if (defined(my $sid = delete $self->{session_id})) { $self->_end_session($sid) }
   $self->state('stopped');
   return $self;
 }
@@ -201,12 +207,29 @@ sub _http_request_p ($self, $method, $params) {
   my $of_start = $self->{start_promise} ? 1 : 0;
   $self->{pending}{$id} = {promise => $done, tx => $tx} if $of_start;
 
+  # Such a call keeps the session it went out on, so that a stop ends the
+  # session only once the call is through (_end_session).
+  my $session = $of_start ? undef : $self->{session_id};
+  $self->{calls_on}{$session}++ if defined $session;
+  my $settled = sub {
+    delete $self->{pending}{$id};
+    return unless defined $session && !--$self->{calls_on}{$session};
+    delete $self->{calls_on}{$session};
+    $self->_end_session($session) if delete $self->{ending}{$session};
+  };
+
   $self->req_ua->start_p($tx)->then(sub ($tx) {
     return undef if $of_start && !$self->{pending}{$id};    # called off by a stop
     if (my $err = $tx->error) {
       die "upstream @{[$self->name]}: " . $self->_error_message($err) . "\n" unless $found;
     }
-    if (my $sid = $tx->res->headers->header('Mcp-Session-Id')) { $self->{session_id} = $sid }
+    # The session is the one the answer to the initialize names. A later answer
+    # that names one too -- the reference server names it on every answer --
+    # never moves the upstream: a call left to finish past a stop would put it
+    # back on the session the stop ended.
+    if ($method eq 'initialize' && (my $sid = $tx->res->headers->header('Mcp-Session-Id'))) {
+      $self->{session_id} = $sid;
+    }
 
     # $found is set when Mojo parsed the SSE inline (non-chunked). Otherwise the
     # reply is a plain JSON body, or -- for a chunked event-stream, which Mojo
@@ -216,10 +239,40 @@ sub _http_request_p ($self, $method, $params) {
     die "upstream @{[$self->name]}: " . $self->_error_message($res->{error}) . "\n" if $res->{error};
     return $res->{result} // {};
   })->then(
-    sub ($result) { delete $self->{pending}{$id}; $done->resolve($result); return },
-    sub ($err)    { delete $self->{pending}{$id}; $done->reject($err);     return },
+    sub ($result) { $settled->(); $done->resolve($result); return },
+    sub ($err)    { $settled->(); $done->reject($err);     return },
   );
   return $done;
+}
+
+# A session the hub is done with -- a stop forgot its id -- is ended on the
+# remote, as the spec asks of a client that no longer needs one: one DELETE to
+# the endpoint with its Mcp-Session-Id. A call still on it was left to finish
+# (stop), and the remote may tear the session down with whatever runs in it,
+# so the last call to settle sends the DELETE instead.
+#
+# It is sent and forgotten: nothing waits for it, and a remote that answers 405
+# -- it does not let clients end sessions -- or cannot be reached is only
+# logged at debug level. req_ua's connect and request timeouts bound it. The
+# request holds the user agent, not the upstream: an upstream that a reload
+# drops right after its stop goes at once, and its DELETE still goes out.
+# Only Streamable HTTP has sessions.
+sub _end_session ($self, $sid) {
+  return $self unless $self->{transport} eq 'http';
+  if ($self->{calls_on}{$sid}) { $self->{ending}{$sid} = 1; return $self }
+
+  my ($ua, $name, $log) = ($self->req_ua, $self->name, $self->log);
+  my $tx = $ua->build_tx(DELETE => $self->{url} => {
+    %{$self->{headers}},
+    'MCP-Protocol-Version' => $self->{server_protocol} // $self->protocol_version,
+    'Mcp-Session-Id'       => $sid,
+  });
+  $ua->start($tx => sub ($held, $tx) {
+    undef $ua;    # held until it is over, not longer
+    my $err = $tx->error or return;
+    $log->debug("[$name] the remote did not end the session: $err->{message}");
+  });
+  return $self;
 }
 
 sub _http_post ($self, $obj) {

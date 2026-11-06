@@ -135,14 +135,25 @@ sub mcp_answer ($error) {
 
 # A fake Streamable HTTP MCP server: every JSON-RPC request is a POST and its
 # answer the response. It records every POST it receives, with the session id
-# it carries (`session`), and gives every initialize a new one. The answer
-# callback returns the response, or a promise of it: one that never settles
+# it carries (`session`), and gives every initialize a new one; every other
+# answer names the session of its request, as the reference server's do. The
+# answer callback returns the response, or a promise of it: one that never settles
 # holds the request, as a remote that takes its time does. `answered` counts
 # the answers, `cut` the POSTs whose connection went before they were answered.
+# A DELETE ends a session: `deletes` records the session ids they carry, and
+# each is answered with `delete_status` (200), or with no answer at all, its
+# connection dropped, for `drop`.
 sub fake_http (%opt) {
   my $app = Mojolicious->new;
   $app->log->level('warn');
-  my $state = {posts => [], answered => 0, cut => 0, sessions => 0};
+  my $state = {posts => [], answered => 0, cut => 0, sessions => 0, deletes => []};
+
+  $app->routes->delete('/mcp' => sub ($c) {
+    push @{$state->{deletes}}, $c->req->headers->header('Mcp-Session-Id');
+    my $status = $state->{delete_status} // 200;
+    return Mojo::IOLoop->stream($c->tx->connection)->close if $status eq 'drop';
+    $c->rendered($status);
+  });
 
   $app->routes->post('/mcp' => sub ($c) {
     my $req = eval { $c->req->json } // {};
@@ -154,8 +165,10 @@ sub fake_http (%opt) {
     Mojo::Promise->resolve($opt{answer}->($req))->then(sub ($res) {
       return unless $c->tx;
       $answered = ++$state->{answered};
-      $c->res->headers->header('Mcp-Session-Id' => 's' . ++$state->{sessions})
-        if ($req->{method} // '') eq 'initialize';
+      my $session = ($req->{method} // '') eq 'initialize'
+        ? 's' . ++$state->{sessions}
+        : $c->req->headers->header('Mcp-Session-Id');
+      $c->res->headers->header('Mcp-Session-Id' => $session) if defined $session;
       $c->render(json => $res);
     });
   });
@@ -644,6 +657,7 @@ subtest 'streamable http upstream: a stop while it starts calls the start off, i
     my (@sent, %tx);
     weaken(my $weak = $up);
     $up->req_ua->on(start => sub ($ua, $tx) {
+      return unless $tx->req->method eq 'POST';    # the DELETE that ends a session: below
       push @sent, my $method = eval { $tx->req->json->{method} } // '';
       $tx{$method} = $tx;
       $weak->stop if $stop_at && $method eq $stop_at;
@@ -659,7 +673,7 @@ subtest 'streamable http upstream: a stop while it starts calls the start off, i
     # Three in a row: within the five seconds in which three connect failures
     # mark the upstream failed.
     for my $n (1 .. 3) {
-      @{$fake->{posts}} = @sent = ();
+      @{$fake->{posts}} = @{$fake->{deletes}} = @sent = ();
       my ($cut, $answered) = @$fake{qw(cut answered)};
       my $start = $up->start_p;
       ok $until->(sub { grep { ($_->{method} // '') eq $hold } @{$fake->{posts}} }),
@@ -671,16 +685,23 @@ subtest 'streamable http upstream: a stop while it starts calls the start off, i
       my $r = _await_bounded($start, 2);
       is $r->{err}, 'upstream fake: stopped', "$when, start $n: rejected at once, as stopped" or diag explain $r;
       is $up->state, 'stopped', "$when, start $n: stopped";
-      is_deeply \@sent, $sent{$when}, "$when, start $n: nothing went out after the stop" or diag explain \@sent;
+      is_deeply \@sent, $sent{$when}, "$when, start $n: no request of the start went out after the stop"
+        or diag explain \@sent;
       # At once, too: well before request_timeout would cut it.
       ok $until->(sub { $fake->{cut} > $cut }, 1), "$when, start $n: the $hold is cut off, not left to run"
         if $hold;
+      # A stop after the initialize was answered ends the session it opened.
+      if ($when eq 'between two requests' || $when eq 'during a prompts/list') {
+        ok $until->(sub { @{$fake->{deletes}} }), "$when, start $n: the stop ends the session";
+        is_deeply $fake->{deletes}, ["s$fake->{sessions}"], "$when, start $n: with one DELETE carrying its id";
+      }
       next unless $when eq 'as the initialize goes out';
       ok $until->(sub { $fake->{answered} > $answered }), "$when, start $n: the initialize is answered all the same";
       # The hub has read the answer, and what it does with it is done.
       ok $until->(sub { $tx{initialize}->is_finished }), "$when, start $n: the answer is read";
       Mojo::Promise->timer(0.01)->wait;
       is $up->state, 'stopped', "$when, start $n: and it changes nothing";
+      is_deeply $fake->{deletes}, [], "$when, start $n: nor does it leave a session id to end";
     }
     is $up->error, undef, "$when: no failure reason";
     is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$when: nothing logged as a failure"
@@ -711,7 +732,10 @@ subtest 'streamable http upstream: a stop leaves a call in flight to finish' => 
   # A stop calls off a start, not a call. Over Streamable HTTP a call does not
   # need anything the stop takes down -- its answer comes on its own POST --
   # and the remote may be carrying it out already: the call is left to finish,
-  # and its answer is the caller's.
+  # and its answer is the caller's. Nor is the session ended under it -- a
+  # remote tears down what runs in a session it ends: it goes once the call is
+  # through. And the session its answer names, the one the stop ended, is not
+  # the upstream's any more: a start in the meantime opened a new one.
   my $fake = fake_http(answer => sub ($req) {
     my ($id, $method) = ($req->{id}, $req->{method} // '');
     return Mojo::Promise->timer(0.3)->then(sub {
@@ -738,10 +762,118 @@ subtest 'streamable http upstream: a stop leaves a call in flight to finish' => 
     until (grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}}) || time > $deadline;
   ok +(grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}}), 'the call is on its way';
   $up->stop;
+  is $up->state, 'stopped', 'stopped';
+  Mojo::Promise->timer(0.1)->wait;
+  is_deeply $fake->{deletes}, [], 'its session is not ended under it';
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started again while it runs';
 
   is _error_text(_await_bounded($call, 5)), 'pong', 'the stop leaves it to finish: it is answered';
   is $fake->{cut}, 0, 'its POST was not cut off';
-  is $up->state, 'stopped', 'stopped';
+  $deadline = time + 5;
+  Mojo::Promise->timer(0.01)->wait until @{$fake->{deletes}} || time > $deadline;
+  is_deeply $fake->{deletes}, ['s1'], 'then its session is ended, with one DELETE carrying its id';
+
+  splice @{$fake->{posts}};
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'the next call is answered';
+  is_deeply [map { $_->{session} } @{$fake->{posts}}], ['s2'],
+    'on the new session, not on the ended one the old answer named';
+  $up->stop;
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: a start opens a new session, a stop ends the old one' => sub {
+  # A start sent its initialize with the Mcp-Session-Id of the session before
+  # it -- of a stopped upstream, or of a start that failed after its
+  # initialize -- though a new session goes without one, and the remote
+  # assigns it. Nor did a stop end the session it was done with: the remote
+  # kept it until its own timeout. A stop ends it with a DELETE, sent and
+  # forgotten, and the next start opens a new one.
+  my $fail_list;
+  my $fake = fake_http(answer => sub ($req) {
+    my ($id, $method) = ($req->{id}, $req->{method} // '');
+    return {jsonrpc => '2.0', id => $id, result => {
+      protocolVersion => '2025-06-18',
+      capabilities    => {},
+      serverInfo      => {name => 'fake-http', version => '0.0.1'},
+    }} if $method eq 'initialize';
+    return {jsonrpc => '2.0', id => $id, error => {code => -32603, message => 'not now'}} if $fail_list;
+    return {jsonrpc => '2.0', id => $id, result => {tools => []}};
+  });
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  my @logged;
+  my $log = Mojo::Log->new;
+  $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+  $up->log($log);
+
+  my $until = sub ($cond) {
+    my $deadline = time + 5;
+    Mojo::Promise->timer(0.01)->wait until $cond->() || time > $deadline;
+    return $cond->();
+  };
+  # (Resolved to a string: the upstream it resolves with would be held here.)
+  my $start    = sub { _await_bounded($up->start_p->then(sub { 'started' }), 5) };
+  # (Sorted: the notifications/initialized goes on a connection of its own, and
+  # may arrive after the tools/list.)
+  my $sessions = sub { [sort map { "$_->{method}: " . ($_->{session} // 'none') } splice @{$fake->{posts}}] };
+
+  is $start->(), 'started', 'started';
+  is_deeply $sessions->(), ['initialize: none', 'notifications/initialized: s1', 'tools/list: s1'],
+    'the remote gives the first start session s1';
+
+  $up->stop;
+  ok $until->(sub { @{$fake->{deletes}} }), 'the stop ends the session';
+  is_deeply $fake->{deletes}, ['s1'], 'with one DELETE carrying its id';
+  $up->stop;
+  Mojo::Promise->timer(0.05)->wait;
+  is_deeply $fake->{deletes}, ['s1'], 'a second stop has no session left to end';
+
+  is $start->(), 'started', 'the next start';
+  is_deeply $sessions->(), ['initialize: none', 'notifications/initialized: s2', 'tools/list: s2'],
+    'opens a new session: its initialize carries no id';
+
+  # A start that fails after its initialize keeps the session id the remote
+  # gave it; the next start does not send it on.
+  $up->stop;
+  ok $until->(sub { @{$fake->{deletes}} == 2 }), 'the stop ends s2';
+  $fail_list = 1;
+  like _await_bounded($up->start_p, 5)->{err}, qr/not now/, 'a start fails after its initialize';
+  is_deeply [map { $_->{session} // 'none' } @{$fake->{posts}}], ['none', 's3', 's3'], 'with session s3';
+  splice @{$fake->{posts}};
+  $fail_list = 0;
+  is $start->(), 'started', 'the next start';
+  is_deeply $sessions->(), ['initialize: none', 'notifications/initialized: s4', 'tools/list: s4'],
+    'goes without the id of the failed one';
+
+  # A remote that does not let clients end sessions answers 405; one that
+  # drops the DELETE answers nothing. Neither is a failure of the stop.
+  for my $status (405, 'drop') {
+    is $start->(), 'started', "$status: started" unless $up->state eq 'ready';
+    @logged = ();
+    $fake->{delete_status} = $status;
+    my $before = @{$fake->{deletes}};
+    $up->stop;
+    is $up->state, 'stopped', "$status: the stop is done at once";
+    ok $until->(sub { grep {/did not end the session/} @logged }), "$status: the DELETE is over";
+    is scalar @{$fake->{deletes}}, $before + 1, "$status: it was sent once";
+    is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$status: logged at debug level only"
+      or diag explain \@logged;
+  }
+  delete $fake->{delete_status};
+
+  # An upstream a reload drops right after its stop goes at once, and its
+  # session is ended all the same.
+  is $start->(), 'started', 'started once more';
+  my $sid = "s$fake->{sessions}";
+  $up->stop;
+  weaken(my $gone = $up);
+  undef $up;
+  is $gone, undef, 'the DELETE in flight does not hold the upstream';
+  ok $until->(sub { grep { $_ eq $sid } @{$fake->{deletes}} }), 'and it still ends the session';
+
   $fake->{daemon}->stop;
 };
 
