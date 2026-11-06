@@ -101,7 +101,9 @@ sub start_p ($self) {
     $done->resolve($self);
   })->catch(sub ($err) {
     # A start that a stop called off did not fail: it is neither logged nor
-    # counted as a connect failure.
+    # counted as a connect failure, and it is rejected as stopped, whichever
+    # step of it the stop cut short -- a request in flight, or the next one,
+    # which finds no connection to go out on (_sse_request_p).
     my $stopped = delete $self->{stop_requested};
     $stopped
       ? $self->log->debug("[@{[$self->name]}] start called off by a stop")
@@ -110,7 +112,7 @@ sub start_p ($self) {
     $self->_record_failure unless $stopped;
     $self->state($self->{failed} ? 'failed' : 'stopped');
     delete $self->{start_promise};
-    $done->reject("$err");
+    $done->reject($stopped ? "upstream @{[$self->name]}: stopped" : "$err");
     return;    # never hand the rejected promise back into the chain
   });
 
@@ -355,6 +357,15 @@ sub _sse_closed ($self) {
 }
 
 sub _sse_request_p ($self, $method, $params) {
+  # Its answer comes back on the stream, so a request without the stream, or
+  # without the endpoint to post it to, would wait for an answer that cannot
+  # come -- request_timeout long, and with request_timeout 0 for good. A stop
+  # takes both away, a remote that drops the stream that one. A request after
+  # that -- the next one of a handshake a stop called off, say -- is rejected
+  # at once instead of holding its start, or its call, until then.
+  return Mojo::Promise->reject("upstream @{[$self->name]}: not connected")
+    unless $self->{endpoint} && $self->{sse} && $self->{sse}{stream};
+
   my $id      = ++$self->{id};
   my $promise = Mojo::Promise->new;
 

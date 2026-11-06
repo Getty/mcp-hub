@@ -167,3 +167,7 @@ Revision history for MCP-Hub
     or replaced stdio, http, sse, docker, compose or fork upstream stayed in
     memory; a call to a primitive whose upstream is gone now answers with
     an error naming it.
+  - An HTTP+SSE upstream stopped between two requests of its handshake no
+    longer leaves the next request waiting for request_timeout (forever with
+    request_timeout 0) and the start stuck with it; a request with no
+    stream to answer on fails at once.

@@ -412,8 +412,17 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
   # failed connect -- logged as one, "timed out waiting for the SSE endpoint"
   # among them, and counted, so three stops in a row marked the upstream
   # `failed`. The stop settles the start itself, at once, as stopped.
-  for my $phase ('before it is connected', 'before the endpoint', 'during the handshake') {
-    my $hold      = 1;    # the remote does not answer the initialize
+  #
+  # A stop between two requests of the handshake -- the initialize answered,
+  # the tools/list not sent yet -- took the endpoint away, and the tools/list
+  # went nowhere: it waited request_timeout for an answer that could not come,
+  # with request_timeout 0 for good, and the start with it, which every later
+  # start then waited on too. A request without an endpoint is rejected at once.
+  my @when = ('before it is connected', 'before the endpoint', 'during the handshake', 'between two requests');
+  for my $case (map { my $timeout = $_; map { [$_, $timeout] } @when } 5, 0) {
+    my ($when, $timeout) = @$case;
+    my $phase     = $timeout ? $when : "$when, request_timeout 0";
+    my $hold      = $when ne 'between two requests';    # the remote does not answer the initialize
     my $handshake = mcp_answer('unused');
     my $fake      = fake_sse(answer => sub ($req) {
       my $method = $req->{method} // '';
@@ -423,17 +432,27 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
       return {jsonrpc => '2.0', id => $req->{id}, result => {tools => []}} if $method eq 'tools/list';
       return $handshake->($req);
     });
-    $fake->{endpoint_delay} = 30 if $phase eq 'before the endpoint';
+    $fake->{endpoint_delay} = 30 if $when eq 'before the endpoint';
 
     my $up = MCP::Hub::Upstream::Http->new(
       name      => 'fake',
-      config    => {type => 'sse', url => $fake->{url}, request_timeout => 5},
+      config    => {type => 'sse', url => $fake->{url}, request_timeout => $timeout},
       cache_dir => tempdir->to_string,
     );
     my @logged;
     my $log = Mojo::Log->new;
     $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
     $up->log($log);
+
+    # Every POST the hub sends, as it goes out. Between two requests the stop
+    # lands as the notifications/initialized does: the initialize is answered,
+    # the tools/list not sent yet.
+    my ($stop_at, @sent) = ($when eq 'between two requests' ? 'notifications/initialized' : '');
+    weaken(my $weak = $up);
+    $up->req_ua->on(start => sub ($ua, $tx) {
+      push @sent, my $method = eval { $tx->req->json->{method} } // '';
+      $weak->stop if $stop_at && $method eq $stop_at;
+    });
 
     my $until = sub ($cond) {
       my $deadline = time + 5;
@@ -445,19 +464,23 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
     # mark the upstream failed.
     for my $n (1 .. 3) {
       $fake->{tx} = undef;
-      @{$fake->{posts}} = ();
+      @{$fake->{posts}} = @sent = ();
       my $start = $up->start_p;
       ok $until->(sub { $fake->{tx} }), "$phase, start $n: the stream is open"
-        if $phase eq 'before the endpoint';
+        if $when eq 'before the endpoint';
       ok $until->(sub { grep { ($_->{method} // '') eq 'initialize' } @{$fake->{posts}} }),
         "$phase, start $n: the initialize is on its way"
-        if $phase eq 'during the handshake';
-      $up->stop;
+        if $when eq 'during the handshake';
+      $up->stop unless $stop_at;
 
-      # Well inside request_timeout, which the endpoint timer waits.
+      # Well inside the request_timeout of 5 s, and the endpoint wait of 30 s
+      # without one.
       my $r = _await_bounded($start, 2);
       is $r->{err}, 'upstream fake: stopped', "$phase, start $n: rejected at once, as stopped"
         or diag explain $r;
+      is_deeply \@sent, ['initialize', 'notifications/initialized'],
+        "$phase, start $n: the stop came after the initialize was answered, nothing went out after it"
+        if $stop_at;
     }
     is $up->state, 'stopped', "$phase: stopped, not failed";
     is $up->error, undef, "$phase: no failure reason";
@@ -466,7 +489,7 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
     ok !(grep {/timed out waiting for the SSE endpoint/} @logged), "$phase: no endpoint timeout";
 
     # Nor did they lock it out: the next start connects.
-    ($hold, $fake->{endpoint_delay}) = (0, 0);
+    ($hold, $stop_at, $fake->{endpoint_delay}) = (0, '', 0);
     # (Resolved to a string: the upstream it resolves with would be held here.)
     my $again = _await_bounded($up->start_p->then(sub { 'started' }), 5);
     is $again, 'started', "$phase: the next start connects" or diag explain $again;
@@ -481,6 +504,46 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
 
     $fake->{daemon}->stop;
   }
+};
+
+subtest 'sse upstream: a request without the stream to answer on is rejected at once' => sub {
+  # A remote that drops the stream between two requests of a handshake took the
+  # way back for every answer, but left the endpoint: the next request was
+  # posted to it and waited for an answer that could not come -- with
+  # request_timeout 0 for good, and the start with it.
+  my $handshake = mcp_answer('unused');
+  my $fake      = fake_sse(answer => sub ($req) {
+    return {jsonrpc => '2.0', id => $req->{id}, result => {tools => []}} if ($req->{method} // '') eq 'tools/list';
+    return $handshake->($req);
+  });
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 0},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+
+  # The stream goes as the notifications/initialized goes out: the initialize
+  # is answered, the tools/list not sent yet. (Closed on the hub's side, so it
+  # is gone before the next request, as the hub sees a remote drop it.)
+  my ($drop, @sent) = (1);
+  weaken(my $weak = $up);
+  $up->req_ua->on(start => sub ($ua, $tx) {
+    push @sent, my $method = eval { $tx->req->json->{method} } // '';
+    $weak->{sse}{stream}->close if $drop && $method eq 'notifications/initialized';
+  });
+
+  my $r = _await_bounded($up->start_p, 2);
+  is $r->{err}, 'upstream fake: not connected', 'the start fails at once' or diag explain $r;
+  is_deeply \@sent, ['initialize', 'notifications/initialized'],
+    'the stream went after the initialize was answered, nothing went out after it';
+  is $up->state, 'stopped', 'stopped';
+
+  $drop = 0;
+  my $again = _await_bounded($up->start_p->then(sub { 'started' }), 5);
+  is $again, 'started', 'the next start connects' or diag explain $again;
+  $up->stop;
+  $fake->{daemon}->stop;
 };
 
 subtest 'an https url without TLS is a failed upstream that names the fix' => sub {
