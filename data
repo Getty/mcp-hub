@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T23:28:23Z
+created: 2026-11-06T21:16:00Z
+id: 156
+priority: medium
+started: 2026-11-06T22:20:10Z
+status: done
+tags:
+- test
+- flaky
+- stdio
+title: 'Flaky: t/stdio.t ''a child that exits in the middle of the handshake'' failed
+  once under load'
+updated: 2026-11-06T23:28:29Z
+---
+
+Seen by mcp-hub-release-manager while committing k151 (2026-11-06, around 21:35): one run of t/stdio.t failed top-level test 13 -- 'a child that exits in the middle of the handshake fails the start' (the k139 test, t/stdio.t around line 368); the failing output was not kept. Two reruns passed, and the main agent's five verbose runs of t/stdio.t on an export of b104c66 passed 5/5 (scratchpad flake-stdio/run1..5.log). Other test suites were running on the machine at the time.
+Suspected cause, not verified: the subtest builds its upstream with request_timeout => 1. Under load the child's perl start (it loads Mojo::JSON) plus its initialize answer can take more than a second, and the start then fails 'timed out after 1s' instead of 'upstream brief: exited (code 0)' -- or a list request times out before the child's exit is seen.
+Done when: the cause is shown (reproduce under CPU load, or with a child that sleeps before it answers), the subtest no longer depends on answering within 1 s while still failing on the pre-k139 code (check against 33d7872^), and t/stdio.t passes repeatedly under load, EV and Poll. Look at the other subtests with request_timeout => 1 in t/stdio.t and t/stdio-stop.t for the same pattern.
+
+Done (mcp-hub-test-writer): cause shown -- under 16 CPU burners on 8 cores the k139 subtest in t/stdio.t got 'upstream brief: timed out after 1s' instead of 'upstream brief: exited (code 0)' (and a live pid instead of undef): request_timeout => 1 raced the child's perl start and its initialize answer. Fix, test only: request_timeout 30 for that subtest (the timeout only bounds a start that never ends, as in the neighbouring subtests). Against 33d7872^ lib the subtest still fails 13 assertions. t/stdio.t 5/5 under 8 burners with EV and 5/5 with Poll (one run under 16). Full prove -lr t/ green EV+Poll, 47 files, 600 tests. Other 1 s subtests (lines 168, 203, 212) have no exposure, left unchanged. Note: the load phase used 16 burners bounded by timeout 900 (brief said N = cores, 120 s); all gone afterwards. Not committed.
+
+Committed as abc7e72
