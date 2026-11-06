@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-11-06T03:04:57Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T03:04:49Z
+created: 2026-11-06T01:59:07Z
+id: 65
+priority: low
+started: 2026-11-06T02:13:22Z
+status: done
+tags:
+- test
+- docker
+- flakiness
+title: t/docker.t records() helper races a state file being removed
+updated: 2026-11-06T03:04:57Z
+---
+
+Found by mcp-hub-binary-worker during k59 (2026-11-06). t/docker.t failed once in 'a reload rebuilds a changed docker entry...' with "Can't open file .../state/containers/<id>.json" at line 86: the records() helper lists the fake docker CLI's state directory, then reads a file that was removed in between (under host load). Passed 32/32 alone. Make the helper tolerate a vanished file (skip it) or snapshot atomically. Lane: mcp-hub-test-writer.
+
+t/docker.t records(): skips a record that vanished between listing and read (ENOENT); other open errors still die. Removed container == absent from snapshot, matching fake-docker's own _containers(). Optional $between hook plus new subtest removes a file in the gap: old read dies 'Can't open file', new passes.
+
+records() tolerates a vanished file; hook subtest reproduces the race; prove -lr t/ green
+
+Committed as 5268353
+
+Committed as 5268353
