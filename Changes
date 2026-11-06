@@ -251,3 +251,8 @@ Revision history for MCP-Hub
   - A call that runs longer than idle_timeout no longer has its server
     stopped under it: the idle countdown starts when the last request in
     flight ends.
+  - A manifest refresh that changes an upstream's tools or prompts now
+    sends /all's listeners tools/list_changed or prompts/list_changed. The
+    upstream's own endpoint gets a list_changed for each list that changed,
+    resources included. A start or refresh that changes nothing no longer
+    sends tools/list_changed.

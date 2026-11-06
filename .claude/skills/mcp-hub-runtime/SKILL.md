@@ -108,6 +108,12 @@ Jedes Tool ruft `$upstream->call_tool`, jeder Prompt `get_prompt`, jede Resource
 `read_resource` — Ergebnisse (`content`, `isError`, `structuredContent`) kommen
 unverändert zurück.
 
+Ein neues Manifest (Start oder Refresh, `Upstream::_show_manifest`) vergleicht
+das eigene Rendering der drei Listen vorher/nachher: der eigene Endpunkt bekommt
+`<kind>/list_changed` je geänderter Liste, `/all` über
+`Hub::rebuild_aggregate(@changed)` nur für `tools`/`prompts`. Unverändert →
+keine Notification — sonst schickte jeder Neustart nach dem Idle-Stop eine.
+
 Extras: `title`, `icons` und `_meta` stehen am Manifest-Eintrag. Tool-Extras
 hängen an `Facade::Tool->extra`, Prompt-Extras (nach Name) und Resource-Extras
 (nach URI) an `Facade::Server->extra`. `Facade::Server` mischt sie beim

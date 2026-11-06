@@ -4,6 +4,7 @@ use Mojo::Base 'Mojo::EventEmitter', -signatures;
 
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
+use MCP::Server::Context;
 use Mojo::IOLoop;
 use Mojo::JSON   qw(encode_json);
 use Mojo::Loader qw(load_class);
@@ -209,10 +210,36 @@ sub _manifest_from ($self, $lists) {
 sub _apply_manifest ($self, $manifest) {
   $self->{manifest}->store($manifest);
   $self->{manifest_fetched_at} = $manifest->{fetched_at};
+  return $self->_show_manifest($manifest);
+}
+
+# Put the manifest in the facade, and tell whoever listens -- on the upstream's
+# own endpoint, and on /all (MCP::Hub::rebuild_aggregate) -- which of its lists
+# changed. A start or a refresh that finds them as they were tells nobody
+# anything: a child stopped when idle is started again by the next call, with
+# the same lists, and its listeners would be sent to list them again each time.
+sub _show_manifest ($self, $manifest) {
+  my $before = $self->_listing;
   MCP::Hub::Facade->apply($self->server, $self, $manifest);
-  $self->server->notify_list_changed('tools');
-  $self->hub->rebuild_aggregate if $self->hub && $self->hub->can('rebuild_aggregate');
+  my $after   = $self->_listing;
+  my @changed = grep { $before->{$_} ne $after->{$_} } qw(tools prompts resources);
+  $self->server->notify_list_changed($_) for @changed;
+  $self->hub->rebuild_aggregate(@changed) if $self->hub && $self->hub->can('rebuild_aggregate');
   return $self;
+}
+
+# Each list of the facade as its endpoint renders it, title, icons and _meta
+# included, for a caller no profile narrows: one string per kind.
+sub _listing ($self) {
+  my $server  = $self->server;
+  my $context = MCP::Server::Context->new;
+  my %listing;
+  for my $kind (qw(tools prompts resources)) {
+    my $render = "_handle_${kind}_list";
+    my ($result) = $server->$render($context);
+    $listing{$kind} = encode_json($result->{$kind} // []);
+  }
+  return \%listing;
 }
 
 sub _handshake_p ($self) {
@@ -497,6 +524,14 @@ Forward a C<resources/read>, starting the upstream if needed.
 Re-fetch the manifest and rebuild L</server>. A promise. For a C<failed>
 upstream this is the explicit "try again": it clears the failure first. A no-op
 for Perl upstreams.
+
+Agents listening on the upstream's endpoint are sent a
+C<notifications/tools/list_changed>, C<prompts/list_changed> or
+C<resources/list_changed> for each list the new manifest changed, and those on
+C</all> one for its tools and its prompts (L<MCP::Hub/rebuild_aggregate>). A
+manifest that changed nothing -- the lists, as the endpoint renders them, are
+what they were -- notifies nobody, and so does a start that finds them as they
+were.
 
 =method rss_kb
 

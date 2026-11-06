@@ -118,10 +118,7 @@ sub _apply_manifest ($self, $manifest) {
   $manifest->{instructions} //= $self->{class_instructions};
   $self->{instructions}        = $manifest->{instructions};
   $self->{manifest_fetched_at} = $manifest->{fetched_at};
-  MCP::Hub::Facade->apply($self->server, $self, $manifest);
-  $self->server->notify_list_changed('tools');
-  $self->hub->rebuild_aggregate if $self->hub && $self->hub->can('rebuild_aggregate');
-  return $self;
+  return $self->_show_manifest($manifest);
 }
 
 # --- the worker, forked on first use ----------------------------------------

@@ -103,8 +103,14 @@ sub _refresh_result ($up) {
   };
 }
 
-sub rebuild_aggregate ($self) {
-  $self->aggregate->rebuild($self->upstreams) if $self->aggregate;
+# /all, built again from what the upstreams list now. @changed names the lists
+# of an upstream that a new manifest changed (MCP::Hub::Upstream::_show_manifest):
+# /all's listeners are told about those it lists itself -- tools and prompts,
+# not resources, which it does not aggregate.
+sub rebuild_aggregate ($self, @changed) {
+  my $aggregate = $self->aggregate or return $self;
+  $aggregate->rebuild($self->upstreams);
+  $aggregate->notify_list_changed($_) for grep { $_ eq 'tools' || $_ eq 'prompts' } @changed;
   return $self;
 }
 
@@ -926,11 +932,20 @@ and state of each refreshed upstream, plus C<error> with the reason when it is
 C<failed> -- so a failed upstream reports its failure rather than C<0> tools.
 The refresh of an upstream that has no manifest yet and cannot fetch one leaves
 it C<failed> with the reason (L<MCP::Hub::Upstream/fail>); one that has a
-manifest keeps it.
+manifest keeps it. A refresh that changes what an upstream lists tells the
+agents listening on its endpoint and on C</all> (L<MCP::Hub::Upstream/refresh_p>);
+one that changes nothing tells them nothing.
 
 =method rebuild_aggregate
 
-Rebuild the C</all> server from the current upstreams.
+  $hub->rebuild_aggregate;
+  $hub->rebuild_aggregate(qw(tools prompts));
+
+Rebuild the C</all> server from the current upstreams. The lists named -- of
+C<tools>, C<prompts> and C<resources>, those a new manifest of an upstream
+changed -- are the ones C</all> sends its listeners a C<list_changed>
+notification for, as far as it lists them itself: tools and prompts, not
+resources, which it does not aggregate.
 
 =method reload
 

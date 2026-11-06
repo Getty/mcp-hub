@@ -61,16 +61,39 @@ sub new ($class, @args) {
     code         => sub ($tool, $args) { exit($args->{code} // 0) },
   );
 
-  # Adds a new tool and announces it, to test the list_changed refresh path. It
-  # reaches the server weakly: a closure over $self would be a cycle through the
-  # server, and a reload that drops a `class` entry would never free it.
+  # Adds a new tool -- with `what` "prompts" or "resources" a new prompt or
+  # resource -- and announces it with notifications/<what>/list_changed, to
+  # test the list_changed refresh path. With `quiet` it announces nothing: only
+  # a refresh the hub is asked for finds it. It reaches the server weakly: a
+  # closure over $self would be a cycle through the server, and a reload that
+  # drops a `class` entry would never free it.
   weaken(my $server = $self);
   $self->tool(
     name         => 'notify',
-    description  => 'Add a tool and send notifications/tools/list_changed',
-    input_schema => {type => 'object'},
-    code         => sub ($tool, $args) {
-      unless (grep { $_->name eq 'echo2' } @{$server->tools}) {
+    description  => 'Add a tool (prompt, resource) and send notifications/tools/list_changed (prompts, resources)',
+    input_schema => {
+      type       => 'object',
+      properties => {what => {type => 'string', enum => [qw(tools prompts resources)]}, quiet => {type => 'boolean'}},
+    },
+    code => sub ($tool, $args) {
+      my $what = $args->{what} // 'tools';
+      if ($what eq 'prompts') {
+        $server->prompt(
+          name        => 'greet2',
+          description => 'A prompt that appeared after a refresh',
+          code        => sub ($p, $a) { return $p->text_prompt('Hello again!') },
+        ) unless grep { $_->name eq 'greet2' } @{$server->prompts};
+      }
+      elsif ($what eq 'resources') {
+        $server->resource(
+          uri         => 'echo://more',
+          name        => 'more',
+          description => 'A resource that appeared after a refresh',
+          mime_type   => 'text/plain',
+          code        => sub ($r) { return $r->text_resource('more') },
+        ) unless grep { $_->uri eq 'echo://more' } @{$server->resources};
+      }
+      elsif (!grep { $_->name eq 'echo2' } @{$server->tools}) {
         $server->tool(
           name         => 'echo2',
           description  => 'A tool that appeared after a refresh',
@@ -78,7 +101,8 @@ sub new ($class, @args) {
           code         => sub ($t, $a) { return $t->text_result('echo2') },
         );
       }
-      print STDOUT encode_json({jsonrpc => '2.0', method => 'notifications/tools/list_changed'}) . "\n";
+      print STDOUT encode_json({jsonrpc => '2.0', method => "notifications/$what/list_changed"}) . "\n"
+        unless $args->{quiet};
       return $tool->text_result('notified');
     },
   );
