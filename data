@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-11-06T17:32:33Z
+id: 149
+priority: low
+status: backlog
+tags:
+- http
+- sse
+- upstream
+- decision
+title: 'Decide: should an HTTP error status read with its code (''500 Internal Server
+  Error'')?'
+updated: 2026-11-06T17:32:33Z
+---
+
+Found by mcp-hub-worker during k144 (2026-11-06). Needs a decision before code.
+Both HTTP transports report an HTTP error status by its reason phrase only, through _error_message($tx->error): "upstream NAME: Internal Server Error", "upstream NAME: Bad Request" -- no status code. Since k137 (Streamable HTTP) and k144 (HTTP+SSE) this is what an agent reads in the error result of its call, and what status/503 show for a failed start.
+Question: should the status code be part of it ("upstream NAME: 500 Internal Server Error")? If yes, change both transports together (one helper for $tx->error), keep connection errors as they are ("Connection refused", "Request timeout"), and adjust the tests in t/http.t that match the text.
