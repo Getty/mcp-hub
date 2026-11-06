@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-11-06T07:39:48Z
+created: 2026-11-06T06:49:05Z
+id: 102
+priority: low
+started: 2026-11-06T07:03:01Z
+status: done
+tags:
+- http
+- wire
+title: 'Streamable HTTP wire details: trailing newline in error results, protocol
+  header on initialize'
+updated: 2026-11-06T11:47:03Z
+---
+
+Found during k94.
+1. Streamable HTTP error results carry a trailing newline (e.g. "upstream p: Not Found\n") because _http_request_p dies with "...\n" and the message is passed on as is; SSE errors do not. The agent sees the newline in the tool error text.
+2. The initialize POST carries MCP-Protocol-Version with the version of the previous session or the cached manifest. The header belongs to requests after initialization (the version is negotiated by initialize); check the spec and drop it from initialize if so.
+
+Done in lib/MCP/Hub/Upstream/Http.pm + t/http.t only, on top of k100. (1) Trailing newline: _http_send_p no longer dies with 'upstream NAME: ...\n' inside its then-handler; it returns Mojo::Promise->reject('upstream NAME: ...') (one $fail closure), so a JSON-RPC error, an HTTP error status, 'no response for METHOD', the k100 'the remote ended the session (Not Found)' and a failed start all read without a newline, as over HTTP+SSE. Pinned by a subtest comparing exact texts on both transports (http: 4 red on the k100 stage, sse already right). The constructor's TLS die and start_p's internal die "stopped\n" are untouched (the first is pinned to end in \n by its test, the second never reaches the agent). (2) MCP-Protocol-Version on initialize: dropped. Spec 2025-06-18 transports, Protocol Version Header: the client MUST include it 'on all subsequent requests', and the version SHOULD be 'the one negotiated during initialization'; a server MUST answer 400 to an unsupported one. Before the initialize nothing is negotiated, and the header carried the previous session's version, the cached manifest's or the default, which need not match the body's protocolVersion. The TS reference client sends it only once setProtocolVersion ran after initialize, too. _http_headers takes the method and omits the header for initialize; notifications/initialized, later requests and the DELETE carry the negotiated version. Pinned by a subtest: no manifest, restart with a newly negotiated version, upstream built over a cached manifest (3 red on the k100 stage). POD for the Streamable HTTP item says so. Verified as for k100 (t/http.t 5x EV + 5x Poll, full prove -lr t/ green, 3 expected skips). Patch: scratchpad w-k100/k102.patch (applies after k100.patch); tree.sha1 matches the working tree.
+
+Ready for review: newline-free Streamable HTTP error reasons, no MCP-Protocol-Version on initialize (spec: header is for subsequent requests). Patch w-k100/k102.patch (after k100.patch). Proposed subject: Report Streamable HTTP errors without a newline and send no protocol version on initialize (k102)
+
+Committed as 1363393
+
+Commit reworded (trailer Opus 5.5), now 2ebd256
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): 1363393 is now 2ebd256 on local main.
