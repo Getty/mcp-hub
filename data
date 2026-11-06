@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-11-06T02:07:25Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T02:07:25Z
+created: 2026-11-05T23:45:19Z
+id: 53
+priority: low
+started: 2026-11-06T01:25:41Z
+status: done
+tags:
+- docs
+- binary
+- fork
+title: 'forked-class-workers design: under PAR 1.021 a lazy require reads PAR_TEMP/inc,
+  not the archive fds'
+updated: 2026-11-06T02:07:25Z
+---
+
+Found by mcp-hub-binary-worker during k44. docs/superpowers/specs/2026-11-03-forked-class-workers-design.md, "The packed binary", says a worker's lazy require reads the PAR archive through its reopened fds. With PAR 1.021 the whole archive is unpacked into PAR_TEMP/inc on first start and require reads from there; a member read reopens the binary by name. Also: the hub's first fork() of any kind moves fd 5 once (PerlIO flush of PAR's bootstrap handle), so "offset unmoved" holds only from the fork onward. Correct the section (the k44 smoke now checks the real behaviour).
+
+2026-11-06 01:50 Measured on a dev-box build of b4c3b0b (PAR 1.021, PAR::Packer 1.064, Archive::Zip 1.68), eval probes in the binary, cold and warm PAR cache: @INC[0] is $PAR_TEMP/inc/lib; PAR::read_file of a member moves neither archive fd (3:14285865 5:14285807 before and after); every one of the 1087 zip members has no fh, and a hooked Archive::Zip::FileMember::_openFile shows the read reopening the binary by name. fd 5 is par.pl's _FH (Archive::Zip read the directory through an IO::File fdopen'd '<&=' on the same fd); the first fork() sets it back 14285807 -> 6027650 (PerlIO flush of _FH's read-ahead), the second fork leaves it. Corrected 'The packed binary' → PAR specifics → Archive fds in place, marked 'corrected after k44, 2026-11-06'; one parenthetical pointer on the matching Follow-up-cards bullet. Nothing else of the draft touched.
+
+2026-11-06 01:58 Done, commit-ready, not committed. Changed: docs/superpowers/specs/2026-11-03-forked-class-workers-design.md only — 'The packed binary' → PAR specifics → Archive fds rewritten in place, marked 'corrected after k44, 2026-11-06': which fds (loader's fd 3, par.pl's _FH fd 5), require reads PAR_TEMP/inc, member reads reopen by name, the draft's no-nulling reason does not hold, reopen rule now verified packed, the first fork moves fd 5 once. Plus '(premise corrected in **The packed binary**)' on the matching Follow-up-cards bullet. Every claim measured in the binary (probes noted above); nothing else of the draft touched.
+
+Committed as 2998078
