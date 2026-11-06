@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T10:06:33Z
+id: 124
+priority: low
+status: backlog
+tags:
+- stdio
+- lifecycle
+title: During a stop's EOF grace the leaving child still takes refreshes and shows
+  as ready
+updated: 2026-11-06T10:06:33Z
+---
+
+Found during k39 (drift). Since k39 a stop gives the child up to 2 s (EOF_GRACE) plus 5 s (KILL_GRACE) to exit. In that window: refresh_p, or a refresh after list_changed, goes to the leaving child and its requests fail only at its exit; the state stays ready, so status shows ready for up to 7 s. Decide whether a stopping child gets its own state (stopping) and whether refreshes wait for the next child, as calls already do.
