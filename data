@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T09:21:06Z
+created: 2026-11-06T08:29:13Z
+id: 116
+priority: low
+started: 2026-11-06T08:40:39Z
+status: done
+tags:
+- native
+- wire
+- bug
+title: list_running_sessions sends pid as a string or a number depending on how many
+  sessions run
+updated: 2026-11-06T09:21:06Z
+---
+
+Found during k110. With one running session pid goes out as a JSON string (read from /proc as text); with several, the sort's <=> numifies the values in place and pid goes out as a number. Done: pid is always a number (0+ when building the record); test with one and with two running sessions.
+
+Done: list_running_sessions builds the record with pid => 0 + $pid, so pid is a JSON number with one session as with several; POD says so. New subtest in t/native/claude-sessions.t (fake_proc takes an optional proc dir) asserts the JSON text and the encoded structuredContent with one and with two sessions; red at HEAD for one session only ("4242"), as the card says. README/spec list the field without a type, unchanged. prove -lr t/ green under EV and Poll. Patch: w-native5/k116.patch.
+
+Ready for commit: k116.patch (ClaudeSessions.pm + claude-sessions.t). Wire: with one running session pid goes from "4242" to 4242.
+
+Committed as 43b0470
