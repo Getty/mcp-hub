@@ -86,7 +86,9 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   validiert selbst; `JSON::Schema::Tiny` weist manche `$ref`-lastigen Schemata ab. Nicht
   „reparieren"; structured content auch nicht gegen das Output-Schema re-validieren.
 - **Tool-Filterung hängt am `tools`-Event und gilt für list UND call.** Ein durch das
-  Profil verbotenes Tool ist „not found" (`-32602`), nicht nur unsichtbar.
+  Profil verbotenes Tool ist „not found" (`-32602`), nicht nur unsichtbar. `/all` hängt
+  zusätzlich am `prompts`-Event (nur `servers`, keine `tools`-Regel) — sonst listet und
+  liefert `/all` Prompts von Servern außerhalb des Profils.
 - **Mode wird abgeleitet, nicht deklariert.** `clients` leer → *open* (kein Token,
   Admin-API offen). `clients` gesetzt → *clients* (Bearer nötig, sonst 401; ohne Token
   greift `public_profile`, falls gesetzt). Ein `.mcp.json` ganz ohne `hub`-Block ist ein

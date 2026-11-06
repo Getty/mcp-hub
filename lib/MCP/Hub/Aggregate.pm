@@ -119,8 +119,11 @@ Resources are not aggregated -- their URIs are opaque and would collide -- so us
 the per-server endpoint for those. The C<instructions> are the concatenation of
 each upstream's, headed by C<< ## <name> >>.
 
-The per-request tool filter (L<MCP::Hub::Auth/filter_aggregate>) uses the prefix
-to apply the profile's C<servers> and C<tools> rules.
+The per-request filters use the prefix to apply the profile: to tools its
+C<servers> and C<tools> rules (L<MCP::Hub::Auth/filter_aggregate>), to prompts
+its C<servers> alone (L<MCP::Hub::Auth/filter_aggregate_prompts>). C<tools/call>
+and C<prompts/get> look the name up in the filtered list, so an entry the
+profile hides is not found, as on its own endpoint.
 
 =head1 METHODS
 

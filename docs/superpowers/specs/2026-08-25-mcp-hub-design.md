@@ -275,7 +275,7 @@ Rebuilding after a refresh replaces the primitive lists of the existing `MCP::Se
 
 ## Aggregate (`/all`)
 
-Built once at start and rebuilt on any refresh. For every upstream `u` and every tool `t` of `u->server->tools` it registers a tool `<u>__<t>` whose `code` calls the original tool object directly (`$t->call($args, $context)`), so filtering, façade error handling and in-process servers all behave as on their own endpoint. Prompts likewise. The per-request `tools` filter applies the profile's `servers` and `tools` rules using the prefix to find the owning server.
+Built once at start and rebuilt on any refresh. For every upstream `u` and every tool `t` of `u->server->tools` it registers a tool `<u>__<t>` whose `code` calls the original tool object directly (`$t->call($args, $context)`), so filtering, façade error handling and in-process servers all behave as on their own endpoint. Prompts likewise. The per-request `tools` filter applies the profile's `servers` and `tools` rules using the prefix to find the owning server; a per-request `prompts` filter applies its `servers` rule the same way. `tools/call` and `prompts/get` look the name up in the filtered list, so a hidden entry is not found.
 
 ## Native modules
 

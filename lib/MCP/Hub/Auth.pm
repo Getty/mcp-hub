@@ -62,9 +62,15 @@ sub filter_tools ($self, $profile, $server_name, $tools) {
 
 sub filter_aggregate ($self, $profile, $tools) {
   @$tools = grep {
-    my ($srv, $tool) = split /__/, $_->name, 2;
-    $self->allows_server($profile, $srv) && $self->tool_visible($profile, $srv, $tool // '');
+    my ($srv, $tool) = _aggregate_name($_->name);
+    $self->allows_server($profile, $srv) && $self->tool_visible($profile, $srv, $tool);
   } @$tools;
+  return;
+}
+
+# Prompts follow servers alone, as on a server's own endpoint.
+sub filter_aggregate_prompts ($self, $profile, $prompts) {
+  @$prompts = grep { $self->allows_server($profile, (_aggregate_name($_->name))[0]) } @$prompts;
   return;
 }
 
@@ -74,6 +80,12 @@ sub tool_visible ($self, $profile, $server_name, $tool_name) {
   return 0 if grep { $_ eq $tool_name } @{$rule->{deny} // []};
   return 1 unless exists $rule->{allow};
   return (grep { $_ eq $tool_name } @{$rule->{allow}}) ? 1 : 0;
+}
+
+# The server and its own name of a /all entry "<server>__<name>".
+sub _aggregate_name ($name) {
+  my ($server, $own) = split /__/, $name, 2;
+  return ($server, $own // '');
 }
 
 sub _bearer ($c) {
@@ -121,7 +133,10 @@ A profile lists the C<servers> it may see (or C<["*"]>) and optional per-server
 C<tools> rules: an C<allow> list restricts the visible tools, a C<deny> list
 subtracts from what is left. Prompts and resources follow C<servers> alone. A
 server a profile does not include is answered with C<404> at the route, so a
-client cannot even tell it exists.
+client cannot even tell it exists. On C</all>, where every server's tools and
+prompts share one endpoint, the same rules filter the prefixed lists instead:
+what a profile hides there is neither listed nor found by C<tools/call> or
+C<prompts/get>.
 
 =head1 ATTRIBUTES
 
@@ -163,6 +178,14 @@ token and no public profile it renders a C<401> and returns false.
 
 Filter the C<< <server>__<tool> >>-prefixed tools of the C</all> endpoint in
 place, dropping any whose server the profile may not see or whose tool it denies.
+
+=method filter_aggregate_prompts
+
+  $auth->filter_aggregate_prompts($profile, $prompts);
+
+Filter the C<< <server>__<prompt> >>-prefixed prompts of the C</all> endpoint in
+place, dropping any whose server the profile may not see. The C<tools> rules do
+not apply to prompts.
 
 =method filter_tools
 

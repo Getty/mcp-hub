@@ -460,10 +460,18 @@ sub _attach_tool_filter ($self, $up) {
 sub _build_aggregate ($self) {
   my $agg = MCP::Hub::Aggregate->new;
   $agg->rebuild($self->upstreams);
+  # Both lists: an entry calls its original object directly, past the 404 of
+  # that server's own route. MCP::Server looks tools/call and prompts/get up in
+  # the list these leave, so what the profile hides is "not found" as well.
   $agg->on(tools => sub ($srv, $tools, $ctx) {
     my $c       = $ctx->controller  or return;
     my $profile = $c->stash('mcp.profile') or return;
     $self->auth->filter_aggregate($profile, $tools);
+  });
+  $agg->on(prompts => sub ($srv, $prompts, $ctx) {
+    my $c       = $ctx->controller  or return;
+    my $profile = $c->stash('mcp.profile') or return;
+    $self->auth->filter_aggregate_prompts($profile, $prompts);
   });
   $self->aggregate($agg);
   return $self;

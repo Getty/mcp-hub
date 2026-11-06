@@ -121,8 +121,11 @@ so den Weg durch den Hub.
 `Aggregate->rebuild(\@upstreams)` baut die Tools und Prompts aller Upstreams mit
 `<name>__`-Präfix; die `instructions` sind die aneinandergehängten
 Upstream-Instructions, jeder Block mit `## <name>` überschrieben. Resources
-werden **nicht** aggregiert (opake URIs würden kollidieren). Der Tool-Filter des
-Profils benutzt das Präfix, um `servers`- und `tools`-Regeln anzuwenden.
+werden **nicht** aggregiert (opake URIs würden kollidieren). Die Filter des Profils
+benutzen das Präfix: am `tools`-Event `servers`- und `tools`-Regeln
+(`Auth::filter_aggregate`), am `prompts`-Event nur `servers`
+(`filter_aggregate_prompts`). `tools/call`/`prompts/get` suchen in der gefilterten
+Liste — Verborgenes ist „not found".
 
 Extras: `Aggregate` ist ein `Facade::Server`. `rebuild` liest `title`/`icons`/`_meta`
 aus dem **eigenen Rendering** jedes Upstream-Servers (`_handle_tools_list` /

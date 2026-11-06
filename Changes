@@ -127,3 +127,8 @@ Revision history for MCP-Hub
     hides what the class's own endpoint refuses instead of serving it; the
     hub enforces none yet, so no call got through. Its lists also carry the
     class's cache ttl and the private cache scope a scoped prompt needs.
+  - /all filters prompts by the client's profile: prompts/list no longer
+    lists the prompts of servers outside it, and prompts/get answers them as
+    not found. Before, any client -- a tokenless one under public_profile
+    too -- could list and run every server's prompts on /all, starting a
+    stdio server to do it.

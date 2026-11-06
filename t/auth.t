@@ -160,4 +160,13 @@ subtest 'aggregate filtering by prefix' => sub {
     'drops denied tool and server outside the profile';
 };
 
+subtest 'aggregate prompt filtering follows servers alone' => sub {
+  my $auth    = MCP::Hub::Auth->new(config => $clients_config);
+  my $profile = $clients_config->profiles->{research};
+  my $p = tools(qw(context7__ask serper__scrape secret__leak));
+  $auth->filter_aggregate_prompts($profile, $p);
+  is_deeply names($p), [qw(context7__ask serper__scrape)],
+    'drops the prompt of a server outside the profile; the tools deny of scrape does not apply';
+};
+
 done_testing;
