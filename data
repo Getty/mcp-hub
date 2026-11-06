@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-06T06:45:18Z
+created: 2026-11-06T04:47:18Z
+id: 86
+priority: low
+started: 2026-11-06T04:49:38Z
+status: done
+tags:
+- native
+- performance
+title: 'ClaudeSessions: read only the head and tail of a session file'
+updated: 2026-11-06T06:45:18Z
+---
+
+From k40 research (2026-11-06, results: /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/results.md). ClaudeSessions costs grow with file size: 4.3 s for 8 large running sessions on L. Done: cost independent of file size, under 50 ms for 8 sessions of 73 MB.
+
+Done, commit-ready, not committed. ClaudeSessions::_session_meta reads a session file forward until the first sessionId, gitBranch and timestamp are known, then backward in 64 KB chunks (TAIL_CHUNK) until the last timestamp and last user prompt are known or the two scans meet. The result is that of reading every line. Before writing it I read what is extracted from where: first sessionId/gitBranch/timestamp from the head, last timestamp/user prompt from the tail. Numbers, fixture X = 8 running sessions x 73 MB (fake /proc), XS, n=3: page cache warm 4.63 s wall / 4.63 s CPU / peak 266 MB -> 0.007 s / 0.01 s / 55 MB; cold disk 5.74 s / 5.13 s -> 0.020 s / 0.01 s; pure-Perl JSON 0.081 s. Output byte-identical (XS and pure Perl). Test t/native/claude-sessions-tail.t (15): 13 layouts against an every-line oracle (last prompt two chunks back, a line longer than a chunk, no branch, CRLF, broken lines, non-ASCII, single line, empty file...), an unterminated last line, and at most 4 decodes for 2003 lines. HEAD passes the layouts and fails only the decode bound (2003 of 2003). Files are separate from k84/k85: lib/MCP/Hub/Native/ClaudeSessions.pm + t/native/claude-sessions-tail.t. Subject: 'Read only the head and tail of a running session file (k86)'.
+
+Committed as c37d455
