@@ -270,7 +270,7 @@ subtest 'a child reaped before its grace is over gets no signal' => sub {
   my $sitter = -s $holder ? $holder->slurp : undef;
   ok $sitter, 'the socket was held';
   CORE::kill('KILL', $sitter) if $sitter;
-  my $deadline = Time::HiRes::time() + 10;
+  $deadline = Time::HiRes::time() + 10;
   settle(0.05) while $sitter && CORE::kill(0, $sitter) && Time::HiRes::time() < $deadline;
   ok !($sitter && CORE::kill(0, $sitter)), 'and is gone';
 };
