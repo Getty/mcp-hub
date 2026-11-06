@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-06T21:08:30Z
+created: 2026-11-06T18:52:24Z
+id: 153
+priority: low
+started: 2026-11-06T19:16:12Z
+status: done
+tags:
+- http
+- stdio
+- docker
+- drift
+title: 'Small transport inconsistencies: failed notification POST, ''stopped while
+  starting'', SHUT_WR and buffered writes'
+updated: 2026-11-06T21:08:35Z
+---
+
+Found by mcp-hub-worker during k147/k148 (2026-11-06). Small inconsistencies, collected:
+1. Streamable HTTP _http_post drops a failed notification POST silently; since k144 HTTP+SSE logs it at debug ("POST of METHOD failed: ...").
+2. A start a stop called off is rejected as "upstream NAME: stopped while starting" by Docker (owner discards the engine's error), "upstream NAME: stopped" by Stdio (k148), Http and Fork.
+3. Unverified: a stdio stop's shutdown(SHUT_WR) may cut off a write still in the Mojo stream's buffer (a request or a notification queued in the same tick); check whether such bytes are lost and what the request then fails with.
+Done when: 1 and 2 read alike across the transports (tests that match the texts adjusted), 3 checked and either fixed with a test or noted as harmless in the Stdio POD.
+
+Done (mcp-hub-worker): (1) Streamable HTTP _http_post logs a failed notification POST at debug ('POST of METHOD failed: REASON'), weak callback, as SSE; test red 2/6. (2) Docker rejects a start a stop called off as 'upstream NAME: stopped' (was 'stopped while starting'); t/docker.t checks made exact; no other occurrence in the repo. (3) Verified a loss: a request written in the tick of a stop sat in the stream buffer when shutdown(SHUT_WR) ran -- a child ending on EOF never read it (failed 'exited (code 0)'), one that stays on made Mojo retry the write in a busy loop (1.4-2.1 s CPU) until SIGTERM. Fix: stop sends the EOF on drain when the stream is still writing, else at once; eof is set and the EOF_GRACE timer armed at once as before. Test t/stdio-stop.t, red 3/8 on HEAD. POD and runtime skill updated. Not committed.
+
+Committed as b104c66
