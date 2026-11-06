@@ -397,8 +397,13 @@ sub _fail_pending ($self, $reason) {
   return $self;
 }
 
+# The stream emits its close event inside close(), so the stopping flag marks
+# exactly this close as deliberate (_sse_closed reads it) and is gone when we
+# return. Left set, it would make a stream the remote drops later -- after a
+# stop or a failed start, and a good start -- look deliberate too, and leave the
+# upstream `ready` over a dead stream.
 sub _close_sse ($self) {
-  $self->{stopping} = 1;
+  local $self->{stopping} = 1;
   if (my $stream = $self->{sse}{stream}) { $stream->close }
   if (my $conn   = $self->{sse}{conn})   { Mojo::IOLoop->remove($conn) }
   delete $self->{sse};

@@ -118,3 +118,7 @@ Revision history for MCP-Hub
     get -c JSON and daemon -c N keep their own -c.
   - /all keeps the title, icons and _meta of every tool and prompt, as the
     server's own endpoint lists them; they were dropped since v1.
+  - An HTTP+SSE upstream whose stream the remote drops is stopped and
+    reconnects on its next call, also after an earlier stop or failed start;
+    it used to stay ready over the dead stream, every call timing out, until
+    the daemon was restarted.

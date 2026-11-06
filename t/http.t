@@ -286,6 +286,66 @@ subtest 'sse upstream: an endpoint on another origin is refused' => sub {
   $foreign->{daemon}->stop;
 };
 
+subtest 'sse upstream: a stream the remote drops is never taken for a stop' => sub {
+  # Closing the stream on purpose -- a stop, or the cleanup of a start that
+  # failed -- marks that close as deliberate. The mark used to stay on the
+  # object, so after either of them and a good start, a stream the remote really
+  # dropped left the upstream `ready` over a dead stream: every call posted to
+  # the old endpoint and timed out, and a refresh of a `ready` upstream only
+  # listed again over that stream, so nothing ever reconnected.
+  for my $before ('a failed start', 'a stop') {
+    my $fake;
+    my $handshake = mcp_answer('unused');
+    $fake = fake_sse(answer => sub ($req) {
+      return $handshake->($req) unless ($req->{method} // '') eq 'tools/call';
+      # The remote goes away while it handles this call: its end of the
+      # stream is closed and the call never answered.
+      if ($req->{params}{name} eq 'drop') {
+        Mojo::IOLoop->stream($fake->{tx}->connection)->close;
+        return undef;
+      }
+      return {jsonrpc => '2.0', id => $req->{id}, result => {content => [{type => 'text', text => 'pong'}]}};
+    });
+
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'sse', url => $fake->{url}, request_timeout => 3},
+      cache_dir => tempdir->to_string,
+    );
+    $up->log->level('fatal');
+
+    if ($before eq 'a stop') {
+      my $s = _await_bounded($up->start_p, 10);
+      ok !$s->{err}, "$before: the first start succeeds" or diag $s->{err};
+      $up->stop;
+    }
+    else {
+      # An endpoint on another origin fails the start after the stream is
+      # open, so the failed start closes it itself; it is never contacted.
+      $fake->{endpoint} = 'http://127.0.0.1:1/messages';
+      my $s = _await_bounded($up->start_p, 10);
+      like $s->{err}, qr/origin/, "$before: the first start fails";
+      $fake->{endpoint} = '/messages';
+    }
+    is $up->state, 'stopped', "$before: stopped";
+
+    my $s = _await_bounded($up->start_p, 10);
+    ok !$s->{err}, "$before: then a start succeeds" or diag $s->{err};
+    is $up->state, 'ready', "$before: ready";
+
+    my $dropped = _await_bounded($up->call_tool('drop', {}), 10);
+    like _error_text($dropped), qr/SSE stream closed/, "$before: the call in flight fails with the stream";
+    is $up->state, 'stopped', "$before: a dropped stream leaves the upstream stopped, not ready";
+
+    my $again = _await_bounded($up->call_tool('ping', {}), 10);
+    is _error_text($again), 'pong', "$before: the next call connects again and is answered" or diag explain $again;
+    is $up->state, 'ready', "$before: ready again";
+
+    $up->stop;
+    $fake->{daemon}->stop;
+  }
+};
+
 subtest 'an https url without TLS is a failed upstream that names the fix' => sub {
   # A perl without IO::Socket::SSL 2.009+ (or with MOJO_NO_TLS) cannot speak
   # https. Before the fix the warming fetch failed once, the upstream went back
