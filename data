@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-06T14:52:38Z
+created: 2026-11-06T12:56:42Z
+id: 131
+priority: low
+started: 2026-11-06T13:23:42Z
+status: done
+tags:
+- http
+- upstream
+title: 'Streamable HTTP: a refresh whose upstream is stopped with no restart sends
+  its next page with no session'
+updated: 2026-11-06T15:06:56Z
+---
+
+Found during k113 (worker). When an Http upstream is stopped (session ended, session_id gone) while a refresh is between two pages and no start follows, the next page goes out with no Mcp-Session-Id. Harmless -- the remote refuses it, the refresh fails at debug level and the manifest is kept -- but the request should not be sent at all. Done: a request that is not the start's own and finds the upstream stopped fails at once as stopped, without a POST. Test in t/http.t.
+
+Fixed: Http::_http_request_p -- a request that is not the start's own and finds the upstream stopped with no start under way fails at once as "upstream NAME: stopped", no POST. Test in t/http.t, red 2/14 on HEAD (page 2 was POSTed without a session); green under EV and Poll. Worker's choice: the check is state eq 'stopped', so it covers calls too: a call a stop overtakes between its start and its request now fails as stopped instead of going out without a session (a stateless remote could have served it) -- open a card only if that is unwanted. -> review.
+
+commit-ready: w-five snapshots
+
+Committed as 05d73b1. Skill text in 43760d2.
+
+Trailer reworded to Opus by the main agent (backup refs/backup/pre-reword-k133-k57b): 05d73b1 is now 695a1eb; skill text 43760d2 is now 7175354.
