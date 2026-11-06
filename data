@@ -1,0 +1,33 @@
+---
+claimed_at: 2026-11-06T03:04:21Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T03:04:21Z
+created: 2026-11-06T01:48:33Z
+id: 61
+priority: medium
+started: 2026-11-06T02:12:53Z
+status: done
+tags:
+- aggregate
+- auth
+- bug
+title: /all drops scopes, cache_ttl and cache_scope of upstream tools and prompts
+updated: 2026-11-06T03:04:21Z
+---
+
+Found by mcp-hub-worker during k30 (2026-11-06). Aggregate::_wrap_tool and _wrap_prompt build the prefixed wrapper without the upstream tool's scopes, cache_ttl and cache_scope. A tool that declares scopes is unscoped on /all -- check whether that lets a call through /all that its own endpoint would refuse (MCP::Server's scope check against the principal; see the k45 design draft on principal/auth), which would make it an access-control bypass, not only drift. cache_ttl/cache_scope loss means /all re-runs what the own endpoint caches. Done: /all carries all three; regression test next to t/aggregate.t (one case per field); if scopes did bypass, say so in the commit.
+
+2026-11-06 02:18 Findings (MCP 0.15): scopes/cache_ttl/cache_scope live on MCP::Primitive, so Tool and Prompt both have all three. Scopes are checked only in MCP::Server::_handle_*_call/_get and the list filters, against Context->scopes; Context::has_scope is true when scopes is undef, and Transport::HTTP::_scopes returns undef unless the transport has an auth callback. The hub builds every transport (each upstream action, /all) with to_action({streaming=>1}) and no auth, and stashes no mcp.auth -> no scope is enforced on any endpoint today, so the /all loss is not a reachable bypass today; it becomes one the moment scopes are enforced on both transports (own endpoint 403/-32003, /all serves it). Manifest-built facade tools (stdio/http/fork) carry none of the three (tools/list does not render them), so only in-process class tools are affected. cache_ttl drives only the list ttlMs (min over listed), not tools/call (MCP 0.15 sends no hints on calls) -- the card's 're-runs what the own endpoint caches' is really 'advertises ttlMs 0 on /all'. Tool/prompt cache_scope is read nowhere in MCP 0.15 (only resources use it). Visible today: /all prompts/list says cacheScope public where the own endpoint says private for a scoped prompt.
+
+2026-11-06 02:18 Also found (outside this card, for this board, looks high): /all does not filter PROMPTS by the profile's servers. Aggregate gets only a 'tools' event filter (Hub::_build_aggregate -> Auth::filter_aggregate). Probe in clients mode, profile servers=['p'], entries p and q: POST /q prompts/get -> 404, but POST /all prompts/list lists q__greet and prompts/get q__greet -> 200 and runs q's prompt (for a stdio/http upstream that would spawn/call it). An access-control bypass reachable today; Auth POD says 'Prompts and resources follow servers alone'.
+
+2026-11-06 02:19 Reproduced in new t/aggregate-fields.t (red on HEAD): with the MCP 0.15 transport auth callback set on both the own endpoint and /all (granting no scope), POST /scoped tools/call guarded -> 403 -32003 and hidden from tools/list; POST /all tools/call scoped__guarded -> 200 and listed. Same for prompts/get. Without the callback (the hub as shipped, open and clients mode) both endpoints serve it -> parity, no bypass today. Fixing _wrap_tool/_wrap_prompt now.
+
+2026-11-06 02:31 Fix: Aggregate::_wrap_tool/_wrap_prompt now pass scopes, cache_ttl, cache_scope of the original (helper _primitive_fields), POD DESCRIPTION says so. t/aggregate-fields.t green; mutation check: dropping any one field turns exactly its own subtest red. Shared-tree prove -lr t/ runs were disturbed by the parallel k23 edits (Child.pm, t/stdio.t changed mid-run; run 1: t/fork.t #11 'shutdown stops every worker' failed once, passed alone and in run 2); verifying on an exported HEAD + this change only.
+
+2026-11-06 02:35 Done. Verdict: not reachable today -- the hub sets no transport auth callback and no mcp.auth, so Context->scopes is undef and MCP 0.15 checks no scope on any endpoint (own and /all alike; pinned by the first subtest, open and clients mode). Real bypass as soon as scopes are enforced on both transports: own endpoint 403/-32003 + hidden, /all 200 + listed, tools and prompts (red on HEAD in t/aggregate-fields.t). Visible today: /all prompts/list said cacheScope public where the own endpoint says private, and /all advertised ttlMs 0. Fix: lib/MCP/Hub/Aggregate.pm _wrap_tool/_wrap_prompt carry scopes, cache_ttl, cache_scope (+POD). Tests: new t/aggregate-fields.t, one subtest per field (scopes x2: tools, prompts), each red on HEAD, mutation-checked. Verified: prove -lr t/ on an export of HEAD + this change: Files=27, Tests=243, PASS; skipped: t/docker-live.t, t/npx.t, t/wiki-live.t (env-gated). Shared tree runs were disturbed by parallel k23 edits (t/stdio.t/Child.pm mid-edit; one t/fork.t #11 failure that passed alone and on rerun). Uncommitted; t/aggregate-fields.t is untracked (needs git add).
+
+Remaining gap (not fixed, hypothetical today): carrying scopes only helps when /all's own context carries the same scopes. If only an upstream's own endpoint enforces them (a class overriding to_action/handle to set Context->scopes), /all still serves the call, since the wrapper runs in /all's context. No known class does this today. Revisit with k45.
+
+Committed as ee7b7ca
