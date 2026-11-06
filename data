@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-06T13:16:01Z
+created: 2026-11-06T08:14:50Z
+id: 113
+priority: low
+started: 2026-11-06T11:49:50Z
+status: done
+tags:
+- http
+- upstream
+- race
+title: Refresh list request sent during a new handshake is taken for one of the start's
+  own
+updated: 2026-11-06T13:16:06Z
+---
+
+Found during k106. Http.pm classifies a non-call request as a start's own while {handshake} is set. A tools/list / prompts/list / resources/list from an operator refresh (refresh_p) that is sent while a new handshake runs is therefore taken for the start's: a stop cuts it off, and it goes out on the half-open session. Effect is only debug-logged and only operator-triggered. A precise fix needs Upstream.pm (_handshake_p / _list_all_p) to mark its own requests, e.g. pass a flag down to request_p -- outside Http.pm.
+
+Fixed: _handshake_p passes $of_start down _list_all_p/_paginate_p to _request_p; Http no longer guesses from {handshake}/method name (both removed). Test in t/http.t, in-loop (start goes through / stop calls it off), red on HEAD 6/29. Committed as 153f03d.
