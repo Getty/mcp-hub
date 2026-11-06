@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-06T06:59:15Z
+created: 2026-11-06T06:04:38Z
+id: 96
+priority: low
+started: 2026-11-06T06:16:11Z
+status: done
+tags:
+- http
+- upstream
+- lifecycle
+title: Http start_p after a stop joins the called-off start and is rejected as stopped
+updated: 2026-11-06T06:59:15Z
+---
+
+Found during k91 (true since k74). stop() sets stop_requested and fails the pending requests, but start_promise is only deleted in start_p's catch, a few event-loop ticks later. A start_p called in that window returns the old start_promise and is rejected "upstream NAME: stopped", although the caller asked for a fresh start after the stop.
+
+Done: decide whether a start_p after stop() waits for the called-off start to settle and then starts anew (chain on it), or whether stop clears start_promise itself. Test: stop then start_p in the same tick -> the second start connects.
+
+Done in Upstream/Http.pm + t/http.t (patch: scratchpad w-k94/k96.patch, applies after k94.patch). A start_p while a called-off start is still settling (start_promise && stop_requested) returns next_start: a fresh start that _start_after_p begins only once the called-off start has settled, so no two handshakes overlap. Callers in the window share it. stop rejects and drops a waiting next_start ('upstream NAME: stopped'), and an identity check keeps a called-off one from beginning, so the last word counts. stop does not delete start_promise. Tests: new subtest over http and sse, stopped at once and during the initialize: stop+start in one tick connects with one handshake, begun after the stopped start settled; two callers share it; stop,start,stop ends stopped with nothing begun; stop,start,stop,start runs once. Mutation check: dropping the reject in stop, the identity check, or replacing the chain by stop deleting start_promise each turns the subtest red.
+
+Ready for review: a start after a stop chains on the called-off start; the last stop or start wins. Green with the full suite and the 5x EV / 5x Poll runs. Commit subject proposed: 'Make a start after a stop a fresh start, not the one the stop called off (k96)'.
+
+Committed as 250cd48
