@@ -3,8 +3,10 @@ use Mojo::Base -strict, -signatures;
 use Test::More;
 use Mojo::File    qw(curfile tempdir);
 use Mojo::Log;
+use Mojo::IOLoop;
 use Mojo::Promise;
 use MCP::Hub::Upstream::Stdio;
+use POSIX ();
 
 my $ECHO = curfile->sibling('upstream', 'echo.pl');
 
@@ -47,6 +49,34 @@ sub _error_text ($result) {
 }
 
 sub settle ($seconds = 0.2) { Mojo::Promise->timer($seconds)->wait }
+
+# A log that keeps its lines, "level message", instead of printing them.
+sub log_to ($lines) {
+  my $log = Mojo::Log->new;
+  $log->unsubscribe('message');
+  $log->on(message => sub ($l, $level, @msg) { push @$lines, "$level @msg" });
+  return $log;
+}
+
+# An upstream around a perl one-liner instead of echo.pl.
+sub oneliner ($name, $code, %attr) {
+  return MCP::Hub::Upstream::Stdio->new(
+    name      => $name,
+    config    => {type => 'stdio', command => $^X, args => ['-e', $code]},
+    cache_dir => tempdir->to_string,
+    %attr,
+  );
+}
+
+sub is_ev () { Mojo::IOLoop->singleton->reactor->isa('Mojo::Reactor::EV') }
+
+# Whether this process catches SIGCHLD -- under EV, libev's handler, until
+# something assigns $SIG{CHLD} and replaces it for good.
+sub sigchld_caught () {
+  open my $fh, '<', "/proc/$$/status" or return undef;
+  while (<$fh>) { return (hex($1) >> (POSIX::SIGCHLD() - 1)) & 1 if /^SigCgt:\s+([0-9a-f]+)/ }
+  return undef;
+}
 
 subtest 'handshake, manifest and echo' => sub {
   my $up = upstream;
@@ -210,6 +240,88 @@ subtest 'a child that dies at startup is counted once' => sub {
   settle;
 };
 
+# These come before anything here assigns $SIG{CHLD}: the first one is about
+# libev reaping children, and an assignment ends that for the whole process.
+subtest 'the exit status is read under EV too' => sub {
+  # The child exits at once; a child of its own holds the socket a second
+  # longer. Under Mojo::Reactor::EV libev reaps the child as soon as SIGCHLD
+  # is in, long before the socket closes, and a waitpid at the close came up
+  # empty: this read "exited (unknown)" every time. Under Poll it is the
+  # ordinary case.
+  ok sigchld_caught(), 'libev reaps the children of this process' if is_ev() && -r "/proc/$$/status";
+  my @lines;
+  my $up = oneliner(forks => 'exit 5 if fork; sleep 1', log => log_to(\@lines));
+  my $r  = _await_bounded($up->start_p, 30);
+  is $r->{err}, 'upstream forks: exited (code 5)', 'the start fails with the code the child exited with';
+  ok +(grep { $_ eq "warn [forks] child exited (code 5) while starting '$^X'" } @lines), 'and the log says it too'
+    or diag explain \@lines;
+  is $up->state, 'stopped', 'stopped';
+};
+
+subtest 'a child that closes its stdout and lives on does not block the loop' => sub {
+  # Its socket closes two seconds before it exits. A blocking waitpid at the
+  # close held the whole hub -- every other upstream, every request -- until
+  # then.
+  my $up    = oneliner(linger => 'close STDIN; close STDOUT; sleep 2; exit 4', log => log_to([]));
+  my $start = $up->start_p;
+  my $pid   = $up->stats->{pid};
+  my $ticks = 0;
+  my $tick  = Mojo::IOLoop->recurring(0.1 => sub { $ticks++ if kill 0, $pid });
+  my $r     = _await_bounded($start, 30);
+  Mojo::IOLoop->remove($tick);
+  ok $ticks >= 5, "the loop ran on while the child lived ($ticks ticks)";
+  is $r->{err}, 'upstream linger: exited (code 4)', 'its exit is reported once it comes';
+  ok !kill(0, $pid), 'and it is reaped';
+  is $up->state, 'stopped', 'stopped';
+};
+
+subtest 'a child that closes its stdout and does not exit is killed' => sub {
+  # It can never answer again. It gets the grace a stop gives, then it goes.
+  my @lines;
+  my $up  = oneliner(stuck => 'close STDIN; close STDOUT; sleep 60', log => log_to(\@lines));
+  my $r   = _await_bounded($up->start_p, 30);
+  is $r->{err}, 'upstream stuck: exited (signal 9)', 'killed';
+  ok +(grep { /^warn \[stuck\] closed its stdout 5s ago and still runs, killing it$/ } @lines), 'saying why'
+    or diag explain \@lines;
+  is $up->state, 'stopped', 'stopped';
+};
+
+subtest 'a stop ends even while a process the child started holds its socket' => sub {
+  # The child exits at once; one process it leaves behind serves (echo.pl),
+  # another only sits on the socket. A stop ends the server, but the socket
+  # never closes -- so once the grace is over the hub lets go of it, instead
+  # of waiting with the upstream stuck on its way out.
+  my $up = MCP::Hub::Upstream::Stdio->new(
+    name      => 'holder',
+    config    => {type => 'stdio', command => $^X,
+      args => ['-e', 'exit 0 if fork; if (fork) { exec $^X, "-Ilib", $ARGV[0] } sleep 20', "$ECHO"]},
+    cache_dir => tempdir->to_string,
+    log       => log_to([]),
+  );
+  _await_bounded($up->start_p, 30);
+  is $up->state, 'ready', 'the server answers';
+  $up->stop;
+  my $deadline = time + 15;
+  settle(0.1) while $up->stats->{pid} && time < $deadline;
+  is $up->stats->{pid}, undef, 'the stop ends';
+  is $up->state, 'stopped', 'stopped';
+};
+
+subtest 'a call while the child is stopped starts the next one' => sub {
+  # A call that comes in while an idle stop is under way must not go to the
+  # child that is on its way out.
+  my $up = upstream;
+  _await($up->start_p);
+  my $old = $up->stats->{pid};
+  $up->stop;
+  my $r = _await_bounded($up->call_tool('echo', {msg => 'after the stop'}), 30);
+  is _error_text($r), 'after the stop', 'the call is answered' or diag explain $r;
+  ok $up->stats->{pid} && $up->stats->{pid} != $old, 'by a new child';
+  ok !kill(0, $old), 'the stopped one is gone';
+  $up->stop;
+  settle;
+};
+
 subtest 'a command that cannot be executed is logged loudly' => sub {
   my $dir = tempdir;
   my $up  = MCP::Hub::Upstream::Stdio->new(
@@ -225,9 +337,9 @@ subtest 'a command that cannot be executed is logged loudly' => sub {
   $up->log($log);
 
   my $out = _await($up->start_p);
-  ok $out->{err}, 'start rejects';
-  ok +(grep { /^(?:warn|error) / && /definitely-not-a-binary/ } @lines),
-    'the missing command is named at warn or error level'
+  is $out->{err}, 'upstream missing: exited (code 127)', 'start rejects with the exit';
+  ok +(grep { $_ eq "warn [missing] child exited (code 127) while starting '$dir/definitely-not-a-binary' -- is it installed and executable?" } @lines),
+    'the missing command is named at warn level'
     or diag explain \@lines;
 
   # Where SIGCHLD is ignored the kernel reaps the child itself, waitpid fails

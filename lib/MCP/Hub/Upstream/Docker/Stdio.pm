@@ -42,19 +42,18 @@ sub _on_stderr ($self, $bytes) {
 # The exit of the docker CLI is the container's exit -- or Docker's own error,
 # exit 125 -- and what it printed says why, so the warning carries it.
 sub _exit_hint ($self, $status) {
-  $self->{exit_status} = $status;
   my $tail = $self->stderr_tail;
   return length $tail ? ": $tail" : '';
 }
 
-sub _on_close ($self) {
+sub _on_exit ($self, $status) {
   return $self unless $self->{pid};    # already handled
   my $deliberate = $self->{retiring};
   $self->_drain_stderr;
-  $self->SUPER::_on_close;
+  $self->SUPER::_on_exit($status);
 
   if (!$deliberate && (my $owner = $self->owner)) {
-    my $why  = 'exited (' . MCP::Hub::Upstream::Stdio::_exit_reason($self->{exit_status}) . ')';
+    my $why  = 'exited (' . MCP::Hub::Upstream::Stdio::_exit_reason($status) . ')';
     my $tail = $self->stderr_tail;
     $owner->_engine_down($self, length $tail ? "$why: $tail" : $why);
   }
@@ -64,9 +63,10 @@ sub _on_close ($self) {
 }
 
 # The CLI's stdout and stderr end together, and the IOLoop may see the end of
-# stdout first -- under load, with both ready at once. The stdio transport then
-# drops the stderr pipe with Docker's own message still unread in it, so what
-# is there is read first. A CLI that lingers, writing on, is not waited for.
+# stdout -- and the exit -- first, under load, with all ready at once. The
+# stdio transport then drops the stderr pipe with Docker's own message still
+# unread in it, so what is there is read first. A CLI that lingers, writing
+# on, is not waited for.
 sub _drain_stderr ($self) {
   my $handle = $self->{err_stream} && $self->{err_stream}->handle or return $self;
   $handle->blocking(0);

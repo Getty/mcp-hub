@@ -267,12 +267,12 @@ sub _on_stderr ($self, $bytes) {
 }
 
 # The worker's socket and its stderr pipe end together, and the loop may see
-# the socket first. What is still in the pipe -- why a constructor died, say --
-# is read before the exit is reported.
-sub _on_close ($self) {
+# the socket and the exit first. What is still in the pipe -- why a
+# constructor died, say -- is read before the exit is reported.
+sub _on_exit ($self, $status) {
   return $self unless $self->{pid};    # already handled
   $self->_drain_stderr;
-  return $self->SUPER::_on_close;
+  return $self->SUPER::_on_exit($status);
 }
 
 sub _drain_stderr ($self) {

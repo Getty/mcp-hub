@@ -3,7 +3,7 @@ our $VERSION = '0.001';
 use Mojo::Base -base, -signatures;
 
 use Crypt::PRNG  qw(random_bytes_hex);
-use MCP::Hub::Child qw(child_env close_inherited_fds);
+use MCP::Hub::Child qw(child_env close_inherited_fds watch_exit);
 use Mojo::File   qw(path);
 use Mojo::IOLoop;
 use Mojo::IOLoop::Stream;
@@ -170,36 +170,14 @@ sub run_p ($self, $args, %opt) {
     $done->resolve($res);
   };
 
-  # The exit status is collected without blocking: a child may close its
-  # output and live on for a moment, and a blocking waitpid would stall the
-  # whole hub meanwhile. The result settles once both the output and the
-  # status are in.
-  #
-  # Under Mojo::Reactor::EV, libev reaps every child itself as soon as SIGCHLD
-  # arrives, so a waitpid of ours would come up empty and the status would be
-  # lost: there a child watcher, set up before the loop runs again, receives
-  # it. Elsewhere the child is polled for. (Where SIGCHLD is ignored the kernel
-  # reaps it, and the status is simply unknown.)
-  my $collect;
-  if (Mojo::IOLoop->singleton->reactor->isa('Mojo::Reactor::EV')) {
-    $run->{watcher} = EV::child($pid, 0, sub ($w, $revents) {
-      $run->{status} = $w->rstatus;
-      $run->{reaped} = 1;
-      delete $run->{watcher};
-      $settle->() if $run->{done};
-    });
-    $collect = sub { $settle->() unless $run->{watcher} };
-  }
-  else {
-    $collect = sub {
-      my $got = waitpid($pid, POSIX::WNOHANG());
-      return Mojo::IOLoop->timer(0.05 => $collect) if $got == 0;
-      undef $collect;
-      $run->{status} = $got > 0 ? $? : undef;
-      $run->{reaped} = 1;
-      $settle->();
-    };
-  }
+  # The exit status is collected without blocking (MCP::Hub::Child), and the
+  # watch for it is set up right away, before the loop runs again. The result
+  # settles once both the output and the status are in.
+  my $collect = watch_exit($pid, sub ($status) {
+    $run->{status} = $status;
+    $run->{reaped} = 1;
+    $settle->() if $run->{done};
+  });
 
   # The streams' callbacks hold $run, and $run holds the streams: once both
   # are closed, letting go of them is what frees the lot.
@@ -208,6 +186,7 @@ sub run_p ($self, $args, %opt) {
     Mojo::IOLoop->remove($run->{timer}) if $run->{timer};
     $_->close for grep {defined} delete @{$run}{qw(out_stream err_stream)};
     $collect->();
+    $settle->() if $run->{reaped};
   };
 
   for my $part ([out => $out_r], [err => $err_r]) {

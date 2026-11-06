@@ -3,17 +3,22 @@ our $VERSION = '0.001';
 use Mojo::Base -strict, -signatures;
 
 use Exporter qw(import);
+use Mojo::IOLoop;
 use POSIX ();
 
-# ABSTRACT: The file descriptors and environment a child process inherits from the hub
+# ABSTRACT: The file descriptors, environment and exit of a child process of the hub
 
-our @EXPORT_OK = qw(child_env close_inherited_fds inherited_fds);
+our @EXPORT_OK = qw(child_env close_inherited_fds inherited_fds watch_exit);
 
 # Where there is no /proc/self/fd to list, every fd below the soft limit is
 # closed, one call each -- but never more than this many, since a soft limit
 # can be in the millions or unlimited. fds are handed out lowest first, so the
 # hub's own sit far below it.
 use constant CLOSE_MAX => 65536;
+
+# How often a child that is done with its output is asked whether it has
+# exited, where no watcher tells.
+use constant EXIT_POLL => 0.05;
 
 sub inherited_fds () {
   opendir my $dh, '/proc/self/fd' or return undef;
@@ -42,6 +47,40 @@ sub child_env ($env = undef) {
   my %env = %ENV;
   delete $env{MOJO_REUSE};
   return (%env, %{$env // {}});
+}
+
+# The exit status of a child, collected without ever blocking the loop: a
+# child may close its output and live on, and a blocking waitpid would hold
+# the whole hub meanwhile.
+#
+# Under Mojo::Reactor::EV libev reaps every child itself as soon as SIGCHLD is
+# in, and a waitpid of ours comes up empty: only a child watcher that is there
+# by then gets the status -- so this runs right after the fork, before the
+# loop runs again. The function it returns is called once the child is done
+# with its output; from then on the child is polled for as well. That is the
+# only way under any other reactor, and the way under EV once libev's SIGCHLD
+# handler is gone -- any assignment to $SIG{CHLD}, a `local` one too, replaces
+# it for good. A poll that finds no child under EV waits one more round for
+# the watcher, which libev may be about to call.
+sub watch_exit ($pid, $cb) {
+  my %w;
+  my $exited = sub ($status) {
+    return if $w{done}++;
+    delete @w{qw(watcher poll)};    # what kept the closures alive
+    $cb->($status);
+  };
+
+  $w{watcher} = EV::child($pid, 0, sub ($watcher, $revents) { $exited->($watcher->rstatus) })
+    if Mojo::IOLoop->singleton->reactor->isa('Mojo::Reactor::EV');
+
+  $w{poll} = sub {
+    my $got = waitpid($pid, POSIX::WNOHANG());
+    return $exited->($?) if $got > 0;
+    return $exited->(undef) unless $got == 0 || ($w{watcher} && !$w{missed}++);
+    Mojo::IOLoop->timer(EXIT_POLL, sub { $w{poll}->() if $w{poll} });
+  };
+
+  return sub { $w{poll}->() if $w{poll} && !$w{polling}++ };
 }
 
 1;
@@ -87,6 +126,11 @@ that listened on one of those addresses would take the fd number for its
 socket -- whatever the number holds by then. Every child starts from
 L</child_env>, the exec'd ones and the worker alike.
 
+Its exit status is collected without blocking the hub's loop, by
+L</watch_exit>, for every child alike: under L<Mojo::Reactor::EV> libev reaps
+each child itself the moment it exits, and a C<waitpid> of the hub's would come
+up empty.
+
 =head1 FUNCTIONS
 
 Nothing is exported by default.
@@ -115,6 +159,26 @@ hub, whose own C<MOJO_REUSE> Mojo still maintains.
 
 An array reference with every fd above C<2> this process holds, from
 F</proc/self/fd> -- or C<undef>, with C<$!> set, where that cannot be read.
+
+=func watch_exit
+
+  my $collect = watch_exit($pid, sub ($status) { ... });    # right after the fork
+  ...
+  $collect->();    # once the child is done with its output
+
+Calls the callback once, with the child's exit status as C<waitpid> leaves it
+in C<$?> -- or C<undef> where it is unknown: someone else reaped the child, the
+kernel among them where C<SIGCHLD> is ignored. Never blocks.
+
+Call it in the hub right after the C<fork>, before the loop runs again: under
+L<Mojo::Reactor::EV> it sets up the C<EV::child> watcher that receives the
+status when libev reaps the child, which may be any time from then on. The
+function it returns starts polling the child (C<WNOHANG>, every 50ms) -- call
+it once the child has closed its output, as a child that is about to exit
+does. That poll is how the status is collected under every other reactor, and
+under EV once libev's own C<SIGCHLD> handler is gone: any assignment to
+C<$SIG{CHLD}>, a C<local> one too, replaces it for good. The callback may be
+called from within that call.
 
 =head1 SEE ALSO
 

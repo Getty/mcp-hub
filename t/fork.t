@@ -183,12 +183,7 @@ subtest 'the worker holds nothing of the hub' => sub {
   is $up{probe}->stats->{pid}, $pid, 'as the same worker tells';
 };
 
-# libev's default loop reaps every child itself, at top priority, as soon as
-# SIGCHLD is in: the hub's waitpid then finds nothing and the exit reads
-# "unknown" -- a race the hub has with every child, under EV only. The two
-# subtests that look at a worker's exit status keep libev out of it.
 subtest 'exit in class code runs none of the hub END blocks' => sub {
-  local $SIG{CHLD} = 'DEFAULT';
   my $c   = client($t, '/probe');
   my $pid = $c->call_tool('whoami', {})->{structuredContent}{pid};
 
@@ -219,7 +214,6 @@ subtest 'an idle worker is stopped, the next call forks again' => sub {
 };
 
 subtest 'a constructor that dies in the worker is reported' => sub {
-  local $SIG{CHLD} = 'DEFAULT';
   @LOG = ();
   is $up{dies}->state, 'stopped', 'the class built in the hub';
   my $res = client($t, '/dies')->call_tool('echo', {msg => 'x'});

@@ -2,7 +2,7 @@ package MCP::Hub::Upstream::Stdio;
 our $VERSION = '0.001';
 use Mojo::Base 'MCP::Hub::Upstream', -signatures;
 
-use MCP::Hub::Child qw(child_env close_inherited_fds);
+use MCP::Hub::Child qw(child_env close_inherited_fds watch_exit);
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
 use MCP::Hub::Manifest;
@@ -45,8 +45,13 @@ sub new ($class, %args) {
 # --- public lifecycle ------------------------------------------------------
 
 sub start_p ($self) {
-  return Mojo::Promise->resolve($self) if $self->state eq 'ready' && $self->{pid};
   return $self->{start_promise} if $self->{start_promise};
+
+  # One child at a time. One on its way out -- being stopped, killed after its
+  # start failed, or its socket closed -- is waited for: a call must not go to
+  # it, and the next child must not move in before its exit is handled.
+  return $self->_gone_p->then(sub { $self->start_p }) if $self->_leaving;
+  return Mojo::Promise->resolve($self) if $self->state eq 'ready' && $self->{pid};
 
   # A crash loop is left only by an explicit refresh: an ordinary call against a
   # failed upstream reports why instead of spawning the loop all over again.
@@ -104,14 +109,12 @@ sub start_p ($self) {
 }
 
 sub stop ($self) {
-  return $self unless $self->{pid};
+  return $self unless my $pid = $self->{pid};
   $self->{stopping} = 1;
   $self->_clear_idle_timer;
   shutdown($self->{socket}, 1) if $self->{socket};    # SHUT_WR -> EOF on child stdin
-  kill 'TERM', $self->{pid};
-  $self->{kill_timer} = Mojo::IOLoop->timer(KILL_GRACE, sub {
-    kill 'KILL', $self->{pid} if $self->{pid};
-  });
+  kill 'TERM', $pid unless $self->{child}{reaped};
+  $self->{kill_timer} = Mojo::IOLoop->timer(KILL_GRACE, sub { $self->_kill_now if ($self->{pid} // 0) == $pid });
   return $self;
 }
 
@@ -268,18 +271,51 @@ sub _on_stderr ($self, $bytes) {
   }
 }
 
+# The child's end of the socket is closed: the child is gone, or going. Its
+# exit is handled once its status is in as well (_on_exit) -- nothing here
+# waits for it, the one loop runs on.
 sub _on_close ($self) {
-  my $pid = $self->{pid} or return;    # already handled
+  my ($pid, $child) = @{$self}{qw(pid child)};
+  return $self unless $pid && $child;     # already handled
+  return $self if $child->{closed}++;     # the error event comes here too
+  delete $self->{stream};
+  return $self->_on_exit($child->{status}) if $child->{reaped};
+
+  $child->{collect}->();    # may find it exited, and handle that, right away
+  return $self if $child->{reaped} || $self->{stopping};
+
+  # A child that has closed its stdout but lives on can never answer again.
+  # It gets the grace a stop gives, then it is killed.
+  $child->{linger} = Mojo::IOLoop->timer(KILL_GRACE, sub {
+    return if $child->{reaped} || ($self->{pid} // 0) != $pid;
+    $self->log->warn("[@{[$self->name]}] closed its stdout @{[KILL_GRACE]}s ago and still runs, killing it");
+    kill 'KILL', $pid;
+  });
+  return $self;
+}
+
+# The status of the child is in. Under EV that can be before its socket
+# closes: a process it started may hold the socket -- and serve on it.
+sub _on_reaped ($self, $child, $status) {
+  return $self unless $self->{child} && $self->{child} == $child;
+  @{$child}{qw(reaped status)} = (1, $status);
+  return $self->_on_exit($status) if $child->{closed};
+
+  # Killed, there is nothing of it left to wait for: the socket is let go of.
+  return $child->{killed} ? $self->_hang_up : $self;
+}
+
+# The child is gone: its socket closed and its status in -- the status as
+# waitpid leaves it in $?, or undef where it is unknown.
+sub _on_exit ($self, $status) {
+  my $pid = $self->{pid} or return $self;    # already handled
 
   # Remember which pid this exit belongs to: the catch in start_p must not
   # count it a second time.
   $self->{exited_pid} = $pid;
 
-  # Where SIGCHLD is ignored the kernel reaps the child itself and waitpid
-  # fails with ECHILD, leaving $? at -1 -- which reads as "signal 127". The
-  # exit status is simply unknown then.
-  my $status = waitpid($pid, 0) > 0 ? $? : undef;
-  Mojo::IOLoop->remove($self->{kill_timer}) if $self->{kill_timer};
+  my $child = delete $self->{child} // {};
+  Mojo::IOLoop->remove($_) for grep {defined} $self->{kill_timer}, $child->{linger};
   delete @{$self}{qw(kill_timer stream err_stream socket pid)};
   $self->stats->{pid} = undef;
 
@@ -297,6 +333,21 @@ sub _on_close ($self) {
   $self->_clear_idle_timer;
   $self->state($self->{failed} ? 'failed' : 'stopped');
   delete $self->{stopping};
+  if (my $gone = delete $self->{gone_promise}) { $gone->resolve }
+  return $self;
+}
+
+# Whether the child there is now is on its way out: its exit not handled yet,
+# though it is being stopped, its socket is closed, or its start has failed.
+sub _leaving ($self) {
+  return $self->{pid} && ($self->{stopping} || $self->{child}{closed} || $self->state ne 'ready') ? 1 : 0;
+}
+
+# Resolves once the exit of the child there is now has been handled.
+sub _gone_p ($self) { return $self->{gone_promise} //= Mojo::Promise->new }
+
+sub _hang_up ($self) {
+  $self->{stream}->close if $self->{stream};    # -> _on_close
   return $self;
 }
 
@@ -338,6 +389,12 @@ sub _attach ($self, $pid, $parent, $err_r) {
   $self->stats->{pid}        = $pid;
   $self->stats->{started_at} = time;
 
+  # How this child ends -- its socket closed, its status in, killed -- and the
+  # watch for its status, set up at once: under EV the status goes to whoever
+  # watches by the time libev reaps it (MCP::Hub::Child).
+  my $child = $self->{child} = {};
+  $child->{collect} = watch_exit($pid, sub ($status) { $self->_on_reaped($child, $status) });
+
   my $stream = Mojo::IOLoop::Stream->new($parent);
   $stream->timeout(0);
   $stream->on(read  => sub ($s, $bytes) { $self->_on_read($bytes) });
@@ -360,7 +417,14 @@ sub _attach ($self, $pid, $parent, $err_r) {
 sub _kill_now ($self) {
   $self->_clear_idle_timer;
   Mojo::IOLoop->remove($self->{kill_timer}) if $self->{kill_timer};
-  kill 'KILL', $self->{pid} if $self->{pid};
+  my $child = $self->{child} or return $self;
+  $child->{killed} = 1;
+
+  # Reaped already, a process it started holding its socket: there is no pid
+  # left to signal, and letting go of the socket is what ends it.
+  return $self->_hang_up if $child->{reaped};
+  kill 'KILL', $self->{pid};
+  $child->{collect}->();    # such a process may keep the socket from closing
   return $self;
 }
 
@@ -460,6 +524,13 @@ enough to answer C<tools/list>, and nothing is spawned until the first
 C<tools/call>, C<prompts/get> or C<resources/read>. It is stopped again after
 L</idle_timeout> seconds of no requests (unless
 L<MCP::Hub::Upstream/always_on>), and restarted on the next call.
+
+A stop closes the child's stdin and sends it C<SIGTERM>, and C<SIGKILL> five
+seconds later; a call that comes in meanwhile waits for it to be gone and starts
+the next child. The hub runs one child at a time. A child that closes its stdout
+but goes on running can never answer again, and is killed after the same five
+seconds. Its exit status is collected without blocking the event loop, under
+L<Mojo::Reactor::EV> too (L<MCP::Hub::Child/watch_exit>).
 
 Three exits within five seconds mark it C<failed>, with the reason in
 L<MCP::Hub::Upstream/error>. A failed upstream stays failed until it is

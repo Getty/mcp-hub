@@ -214,10 +214,9 @@ subtest 'a warming fetch that fails is failed, with the reason, until a refresh'
   ok wait_until(sub { !grep { $_->state ne 'failed' } values %up }), 'every warming fetch ends in failed'
     or diag explain {map { $_ => $up{$_}->state } keys %up};
 
-  # The exit code itself is not pinned: under Mojo::Reactor::EV, libev may reap
-  # the child before the upstream's waitpid does, and the status is "unknown".
+  my %why = (gated => 'exited (code 1)', always => 'exited (code 1)', missing => 'exited (code 127)');
   for my $name (qw(gated missing always)) {
-    like $up{$name}->error, qr/^exited \((?:code \d+|unknown)\)$/, "$name: the reason, without a second upstream prefix";
+    is $up{$name}->error, $why{$name}, "$name: the reason, without a second upstream prefix";
     my ($row) = grep { $_->{name} eq $name } @{$app->status_report->{upstreams}};
     is $row->{state}, 'failed', "$name: the status says failed";
     is $row->{error}, $up{$name}->error, "$name: and why";
@@ -237,7 +236,7 @@ subtest 'a warming fetch that fails is failed, with the reason, until a refresh'
   # the "not ready yet" it was stuck in before.
   my $again = settle($app->refresh_p('gated'));
   is $again->{gated}{state}, 'failed', 'a refresh that fails again: failed';
-  like $again->{gated}{error}, qr/^exited \(/, 'and the refresh result says why';
+  is $again->{gated}{error}, 'exited (code 1)', 'and the refresh result says why';
   $t->post_ok('/gated' => json => $rpc)->status_is(503)->json_like('/error', qr/^upstream 'gated' failed: /);
 
   # Fix the cause, refresh: the failure is cleared and the tools are there.

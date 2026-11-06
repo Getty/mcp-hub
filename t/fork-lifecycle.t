@@ -19,11 +19,8 @@ use lib curfile->sibling('lib')->to_string;
 
 # The lifecycle of a forked worker as a whole: queuing, the crash loop, stop,
 # the loop staying free, shared file offsets and reload. What a single call and
-# the isolation of the worker look like is t/fork.t's.
-#
-# Exit statuses are not looked at here: under Mojo::Reactor::EV libev reaps the
-# children itself and a status can read "unknown" (k23), which none of these
-# tests depends on. They run the same under either reactor.
+# the isolation of the worker look like is t/fork.t's. They run the same under
+# either reactor.
 
 my @LOG;
 sub log_to_array {
@@ -116,7 +113,7 @@ subtest 'a crash loop ends in failed, a refresh brings the worker back' => sub {
   for my $n (1 .. 3) {
     my $res = $c->call_tool('crash', {});
     ok $res->{isError}, "crash $n: the call fails";
-    like text($res), qr/exited/, "crash $n: and says the worker exited";
+    like text($res), qr/exited \(signal 9\)/, "crash $n: and says how the worker exited";
     ok wait_until(sub { $up->state ne 'ready' && $up->state ne 'starting' }), "crash $n: the upstream notices";
   }
   is $up->state, 'failed', 'three crashes are a crash loop';
