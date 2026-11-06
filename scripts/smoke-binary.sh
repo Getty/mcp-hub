@@ -9,7 +9,8 @@
 # entry), an error path, and two daemon runs -- the first fetches the stdio
 # upstream's manifest once, the second serves tools/list from that cache without
 # starting it, starts it on tools/call (t/upstream/echo.sh, a stdio MCP server in
-# POSIX sh), answers a native and a remote HTTP upstream and Mojolicious' 404 page,
+# POSIX sh; on Linux it must hold neither an fd on the binary nor the listening
+# socket), answers a native and a remote HTTP upstream and Mojolicious' 404 page,
 # runs a native in a forked worker (hub.fork; on Linux, elsewhere it checks the
 # refusal) and leaves no child behind on SIGTERM. On Linux a probe class then checks
 # a forked worker's lazy require and that its archive fds are its own: a read on
@@ -171,6 +172,47 @@ grep -q 'smoke-hello-42' <<<"$out" || fail "tools/call echo: $(printf '%s' "$out
 [ "$(starts)" = 1 ] || fail "tools/call on /echo: echo started $(starts)x, want 1"
 echo_pid=$(sed -n 's/^start //p' "$marker")
 echo "tools/call /echo: OK, started sh t/upstream/echo.sh (pid $echo_pid) and echoed smoke-hello-42"
+# On Linux: the exec'd child keeps nothing of the hub's above stderr -- no fd on the
+# binary (PAR's archive handles) and not the listening socket, which a child that
+# outlives a crashed hub would keep bound. Before k52 echo.sh held both.
+if [ -d /proc/self/fd ]; then
+  self=$(readlink -f "$BIN")
+  # archive_fds PID: "fd:offset ..." for each fd PID holds open on the binary -- the
+  # handles PAR keeps on its archive.
+  archive_fds() {
+    local fd out=
+    for fd in /proc/"$1"/fd/*; do
+      [ "$(readlink "$fd" 2>/dev/null)" = "$self" ] || continue
+      out="$out ${fd##*/}:$(sed -n 's/^pos:[[:space:]]*//p' "/proc/$1/fdinfo/${fd##*/}")"
+    done
+    printf '%s\n' "${out# }"
+  }
+  # fds_above_stderr PID: "fd->target ..." for each fd above 2 that PID holds.
+  fds_above_stderr() {
+    local fd out=
+    for fd in /proc/"$1"/fd/*; do
+      [ "${fd##*/}" -gt 2 ] 2>/dev/null || continue
+      out="$out ${fd##*/}->$(readlink "$fd" 2>/dev/null)"
+    done
+    printf '%s\n' "${out# }"
+  }
+  # The listening socket as /proc/PID/fd names it, socket:[INODE]: the inode of the
+  # LISTEN (0A) row for 127.0.0.1:$port in /proc/net/tcp (addresses in hex).
+  listen_sock=$(awk -v p=":$(printf '%04X' "$port")" \
+    '($2 == "0100007F" p || $2 == "7F000001" p) && $4 == "0A" { print "socket:[" $10 "]"; exit }' /proc/net/tcp)
+  [ -n "$listen_sock" ] || fail "no LISTEN row for 127.0.0.1:$port in /proc/net/tcp"
+  case " $(fds_above_stderr "$daemon_pid") " in
+    *"->$listen_sock "*) ;;
+    *) fail "the hub holds no fd on its listening socket $listen_sock: the check proves nothing" ;;
+  esac
+  [ -n "$(archive_fds "$daemon_pid")" ] || fail "the hub holds no fd on its own binary ($self): the check proves nothing"
+  kill -0 "$echo_pid" 2>/dev/null || fail "echo (pid $echo_pid) is gone after its tools/call"
+  child_fds=$(fds_above_stderr "$echo_pid")
+  case " $child_fds " in *"->$self "*) fail "echo (pid $echo_pid) holds an fd on the binary: $child_fds" ;; esac
+  case " $child_fds " in *"->$listen_sock "*) fail "echo (pid $echo_pid) holds the hub's listening socket $listen_sock: $child_fds" ;; esac
+  echo "stdio child fds: OK (echo.sh holds ${child_fds:-nothing} above stderr; the hub's listening socket" \
+    "$listen_sock and its archive fds $(archive_fds "$daemon_pid") stayed in the hub)"
+fi
 out=$(mcp remote tools/call '{"name":"list_projects","arguments":{}}')
 grep -q 'proj-a' <<<"$out" || fail "tools/call on /remote (HTTP upstream): $(printf '%s' "$out" | tail -n 1 | head -c 300)"
 echo "tools/call /remote (HTTP upstream): OK"
@@ -185,17 +227,7 @@ fork_pid=
 # The forked entry's row of /_hub/status, on one line.
 forked_row() { http GET /_hub/status | grep -o '{[^{}]*"name":"forked"[^{}]*}' || true; }
 if [ -d /proc/self/fd ]; then
-  self=$(readlink -f "$BIN")
-  # archive_fds PID: "fd:offset ..." for each fd PID holds open on the binary -- the
-  # handles PAR keeps on its archive.
-  archive_fds() {
-    local fd out=
-    for fd in /proc/"$1"/fd/*; do
-      [ "$(readlink "$fd" 2>/dev/null)" = "$self" ] || continue
-      out="$out ${fd##*/}:$(sed -n 's/^pos:[[:space:]]*//p' "/proc/$1/fdinfo/${fd##*/}")"
-    done
-    printf '%s\n' "${out# }"
-  }
+  # (self and archive_fds: from the stdio child's fd check above)
   worker_pid() { forked_row | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p'; }
   out=$(mcp forked tools/list)
   grep -q '"name":"list_projects"' <<<"$out" || fail "tools/list on /forked: $(printf '%s' "$out" | tail -n 1 | head -c 300)"
