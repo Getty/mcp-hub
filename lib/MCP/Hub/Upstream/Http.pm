@@ -193,9 +193,12 @@ sub refresh_p ($self) {
 
 sub apply_timeouts ($self, $timeouts) {
   $self->SUPER::apply_timeouts($timeouts);
-  # req_ua baked the old request timeout into itself; drop it so the next
-  # request builds one with the new value.
-  delete $self->{req_ua};
+  # The new request timeout goes on req_ua itself, for the requests that
+  # follow: Mojo::UserAgent reads it as a request starts, and arms that
+  # request's timer with it. A request in flight finishes on the agent it went
+  # out on, within the timeout it went out with -- an agent dropped for a new
+  # one closed its connections, and failed it as "Premature connection close".
+  $self->{req_ua}->request_timeout($self->request_timeout || 60) if $self->{req_ua};
   return $self;
 }
 
@@ -919,8 +922,9 @@ adds:
 
 =method apply_timeouts
 
-As L<MCP::Hub::Upstream/apply_timeouts>, and additionally discards L</req_ua>,
-which carries the request timeout it was built with.
+As L<MCP::Hub::Upstream/apply_timeouts>, and additionally sets the new request
+timeout on L</req_ua>, for the requests that follow. A request in flight
+finishes on the agent it went out on, within the timeout it went out with.
 
 =method transport
 

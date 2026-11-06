@@ -372,7 +372,7 @@ and changes exactly what the edit asks for — everything else keeps running:
 |---|---|
 | nothing about a server | Nothing. Same process, same stats, same idle timer. |
 | a profile, a client, `tools.allow`/`deny`, `public_profile` | Swapped in place; in effect on the next request. A tool you deny disappears from `tools/list` and `tools/call`, and no server is restarted. |
-| only timeouts (`idle_timeout`, `request_timeout`, per server or global) | Applied in place, no restart. |
+| only timeouts (`idle_timeout`, `request_timeout`, per server or global) | Applied in place, no restart. A request already running finishes within the timeout it went out with; the next one gets the new one. |
 | a server's `command`, `args`, `env`, `url`, `docker`, … | That one server is stopped and rebuilt. |
 | `hub.docker_command` or `hub.docker_network` | The `docker` (and, for the command, `compose`) servers are rebuilt. |
 | remove a server | It is stopped and its path is `404` again. |

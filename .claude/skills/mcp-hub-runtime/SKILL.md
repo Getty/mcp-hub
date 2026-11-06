@@ -79,7 +79,12 @@ der POST-UA mit `request_timeout` (Default 60 s) — sonst kappt der POST-Timeou
 den langlebigen SSE-Stream. Der POST-UA (`req_ua`) hat **keinen** Inactivity-Timeout:
 `request_timeout` ist die einzige Grenze eines Requests, auch wenn der Remote länger
 schweigt als Mojos Default (40 s bzw. `$MOJO_INACTIVITY_TIMEOUT`) — ein langer Call mit
-einer JSON-Antwort, ein Event-Stream ohne Keep-alive. `type: "http"` = Streamable HTTP
+einer JSON-Antwort, ein Event-Stream ohne Keep-alive. Ein Reload, der `request_timeout`
+ändert, setzt ihn am selben `req_ua` (`apply_timeouts`), nie an einem neuen: Mojo liest ihn
+beim Start eines Requests und stellt dessen Timer damit — ein Request in flight endet auf
+seinem Agenten mit der Grenze, mit der er rausging, der nächste hat die neue. Ein
+verworfener Agent schließt seine Verbindungen, der Call scheitert als `Premature connection
+close`. `type: "http"` = Streamable HTTP
 (Antwort auf dem POST, JSON oder `text/event-stream`), `type: "sse"` = HTTP+SSE
 (langlebiger GET-Stream). `headers` trägt das Auth. Drei Fehlschläge binnen 5 s → `failed`.
 Jede Ablehnung liest `upstream NAME: …` — auch ohne Antwort (refused, `Request

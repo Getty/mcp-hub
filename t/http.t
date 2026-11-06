@@ -10,7 +10,7 @@ use Mojo::Log;
 use Mojo::Promise;
 use Mojo::Server::Daemon;
 use IO::Socket::INET;
-use Scalar::Util qw(weaken);
+use Scalar::Util qw(blessed weaken);
 use MCP::Server;
 use MCP::Hub;
 use MCP::Hub::Upstream::Http;
@@ -90,7 +90,8 @@ sub _error_text ($result) {
 # slow remote does. A POST is accepted with `post_status` (202); an answer
 # {http_status => N} answers it with status N instead, and puts nothing on the
 # stream, {drop => 1} closes its connection unanswered, {hold => 1} leaves it
-# unanswered.
+# unanswered. An answer may be a promise of one as well: the POST is held until
+# it settles, as by a remote that takes its time to take a request.
 sub fake_sse (%opt) {
   my $app = Mojolicious->new;
   $app->log->level('warn');
@@ -109,15 +110,20 @@ sub fake_sse (%opt) {
     $delay ? Mojo::IOLoop->timer($delay => $announce) : $announce->();
   });
 
-  $app->routes->post('/messages' => sub ($c) {
-    my $req = eval { $c->req->json } // {};
-    push @{$state->{posts}}, $req;
-    my $res = $opt{answer} ? $opt{answer}->($req) : undef;
+  my $take = sub ($c, $res) {
     return $c->rendered($res->{http_status}) if ref $res eq 'HASH' && $res->{http_status};
     return Mojo::IOLoop->stream($c->tx->connection)->close if ref $res eq 'HASH' && $res->{drop};
     return $c->render_later if ref $res eq 'HASH' && $res->{hold};
     sse_send($state, $res) if $res && defined $res->{id};
     $c->render(text => 'ok', status => $state->{post_status} // 202);
+  };
+  $app->routes->post('/messages' => sub ($c) {
+    my $req = eval { $c->req->json } // {};
+    push @{$state->{posts}}, $req;
+    my $res = $opt{answer} ? $opt{answer}->($req) : undef;
+    return $take->($c, $res) unless blessed $res && $res->isa('Mojo::Promise');
+    $c->render_later;
+    $res->then(sub ($res) { $take->($c, $res) if $c->tx });
   });
 
   my $daemon = Mojo::Server::Daemon->new(app => $app, listen => ['http://127.0.0.1'], silent => 1);
@@ -2368,6 +2374,67 @@ subtest 'streamable http upstream: request_timeout bounds a request, however lon
     'and one silent past the old request_timeout, within the one a reload set';
   _stop($up);
   $fake->{daemon}->stop;
+};
+
+subtest 'a reload that moves request_timeout leaves the requests in flight to finish' => sub {
+  # A reload that changed only the request timeout dropped req_ua, so that the
+  # next request built one with the new value -- and with it the agent the
+  # requests in flight were on: its connections closed, and a call running at
+  # that moment failed as "upstream NAME: Premature connection close", though
+  # such a reload is applied in place, with no restart. Over Streamable HTTP
+  # that is the call's own POST; over HTTP+SSE the POST that carries the call
+  # to a remote slow to take it. Each finishes on the agent it went out on,
+  # within the timeout it went out with. The next request is bounded by the
+  # new one, and by nothing else, as before the reload: a remote silent past
+  # Mojo's inactivity timeout -- MOJO_INACTIVITY_TIMEOUT stands in for its
+  # 40 s -- is waited for. The fake servers' own bound is set apart from it.
+  local $ENV{MOJO_INACTIVITY_TIMEOUT} = 0.25;
+  my $after = sub ($req) {
+    my $quiet = $req->{params}{arguments}{quiet};
+    return Mojo::Promise->timer($quiet)->then(sub {
+      return {jsonrpc => '2.0', id => $req->{id}, result => {content => [{type => 'text', text => "after ${quiet}s"}]}};
+    });
+  };
+  my $handshake = mcp_answer('unused');
+  my %fake = (
+    http => fake_http(answer => pong_answer($after)),
+    sse  => fake_sse(answer => sub ($req) { ($req->{method} // '') eq 'tools/call' ? $after->($req) : $handshake->($req) }),
+  );
+  # Two clocks bound a request over HTTP+SSE, both the request timeout: its
+  # own timer, and req_ua's on its POST, which the remote holds as long.
+  my %timed_out = (http => qr/^upstream fake: Request timeout\z/, sse => qr/^upstream fake: (?:timed out after 1s|Request timeout)\z/);
+
+  for my $type (qw(http sse)) {
+    my $fake = $fake{$type};
+    $fake->{daemon}->inactivity_timeout(30);
+    my $dir    = tempdir;
+    my $file   = $dir->child('config.json');
+    my $config = sub ($timeout) {
+      $file->spurt(encode_json({
+        mcpServers => {fake => {type => $type, url => $fake->{url}, hub => {request_timeout => $timeout}}},
+        hub        => {cache_dir => $dir->child('cache')->to_string},
+      }));
+    };
+    $config->(2);
+    my $hub = MCP::Hub->new(hub_config_input => "$file");
+    $hub->log->level('fatal');
+    my $up = $hub->upstreams_by_name->{fake};
+    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$type: started";
+
+    my $call = $up->call_tool('ping', {quiet => 1.2});
+    ok until_true(sub { grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}} }), "$type: a call is on its way";
+    $config->(1);
+    is_deeply $hub->reload->{changed}, ['fake'], "$type: a reload moves its request_timeout";
+    is $hub->upstreams_by_name->{fake}, $up, "$type: in place";
+    is _error_text(_await_bounded($call, 5)), 'after 1.2s',
+      "$type: the call finishes on the agent it went out on, within the timeout it went out with";
+    is _error_text(_await_bounded($up->call_tool('ping', {quiet => 0.5}), 5)), 'after 0.5s',
+      "$type: the next one is waited for past the inactivity bound";
+    like _error_text(_await_bounded($up->call_tool('ping', {quiet => 1.5}), 5)), $timed_out{$type},
+      "$type: and bounded by the new request_timeout";
+    _stop($up);
+    $fake->{daemon}->stop;
+  }
 };
 
 done_testing;

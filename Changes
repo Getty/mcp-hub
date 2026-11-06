@@ -317,3 +317,7 @@ Revision history for MCP-Hub
     debug level, as HTTP+SSE does.
   - A Docker or Compose start that a stop calls off fails as 'upstream
     NAME: stopped' (was 'stopped while starting').
+  - A reload that changes only the timeouts of an HTTP upstream (or a
+    Docker HTTP engine) no longer fails its calls in flight as 'Premature
+    connection close': they finish within the timeout they went out with,
+    and the next request gets the new one.
