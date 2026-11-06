@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T04:47:29Z
+id: 87
+priority: low
+status: backlog
+tags:
+- native
+- fork
+- performance
+title: 'ClaudeHistory: keep the metadata cache across forked-worker restarts'
+updated: 2026-11-06T04:47:29Z
+---
+
+From k40 research (2026-11-06, results: /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/results.md). Forked, the worker loses its metadata cache at every idle stop (default 300 s), so the next list rescans everything (36 s on L). Decide: persist the cache, or document always_on. If persisted: cache file named by a class argument, written atomically, validated per file by device, inode, size and mtime; a fresh worker's first list on L <= 1 s. Note: it would put sessions' first prompts on disk -- maintainer call.
