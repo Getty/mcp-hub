@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-11-06T03:04:12Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T03:04:12Z
+created: 2026-11-03T05:08:45Z
+id: 24
+priority: low
+started: 2026-11-06T02:13:03Z
+status: done
+tags:
+- bug
+- http
+title: Upstream::Http::_close_sse sets {stopping} and nothing ever clears it
+updated: 2026-11-06T03:04:12Z
+---
+
+Found by the k21 worker on 2026-11-03. `MCP::Hub::Upstream::Http::_close_sse` sets `$self->{stopping}` and no code path clears it again. Check whether a later reconnect or SSE close on the same object misreads a real failure as a deliberate stop. Fix or prove harmless, and add a regression test.
+
+2026-11-06 02:17 Harmful, reachable. {stopping} is read only by Http::_sse_closed (state -> stopped only when !stopping) and Docker::Http::_sse_closed (reports _engine_down only when !stopping). _close_sse sets it from stop AND from start_p's catch, never clears it. Sequence: a failed SSE start (connect refused, endpoint timeout, foreign origin, handshake error -- e.g. a failed warming fetch -> k48 fail -> refresh) or a stop, then a successful start on the same object; later the remote drops the stream for real -> _sse_closed fails the pending requests but leaves state 'ready' with the dead stream and stale {endpoint}. Every later call posts to the old endpoint and times out after request_timeout; refresh_p in 'ready' only re-lists over the dead stream, times out, swallows it -- the upstream stays wedged until a daemon restart/rebuild. Docker::Http is not reachable (an engine runs start_p once, a failed one is retired). Stream->close emits 'close' synchronously, so the fix scopes the flag to _close_sse (local).
+
+2026-11-06 02:22 Red->green: new subtest 'sse upstream: a stream the remote drops is never taken for a stop' in t/http.t, two sequences (a failed start / a stop, then a good start, then the fake drops its end of the stream mid-call). Unfixed: state stays 'ready' and the next call 'timed out after 3s' in both. Fixed with 'local $self->{stopping} = 1' in Http::_close_sse (Stream::close emits close synchronously, so Docker::Http::_sse_closed still sees the flag on a retire). Also found (for a new ticket on this board, low): Http::_open_sse_p arms a request_timeout timer that is never removed and calls _sse_resolve on whatever $self->{sse} is current when it fires -- so an earlier attempt's timer rejects a later attempt still waiting for its endpoint with 'timed out waiting for the SSE endpoint'. Reproduced in a scratch script (request_timeout 1: attempt 1 fails fast, attempt 2 at +0.8s gets its endpoint 0.5s later -> rejected). It also keeps the upstream object alive until it fires. Not fixed here.
+
+2026-11-06 02:23 Done, uncommitted. Fix: lib/MCP/Hub/Upstream/Http.pm _close_sse uses 'local $self->{stopping} = 1', so the flag covers only the close happening inside that call (Mojo::IOLoop::Stream::close emits 'close' synchronously). Test: t/http.t subtest 'sse upstream: a stream the remote drops is never taken for a stop', red before the fix (state 'ready', next call 'timed out after 3s', in both sequences), green after. Verified: prove -l t/http.t green under the default reactor (EV) and MOJO_REACTOR=Mojo::Reactor::Poll; prove -lr t/ Result: PASS, Files=26 Tests=241; t/docker-live.t, t/npx.t and t/wiki-live.t skipped themselves (env vars not set). The run used the shared tree, with other agents' uncommitted Aggregate/aggregate/docker changes in it. Drift for a new ticket: the stale SSE endpoint timer in _open_sse_p (see the earlier note).
+
+Committed as a1ab3c4
