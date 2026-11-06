@@ -128,8 +128,9 @@ validierte Config", danach läuft dieselbe `from_data`-Validierung — nichts da
 YAML ausdrückbar sein.
 
 `mcpServers` ist ein Superset von `.mcp.json` (Einträge 1:1). Genau eines von `command`,
-`class` oder `url` je Eintrag — bei `class` ist `args` ein Objekt (`class_args`), sonst
-eine Liste. Ein `class`-Eintrag verweigert `env`, `cwd`, `headers` und `type` (er nimmt
+`class`, `url`, `docker` oder `compose` je Eintrag (ein `compose`-Eintrag darf zusätzlich
+`url` tragen — wo der Service antwortet) — bei `class` ist `args` ein Objekt
+(`class_args`), sonst eine Liste. Ein `class`-Eintrag verweigert `env`, `cwd`, `headers` und `type` (er nimmt
 alles über `args`); `hub.idle_timeout`/`request_timeout`/`always_on` gelten nur mit
 `"hub": {"fork": true}` (→ `type: 'fork'`), und `hub.fork` nur auf einem `class`-Eintrag. Ein
 `command`-Eintrag verweigert `headers` und jedes `type` außer `stdio` (das Claude Code in
