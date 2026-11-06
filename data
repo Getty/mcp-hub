@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-11-06T00:14:48Z
+claimed_by: p5-mcp-hub
+class: standard
+completed: 2026-11-06T00:14:48Z
+created: 2026-11-04T03:04:26Z
+id: 50
+priority: low
+started: 2026-11-05T23:58:52Z
+status: done
+tags:
+- skill
+- docs
+title: 'mcp-hub-runtime skill: Http section does not mention the TLS precondition'
+updated: 2026-11-06T00:14:48Z
+---
+
+Found during k32. The Http section of .claude/skills/mcp-hub-runtime should say: an https url needs IO::Socket::SSL 2.009+ (and MOJO_NO_TLS unset); without it Upstream::Http->new dies and the hub keeps a failed upstream with the reason. Skill text is the worker's lane (delegation lock).
+
+2026-11-06 00:09 Added to the Http section of .claude/skills/mcp-hub-runtime/SKILL.md (German, one paragraph): https needs IO::Socket::SSL 2.009+ and MOJO_NO_TLS unset, settled at load; without it Upstream::Http->new dies and the hub keeps a failed upstream with the reason, no retry/refresh/reload cures it. Plus the k49 result: the same check (_tls_missing, same text) runs in Upstream::Compose->new for a compose url; docker (and compose without url) need none, the hub builds an http:// address itself.
+
+2026-11-06 00:13 Done: Http section of .claude/skills/mcp-hub-runtime/SKILL.md names the TLS precondition (IO::Socket::SSL 2.009+, MOJO_NO_TLS unset, failed upstream with the reason, only install + restart cures it) and the k49 result (compose url checked in Compose->new with the same text; docker and compose without url need no TLS). Skill text only, no Changes entry. Separate hunk from k51's in the same file. prove -lr t/ PASS. Not committed.
+
+Committed as 7991a92
