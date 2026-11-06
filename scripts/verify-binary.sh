@@ -96,7 +96,7 @@ echo "commands and help: OK"
 
 # config: JSON and YAML (YAML::PP is loaded on demand only) print the same, and what
 # t/fixtures/binary/config.expected says. Every kind of entry is in the fixture: stdio,
-# the three natives, url, docker, compose.
+# the three natives, url, docker, compose -- all but a forked class (below).
 for f in json yaml; do
   same_as_perl "config ($f)" --config "t/fixtures/binary/config.$f" config
   cmp -s "$work/got" t/fixtures/binary/config.expected || fail "config ($f): differs from t/fixtures/binary/config.expected"
@@ -109,6 +109,20 @@ cat >"$work/clients.json" <<'JSON'
          "clients": {"main": {"token": "secret-token", "profile": "all"}}}}
 JSON
 same_as_perl "config --client (clients mode)" --config "$work/clients.json" config --client main
+# A forked class entry (hub.fork) is built at start-up too: Upstream::Fork, the class
+# loaded by name, its manifest read in the hub. Not in the fixture above: off Linux
+# it fails to build by design ("hub.fork needs Linux"), and both sides must say so.
+cat >"$work/fork.json" <<'JSON'
+{"mcpServers": {"forked": {"class": "MCP::Hub::Native::ClaudeHistory", "args": {"root": "t/fixtures/claude"},
+                           "hub": {"fork": true}}},
+ "hub": {"listen": "http://127.0.0.1:3999"}}
+JSON
+if [ -d /proc/self/fd ]; then
+  same_as_perl "config (hub.fork entry)" --config "$work/fork.json" config
+  if grep -q 'failed to build upstream' "$work/got.err"; then fail "config (hub.fork entry): $(grep 'failed to build' "$work/got.err" | head -n 2)"; fi
+else
+  STDERR_PATTERN='hub.fork needs Linux' same_as_perl "config (hub.fork entry, refused off Linux)" --config "$work/fork.json" config
+fi
 echo "config: OK"
 
 # Error paths: the message on STDERR, the same exit code, nothing on STDOUT.
