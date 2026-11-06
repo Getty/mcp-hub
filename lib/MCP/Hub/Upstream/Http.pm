@@ -88,7 +88,7 @@ sub start_p ($self) {
   $self->state('starting');
   my $done = Mojo::Promise->new;
   $self->{start_promise} = $done;
-  delete $self->{failure_reason};    # the reason belongs to this attempt only
+  delete @$self{qw(failure_reason stop_requested)};    # both belong to this attempt only
 
   my $prep = $self->{transport} eq 'sse' ? $self->_open_sse_p : Mojo::Promise->resolve;
   $prep->then(sub { $self->_handshake_p })->then(sub ($manifest) {
@@ -100,9 +100,14 @@ sub start_p ($self) {
     $self->touch;
     $done->resolve($self);
   })->catch(sub ($err) {
-    $self->log->error("[@{[$self->name]}] handshake failed: $err");
+    # A start that a stop called off did not fail: it is neither logged nor
+    # counted as a connect failure.
+    my $stopped = delete $self->{stop_requested};
+    $stopped
+      ? $self->log->debug("[@{[$self->name]}] start called off by a stop")
+      : $self->log->error("[@{[$self->name]}] handshake failed: $err");
     $self->_close_sse;
-    $self->_record_failure;
+    $self->_record_failure unless $stopped;
     $self->state($self->{failed} ? 'failed' : 'stopped');
     delete $self->{start_promise};
     $done->reject("$err");
@@ -112,9 +117,14 @@ sub start_p ($self) {
   return $done;
 }
 
+# A stop calls off what it finds under way, as stopped: a start (see start_p's
+# catch), a connect still waiting for its endpoint (_close_sse) and the
+# requests in flight -- those first, before the closing stream fails them as
+# closed.
 sub stop ($self) {
-  $self->_close_sse;
+  $self->{stop_requested} = 1 if $self->{start_promise};
   $self->_fail_pending("upstream @{[$self->name]}: stopped");
+  $self->_close_sse;
   $self->state('stopped');
   return $self;
 }
@@ -250,10 +260,10 @@ sub _open_sse_p ($self) {
   });
 
   # The wait for the endpoint belongs to this connect: the timer settles only
-  # it -- even one a stop called off, which nothing else settles -- and goes
-  # when it settles (_sse_resolve). Left behind, it rejected whichever connect
-  # was current when it fired, a later one still waiting for its endpoint, and
-  # held the upstream until then.
+  # it, and goes when it settles (_sse_resolve) -- a stop settles it too
+  # (_close_sse). Left behind, it rejected whichever connect was current when
+  # it fired, a later one still waiting for its endpoint, and held the
+  # upstream until then.
   $s->{timer} = Mojo::IOLoop->timer($self->request_timeout || 30 => sub {
     $self->_sse_resolve(0, 'timed out waiting for the SSE endpoint', $s);
   });
@@ -409,8 +419,16 @@ sub _fail_pending ($self, $reason) {
 # return. Left set, it would make a stream the remote drops later -- after a
 # stop or a failed start, and a good start -- look deliberate too, and leave the
 # upstream `ready` over a dead stream.
+#
+# A connect still waiting for its endpoint is settled here, at once and as
+# stopped -- before its stream goes, whose close would settle it as closed.
+# Nothing else is left to: the stream is closed and the connect removed, and
+# its endpoint timer goes with it (_sse_resolve) instead of rejecting it as
+# timed out request_timeout later and holding the upstream until then. The
+# cleanup of a failed start finds its connect settled already.
 sub _close_sse ($self) {
   local $self->{stopping} = 1;
+  $self->_sse_resolve(0, 'stopped');
   if (my $stream = $self->{sse}{stream}) { $stream->close }
   if (my $conn   = $self->{sse}{conn})   { Mojo::IOLoop->remove($conn) }
   delete $self->{sse};

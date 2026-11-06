@@ -6,6 +6,7 @@ use Mojolicious;
 use Mojo::File   qw(tempdir);
 use Mojo::IOLoop;
 use Mojo::JSON qw(encode_json);
+use Mojo::Log;
 use Mojo::Promise;
 use Mojo::Server::Daemon;
 use IO::Socket::INET;
@@ -404,30 +405,82 @@ subtest 'sse upstream: a connect that is over leaves no timer holding the upstre
   $fake->{daemon}->stop;
 };
 
-subtest 'sse upstream: a stop while it connects does not leave the start hanging' => sub {
-  # The stop calls the connect off before it is through, so nothing on the
-  # stream ever settles the start. The endpoint timer of that connect is all
-  # that is left to do it -- it may not look for whichever connect is current,
-  # there is none.
-  my $fake = fake_sse(answer => mcp_answer('unused'));
-  my $up   = MCP::Hub::Upstream::Http->new(
-    name      => 'fake',
-    config    => {type => 'sse', url => $fake->{url}, request_timeout => 1},
-    cache_dir => tempdir->to_string,
-  );
-  $up->log->level('fatal');
+subtest 'sse upstream: a stop while it starts calls the start off, it does not fail it' => sub {
+  # A stop calls a start off before it is through. It left the start to
+  # whatever came next: the endpoint timer, request_timeout later, or the close
+  # of the stream the stop had just closed itself. Both rejected the start as a
+  # failed connect -- logged as one, "timed out waiting for the SSE endpoint"
+  # among them, and counted, so three stops in a row marked the upstream
+  # `failed`. The stop settles the start itself, at once, as stopped.
+  for my $phase ('before it is connected', 'before the endpoint', 'during the handshake') {
+    my $hold      = 1;    # the remote does not answer the initialize
+    my $handshake = mcp_answer('unused');
+    my $fake      = fake_sse(answer => sub ($req) {
+      my $method = $req->{method} // '';
+      return undef if $hold && $method eq 'initialize';
+      # No tools: the code of a façade tool holds its upstream, which would
+      # outlive the weak reference below whatever the stops left behind.
+      return {jsonrpc => '2.0', id => $req->{id}, result => {tools => []}} if $method eq 'tools/list';
+      return $handshake->($req);
+    });
+    $fake->{endpoint_delay} = 30 if $phase eq 'before the endpoint';
 
-  my $start = $up->start_p;    # the connect is under way ...
-  $up->stop;                   # ... and called off
-  my $r = _await_bounded($start, 5);
-  like $r->{err}, qr/^upstream fake:/, 'the start is rejected, not left hanging' or diag explain $r;
+    my $up = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => 'sse', url => $fake->{url}, request_timeout => 5},
+      cache_dir => tempdir->to_string,
+    );
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+    $up->log($log);
 
-  my $again = _await_bounded($up->start_p, 5);
-  ok !$again->{err}, 'the next start connects' or diag $again->{err};
-  is $up->state, 'ready', 'ready';
+    my $until = sub ($cond) {
+      my $deadline = time + 5;
+      Mojo::Promise->timer(0.01)->wait until $cond->() || time > $deadline;
+      return $cond->();
+    };
 
-  $up->stop;
-  $fake->{daemon}->stop;
+    # Three in a row: within the five seconds in which three connect failures
+    # mark the upstream failed.
+    for my $n (1 .. 3) {
+      $fake->{tx} = undef;
+      @{$fake->{posts}} = ();
+      my $start = $up->start_p;
+      ok $until->(sub { $fake->{tx} }), "$phase, start $n: the stream is open"
+        if $phase eq 'before the endpoint';
+      ok $until->(sub { grep { ($_->{method} // '') eq 'initialize' } @{$fake->{posts}} }),
+        "$phase, start $n: the initialize is on its way"
+        if $phase eq 'during the handshake';
+      $up->stop;
+
+      # Well inside request_timeout, which the endpoint timer waits.
+      my $r = _await_bounded($start, 2);
+      is $r->{err}, 'upstream fake: stopped', "$phase, start $n: rejected at once, as stopped"
+        or diag explain $r;
+    }
+    is $up->state, 'stopped', "$phase: stopped, not failed";
+    is $up->error, undef, "$phase: no failure reason";
+    is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$phase: nothing logged as a failure"
+      or diag explain \@logged;
+    ok !(grep {/timed out waiting for the SSE endpoint/} @logged), "$phase: no endpoint timeout";
+
+    # Nor did they lock it out: the next start connects.
+    ($hold, $fake->{endpoint_delay}) = (0, 0);
+    # (Resolved to a string: the upstream it resolves with would be held here.)
+    my $again = _await_bounded($up->start_p->then(sub { 'started' }), 5);
+    is $again, 'started', "$phase: the next start connects" or diag explain $again;
+    is $up->state, 'ready', "$phase: ready";
+    $up->stop;
+
+    # And they left nothing behind: the endpoint timer of each start went with
+    # it, instead of holding the upstream for request_timeout.
+    weaken(my $gone = $up);
+    undef $up;
+    is $gone, undef, "$phase: no timer holds the upstream";
+
+    $fake->{daemon}->stop;
+  }
 };
 
 subtest 'an https url without TLS is a failed upstream that names the fix' => sub {
