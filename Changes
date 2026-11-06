@@ -23,9 +23,11 @@ Revision history for MCP-Hub
   - A server that cannot be built, that crash-loops, or (for a remote HTTP
     upstream) that repeatedly fails to connect stays visible as `failed`
     with its reason (`mcp-hub status`, `hub_status`, setup page, 503 body)
-    instead of disappearing; `mcp-hub refresh NAME` retries it. The stdio
-    crash-loop window (three exits within five seconds) is the upstream's
-    own `fail_window` attribute, apart from the SIGKILL grace period.
+    instead of disappearing; `mcp-hub refresh NAME` retries it. A stdio
+    server whose command cannot be executed says so in its reason ("is it
+    installed and executable?"). The stdio crash-loop window (three exits
+    within five seconds) is the upstream's own `fail_window` attribute,
+    apart from the SIGKILL grace period.
     A stdio server that closes its stdout but keeps running is killed after
     five seconds.
   - `mcp-hub status`, `refresh` and `reload` take `--url` to reach a hub that

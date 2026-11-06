@@ -214,7 +214,13 @@ subtest 'a warming fetch that fails is failed, with the reason, until a refresh'
   ok wait_until(sub { !grep { $_->state ne 'failed' } values %up }), 'every warming fetch ends in failed'
     or diag explain {map { $_ => $up{$_}->state } keys %up};
 
-  my %why = (gated => 'exited (code 1)', always => 'exited (code 1)', missing => 'exited (code 127)');
+  # An exec that failed -- exit 127 -- says what to check, in the reason too.
+  my %why = (
+    gated   => 'exited (code 1)',
+    always  => 'exited (code 1)',
+    missing => "exited (code 127) while starting '@{[$tmp->child('no-such-mcp-server')]}'"
+      . ' -- is it installed and executable?',
+  );
   for my $name (qw(gated missing always)) {
     is $up{$name}->error, $why{$name}, "$name: the reason, without a second upstream prefix";
     my ($row) = grep { $_->{name} eq $name } @{$app->status_report->{upstreams}};

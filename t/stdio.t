@@ -336,9 +336,13 @@ subtest 'a command that cannot be executed is logged loudly' => sub {
   $log->on(message => sub ($l, $level, @msg) { push @lines, "$level @msg" });
   $up->log($log);
 
-  my $out = _await($up->start_p);
-  is $out->{err}, 'upstream missing: exited (code 127)', 'start rejects with the exit';
-  ok +(grep { $_ eq "warn [missing] child exited (code 127) while starting '$dir/definitely-not-a-binary' -- is it installed and executable?" } @lines),
+  # exec fails, and the child _exit()s with 127 -- the code says nothing on its
+  # own, so the hint goes along: in the log, and in the reason the start fails
+  # with, which is what a 503 and the status show.
+  my $hint = "while starting '$dir/definitely-not-a-binary' -- is it installed and executable?";
+  my $out  = _await($up->start_p);
+  is $out->{err}, "upstream missing: exited (code 127) $hint", 'start rejects with the exit and the hint';
+  ok +(grep { $_ eq "warn [missing] child exited (code 127) $hint" } @lines),
     'the missing command is named at warn level'
     or diag explain \@lines;
 

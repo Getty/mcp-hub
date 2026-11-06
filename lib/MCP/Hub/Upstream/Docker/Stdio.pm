@@ -46,6 +46,10 @@ sub _exit_hint ($self, $status) {
   return length $tail ? ": $tail" : '';
 }
 
+# An exit 127 of `docker run` is the container's command not found, not the
+# docker CLI: the owner reports it with the container's own words instead.
+sub _exec_hint ($self, $status) { return '' }
+
 sub _on_exit ($self, $status) {
   return $self unless $self->{pid};    # already handled
   my $deliberate = $self->{retiring};

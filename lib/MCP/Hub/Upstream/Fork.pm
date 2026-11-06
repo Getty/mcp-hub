@@ -287,6 +287,9 @@ sub _drain_stderr ($self) {
   return $self;
 }
 
+# A worker execs nothing: an exit 127 is the class's own.
+sub _exec_hint ($self, $status) { return '' }
+
 sub _exit_hint ($self, $status) {
   my $hint = $self->state eq 'starting' ? ' while starting ' . $self->config->{class} : '';
   my $tail = join ' | ', @{$self->{stderr_tail} // []};

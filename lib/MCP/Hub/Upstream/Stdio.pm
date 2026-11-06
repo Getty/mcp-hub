@@ -319,11 +319,15 @@ sub _on_exit ($self, $status) {
   delete @{$self}{qw(kill_timer stream err_stream socket pid)};
   $self->stats->{pid} = undef;
 
+  # The reason the requests it leaves unanswered fail with -- a failed start's
+  # among them, which a 503 and the status show -- carries the hint for an
+  # exec that failed, like the log line.
   my $reason = _exit_reason($status);
+  my $why    = "exited ($reason)" . $self->_exec_hint($status);
   for my $id (keys %{$self->{pending}}) {
     my $pending = delete $self->{pending}{$id};
     Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
-    $pending->{promise}->reject("upstream @{[$self->name]}: exited ($reason)");
+    $pending->{promise}->reject("upstream @{[$self->name]}: $why");
   }
 
   unless ($self->{stopping}) {
@@ -463,13 +467,17 @@ sub _clear_idle_timer ($self) {
 
 # A child that dies before the handshake is done is a configuration problem, so
 # name the command: "exited (code 127)" on its own sends everyone hunting in the
-# wrong place. Exit 127 is what the child _exit()s with when exec fails.
+# wrong place.
 sub _exit_hint ($self, $status) {
   return '' unless $self->state eq 'starting';
-  my $command = $self->config->{command} // '?';
-  return " while starting '$command' -- is it installed and executable?"
-    if defined $status && !($status & 127) && ($status >> 8) == 127;
-  return " while starting '$command'";
+  return $self->_exec_hint($status) || " while starting '@{[$self->config->{command} // '?']}'";
+}
+
+# Exit 127 while starting is what the child _exit()s with when exec fails.
+# This hint goes into the reason a failed start gives too, not only the log.
+sub _exec_hint ($self, $status) {
+  return '' unless $self->state eq 'starting' && defined $status && !($status & 127) && ($status >> 8) == 127;
+  return " while starting '@{[$self->config->{command} // '?']}' -- is it installed and executable?";
 }
 
 sub _exit_reason ($status) {
