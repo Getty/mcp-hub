@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T03:20:25Z
+created: 2026-11-05T23:49:51Z
+id: 56
+priority: low
+started: 2026-11-06T02:46:59Z
+status: done
+tags:
+- stdio
+- upstream
+- log
+title: A failed stdio warm-up's error and 503 lack the exit-127 hint the log line
+  has
+updated: 2026-11-06T03:20:29Z
+---
+
+Found by mcp-hub-worker during k48. When a stdio warming fetch fails because the command is missing (exit 127), the log line carries the 'is it installed and executable?' hint, but Upstream->error -- and so the 503 body and mcp-hub status -- carry only the bare reason. Put the hint into the reason fail() records. Related: k23 (under EV the exit status is sometimes lost, so the 127 is not seen at all).
+
+Fix in lib/MCP/Hub/Upstream/Stdio.pm: new _exec_hint($status) returns " while starting 'CMD' -- is it installed and executable?" for an exit 127 in state starting. _on_exit rejects pending requests with 'exited (code 127)' . _exec_hint, so start_p -> Hub::_fetch_failed -> Upstream->fail records it, and the 503 and status show it. _exit_hint (log line) reuses it and falls back to " while starting 'CMD'". Fork and Docker::Stdio override _exec_hint to return '': a worker execs nothing, and docker run's 127 is the container's command; Docker::Stdio appends the stderr tail itself. Tests are exact: t/stdio.t 127 subtest checks err and log line; t/hub.t warming-failure %why checks the missing entry's error with the full hint. Both were red on HEAD lib. The hunks share Stdio.pm with k23 (_on_exit); a separable patch goes in the report.
+
+Done, commit-ready (uncommitted), on top of k23. The fix is _exec_hint in Upstream/Stdio.pm: the 127 hint goes into the reason that pending requests and a failed start reject with, so fail(), the 503 and the status carry it. Fork and Docker::Stdio return ''. Exact tests in t/stdio.t (127 subtest) and t/hub.t (%why missing); both were red without it. Whole hunk set: scratchpad w-k23/k56.patch (git apply -R to take it out, git apply to put it back). Verified in the full prove -lr t/ PASS.
+
+Committed as 31cbb2e.
