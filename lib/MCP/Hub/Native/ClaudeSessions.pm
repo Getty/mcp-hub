@@ -44,7 +44,8 @@ sub list_running_sessions ($self) {
   my @sessions;
   for my $pid ($self->_claude_pids) {
     my $cwd = $self->_cwd($pid) // next;
-    my $info = {pid => $pid, cwd => $cwd, project => $cwd};
+    # A pid read from /proc is text; it goes out as a number.
+    my $info = {pid => 0 + $pid, cwd => $cwd, project => $cwd};
     if (my $file = $self->_session_file($cwd)) {
       my $meta = $self->_session_meta($file);
       $info->{$_} = $meta->{$_} for qw(session_id started_at last_activity last_prompt git_branch);
@@ -216,7 +217,7 @@ The Claude configuration directory, as for L<MCP::Hub::Native::ClaudeHistory>.
 
 The tool as a plain method. Returns
 C<[{pid, cwd, project, session_id, started_at, last_activity, last_prompt,
-git_branch}]>.
+git_branch}]>, with C<pid> a number.
 
 =head1 SEE ALSO
 

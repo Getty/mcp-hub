@@ -234,3 +234,5 @@ Revision history for MCP-Hub
   - `list_sessions` no longer sends `_file`, the absolute path of each
     session's file on the hub host, which leaked the host's user name and
     home layout to every agent.
+  - `list_running_sessions` always sends `pid` as a JSON number; with a
+    single running session it went out as a string.

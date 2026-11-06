@@ -2,6 +2,7 @@
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use Mojo::File qw(curfile tempdir path);
+use Mojo::JSON qw(encode_json);
 use MCP::Hub::Native::ClaudeSessions;
 
 plan skip_all => 'symlink not supported here' unless eval { symlink('', "@{[tempdir]}/x"); 1 };
@@ -17,8 +18,8 @@ utime time,       time,       $proj_a->child('a2.jsonl')->to_string or die "a2.j
 # Build a fake /proc: pid 4242 is `claude` with cwd /home/tester/proj-a,
 # pid 9999 is something else, pid 4243 is `claude` in an unknown directory.
 my $proc = tempdir;
-sub fake_proc ($pid, $comm, $cwd = undef) {
-  my $dir = path($proc, $pid)->make_path;
+sub fake_proc ($pid, $comm, $cwd = undef, $in = $proc) {
+  my $dir = path($in, $pid)->make_path;
   $dir->child('comm')->spew("$comm\n");
   symlink($cwd, "@{[$dir->child('cwd')]}") if defined $cwd;
 }
@@ -47,6 +48,22 @@ subtest 'unknown cwd yields a bare row' => sub {
   my ($session) = grep { $_->{pid} == 4243 } @{$s->list_running_sessions};
   is $session->{cwd}, '/home/tester/elsewhere', 'cwd still reported';
   is $session->{session_id}, undef, 'no session file, no session id';
+};
+
+# A pid is read from /proc as text; it goes out as a JSON number however many
+# sessions run, in the tool's text and its structured content alike.
+subtest 'pid is a number on the wire' => sub {
+  my $one = tempdir;
+  fake_proc(4242, 'claude', '/home/tester/proj-a', $one);
+  for my $case (['one session', $one, [4242]], ['two sessions', $proc, [4242, 4243]]) {
+    my ($name, $in, $pids) = @$case;
+    my $server = MCP::Hub::Native::ClaudeSessions->new(root => $root, proc_root => "$in");
+    my ($tool) = @{$server->tools};
+    my $result = $tool->code->($tool, {});
+    is_deeply [$result->{content}[0]{text} =~ /"pid":([^,}]*)/g], $pids, "$name: a number in the text";
+    is_deeply [encode_json($result->{structuredContent}) =~ /"pid":([^,}]*)/g], $pids,
+      "$name: a number in the structured content";
+  }
 };
 
 done_testing;
