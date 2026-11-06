@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-11-05T23:58:15Z
+claimed_by: p5-mcp-hub
+class: standard
+created: 2026-11-04T01:45:28Z
+id: 45
+priority: medium
+started: 2026-11-05T23:15:40Z
+status: review
+tags:
+- design
+- auth
+- wiki
+title: 'Design: forward the calling client to upstreams, so a shared wiki records
+  who wrote'
+updated: 2026-11-06T05:15:01Z
+---
+
+From the k29 research (step 2/3 of the shared mcp-wiki store). Every wiki commit carries the repo's git identity; the hub knows the calling client (Auth.pm, clients mode) but forwards only tool name and arguments (Upstream.pm). Design how an upstream can learn the caller: an MCP _meta field on tools/call, an env per worker, or nothing in open mode, and what mcp-wiki would do with it (commit author or trailer). Needs a matching card on p5-mcp-wiki once decided.
+
+2026-11-05 23:23 Research done (read-only). MCP 0.15 hands a tool no request _meta: Context carries only parsed fields (principal, scopes, client_info, progress_token, controller); legacy_context reads only progressToken. Prototyped in scratchpad k45/: (1) plain MCP::Server over stdio -> tool sees nothing of params._meta; a handle() override that copies params._meta.{'mcp-hub/client'} into $context->principal works, and a call without the key gets undef (fresh context per request). (2) in-process over HTTP: stashing mcp.auth={principal} in the hub's under sets Context->principal and leaves scopes untouched; the documented to_action auth callback also sets it but turns scopes undef->[] and refuses a scoped tool with -32003. (3) an agent-sent _meta key never reaches principal in a plain MCP::Server. Hub today forwards only {name, arguments} (Facade::_tool -> Upstream::call_tool), so the agent's _meta never reaches an upstream. Every wire type (stdio, http/sse, fork, docker, compose) shares Upstream::call_tool -> _request_p. mcp-wiki: author=committer=Signature->default(repo) // 'MCP::Wiki <mcp-wiki@localhost>', reason = whole commit message (History.pm:120,337). Writing the draft in docs/superpowers/specs/ next to its siblings (the brief's docs/superpowers/ path has no drafts in it).
+
+2026-11-05 23:26 Design draft written: docs/superpowers/specs/2026-11-06-caller-forwarding-design.md (new, untracked; put next to its siblings in specs/, the brief's docs/superpowers/ path holds no drafts). No code changed. Recommendation: option A — in clients mode the hub adds _meta {"mcp-hub/client": <client>} to tools/call, prompts/get, resources/read for entries with hub.forward_client (opt-in, default off, not hashed, applied in place on reload, error on in-process class); in-process classes get it as Context->principal via a hub-set mcp.auth stash; open mode and tokenless callers forward nothing; env per worker rejected (a lazy shared child would pin the first caller). mcp-wiki: handle() override maps the key to principal on stdio only and never overwrites, records a Hub-Client: trailer, strips that key from reason, byte-identical commits without a caller. Open decisions for the maintainer listed in the draft (carrier, key name/shape, default, open mode, trailer vs author, asking MCP upstream for request _meta). Proposed follow-ups for the dispatcher: hub implementation (after k46, touches Config.pm), hub tests, and a p5-mcp-wiki card to record the client. Verified by prototypes in the session scratchpad (k45/stdio_server.pl, k45/http_inproc.t) against MCP 0.15; no test suite run, as nothing in lib/ or t/ changed.
+
+Draft committed as c57573e; decisions still open with the maintainer, card stays in review
+
+From k73 (2026-11-06): façade primitives (Facade::_tool/_prompt/_resource) now hold their upstream weakly and answer 'upstream NAME: gone, …' once it is freed. The caller-forwarding draft edits these same closures -- whoever implements it must keep the weak reference and the gone-upstream branch (t/reload-free.t pins it).
