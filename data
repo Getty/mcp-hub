@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T03:41:53Z
+id: 79
+priority: low
+status: backlog
+tags:
+- security
+- aggregate
+- auth
+title: /all filter handlers fail open without a controller or profile in the stash
+updated: 2026-11-06T03:41:53Z
+---
+
+Noted by mcp-hub-worker during k69/k70 (2026-11-06), pre-existing pattern. The /all tools, prompts and (k70) instructions handlers in MCP::Hub::_build_aggregate return without filtering when the request context has no controller or no mcp.profile in the stash. Not reachable through the auth bridge today, but a new route or transport that forgets to stash the profile would show everything. Decide whether clients mode should fail closed there (empty lists) while open mode keeps showing all; test both.
