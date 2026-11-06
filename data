@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T03:34:44Z
+id: 76
+priority: low
+status: backlog
+tags:
+- cli
+- server
+title: morbo bin/mcp-hub serves the hub without the daemon's background fetches and
+  container cleanup
+updated: 2026-11-06T03:34:44Z
+---
+
+Found by mcp-hub-worker during k62 (2026-11-06), read not run. morbo serves the hub in one process but through a bare Mojo::Server::Daemon: it skips what 'mcp-hub daemon' does around the server (warming fetches, container cleanup on shutdown), and restarts the worker on every watched-file change, orphaning upstreams. Decide: refuse it like hypnotoad (pointing at mcp-hub daemon), or document it as dev-only. Low priority.
