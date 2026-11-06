@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-11-06T08:14:44Z
+id: 112
+priority: low
+status: backlog
+tags:
+- http
+- upstream
+- race
+- decision
+title: A call let through just before a stop goes out bare (HTTP) or fails 'not connected'
+  (SSE)
+updated: 2026-11-06T08:14:44Z
+---
+
+Found during k106. Two leftovers of the k106 window:
+1. Streamable HTTP: a call whose start_p resolved (upstream ready) but whose send runs after a stop with no start after it goes out with no Mcp-Session-Id -- the stop already ended the session, a stateful remote answers 400 -- and is counted on no session. Options: fail it as stopped, or treat it as a call on a stopped upstream and start it (lazy start). Decide which.
+2. HTTP+SSE: the same kind of call (and one that comes upon a start under way) fails at once with "upstream NAME: not connected" (k90) instead of waiting for the start as Streamable HTTP now does (k106). Make SSE consistent once 1 is decided.
