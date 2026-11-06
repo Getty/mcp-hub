@@ -14,11 +14,13 @@ use Mojo::Log;
 use Mojo::Promise;
 use Mojo::Server::Daemon;
 use Scalar::Util qw(weaken);
+use Time::HiRes ();
 use MCP::Client;
 use MCP::Hub;
 use MCP::Hub::Config;
 use MCP::Hub::Docker;
 use MCP::Hub::Upstream;
+use MCP::Hub::Upstream::Stdio;
 use MCP::Server;
 
 my $FAKE = curfile->sibling('upstream', 'fake-docker.pl')->to_abs;
@@ -78,6 +80,14 @@ sub fail_with ($fake, $match, %res) {
   my $rules = -e $file ? decode_json($file->slurp) : [];
   push @$rules, {match => $match, code => 1, %res};
   $file->spew(encode_json($rules));
+}
+
+# The signals the fake's attached `docker run -i` process was sent -- by the
+# hub, which signals the CLI and nothing else: [{signal, pid, time}].
+sub signals ($fake) {
+  my $file = $fake->{state}->child('signals.jsonl');
+  return [] unless -e $file;
+  return [map { decode_json($_) } grep {/\S/} split /\n/, $file->slurp];
 }
 
 # The containers that exist. A record is written by rename, so it is always
@@ -172,6 +182,7 @@ my %IMAGES = (
   't/slow'         => {kind => 'http', ports => ['8080/tcp'], delay => 1.5},
   't/silent'       => {kind => 'http', ports => ['8080/tcp'], delay => 60},
   't/crash'        => {kind => 'crash'},
+  't/stays'        => {kind => 'stdio', echo_args => ['--ignore-eof']},
 );
 
 # --- docker: stdio ---------------------------------------------------------
@@ -237,6 +248,55 @@ subtest 'a stdio container: the docker run, the secret, idle stop' => sub {
   ok wait_until(sub { $up->state eq 'stopped' }, 10), 'stopped after idle_timeout';
   ok wait_until(sub { !@{records($fake)} }), 'and the container is gone';
   ok !(grep { /^(?:stop|rm)\b/ } @{commands($fake)}), 'a stdio container goes with its CLI, no stop or rm needed';
+};
+
+# The stop of MCP::Hub::Upstream::Stdio, which the docker CLI of a stdio
+# container inherits: EOF first, SIGTERM only for one still there EOF_GRACE
+# seconds later (t/stdio-stop.t has the stdio side of it).
+subtest 'a stdio container that exits at the end of its input is stopped without a signal' => sub {
+  my $grace = MCP::Hub::Upstream::Stdio->EOF_GRACE;
+  my $fake  = fake_docker(images => \%IMAGES);
+  my $up    = upstream($fake, {docker => 't/stdio'});
+  my ($ok, $err) = await($up->start_p);
+  ok $ok, 'started' or diag $err;
+  ok echo_ok($up), 'a call goes through the container';
+  is scalar @{running($fake)}, 1, 'one container runs';
+
+  my $t0 = Time::HiRes::time();
+  $up->stop;
+  ($ok, $err) = await($up->stopped_p);
+  my $took = Time::HiRes::time() - $t0;
+  ok $ok, 'stopped' or diag $err;
+  cmp_ok $took, '<', $grace, sprintf 'within the grace (%.2fs)', $took;
+  is_deeply signals($fake), [], 'the docker CLI got no signal' or diag explain signals($fake);
+  ok wait_until(sub { !@{records($fake)} }), 'and the container is gone';
+  is $up->state, 'stopped', 'stopped';
+};
+
+subtest 'one that stays on after its EOF gets SIGTERM once the grace is over' => sub {
+  my $grace      = MCP::Hub::Upstream::Stdio->EOF_GRACE;
+  my $kill_grace = MCP::Hub::Upstream::Stdio->KILL_GRACE;
+  my $fake       = fake_docker(images => \%IMAGES);
+  my $up         = upstream($fake, {docker => 't/stays'});
+  my ($ok, $err) = await($up->start_p);
+  ok $ok, 'started' or diag $err;
+  ok echo_ok($up), 'a call goes through the container';
+
+  my $t0 = Time::HiRes::time();
+  $up->stop;
+  Mojo::Promise->timer($grace - 0.5)->wait;    # still within the grace
+  is_deeply signals($fake), [], 'no signal while the grace lasts';
+  ok scalar @{running($fake)}, 'the container is still there';
+
+  ($ok, $err) = await($up->stopped_p);
+  my $took = Time::HiRes::time() - $t0;
+  ok $ok, 'stopped' or diag $err;
+  my @got = @{signals($fake)};
+  is scalar @got, 1, 'the CLI got one signal' or diag explain \@got;
+  is $got[0]{signal}, 'TERM', 'SIGTERM';
+  cmp_ok $got[0]{time} - $t0, '>=', $grace - 0.1, sprintf 'not before the grace was over (%.2fs)', $got[0]{time} - $t0;
+  cmp_ok $took, '<', $grace + $kill_grace, sprintf 'and the container went on it (%.2fs)', $took;
+  ok wait_until(sub { !@{records($fake)} }), 'the container is gone';
 };
 
 subtest 'new timeouts reach a running container: its idle timer and its engine' => sub {

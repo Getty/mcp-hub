@@ -11,11 +11,15 @@
 #   calls.jsonl     every invocation: argv, working directory, pid, and the
 #                   values of the MCPHUB_TEST_* variables it was given
 #   down            when present, the "daemon" cannot be reached
+#   signals.jsonl   every TERM the attached `run -i` process (the CLI the hub
+#                   signals) received: {"signal": "TERM", "pid": N, "time": EPOCH}
 #   fail.json       failures to inject: [{"match": REGEX, "code": N, "out": ..., "err": ...}],
 #                   the first rule whose regex matches the joined argv answers instead
 #
 # An image's kind says what its container does: `stdio` runs echo.pl over
-# stdio (and, detached, exits at once on its empty stdin), `http` serves
+# stdio (and, detached, exits at once on its empty stdin; `echo_args` are
+# options handed to echo.pl, `--ignore-eof` for a container that stays on after
+# its stdin is closed), `http` serves
 # echo.pl over HTTP (`delay` seconds late, if set), `crash` complains on stderr
 # and exits 3, `idle` just sleeps, `oneshot` exits after `runtime` seconds with
 # `exit`, and `nostart` is created but fails to start, as a container whose
@@ -528,7 +532,7 @@ sub _start {
   close $_ for $in_r, $out_w, $err_w;
   $record->{pid} = $pid;
   _save($record);
-  local $SIG{TERM} = sub { kill 'TERM', $pid };
+  local $SIG{TERM} = sub { _log_signal('TERM'); kill 'TERM', $pid };
   local $SIG{PIPE} = 'IGNORE';
   _relay($in_w, $out_r, $err_r);
   waitpid $pid, 0;
@@ -573,7 +577,7 @@ sub _server_argv {
   return ($^X, '-e', '$SIG{TERM} = sub { exit 0 }; sleep 1 while 1') if $kind eq 'idle';
   return ($^X, '-e', sprintf('select undef, undef, undef, %s; exit %d', $def->{runtime} // 0, $def->{exit} // 0))
     if $kind eq 'oneshot';
-  return ($^X, "-I$LIB", $ECHO) if $kind eq 'stdio' || !$host;
+  return ($^X, "-I$LIB", $ECHO, @{$def->{echo_args} // []}) if $kind eq 'stdio' || !$host;
   return ($^X, "-I$LIB", $ECHO, "--http=$host", ($def->{delay} ? "--http-delay=$def->{delay}" : ()));
 }
 
@@ -671,6 +675,16 @@ sub _log_call {
   open my $fh, '>>', "$STATE/calls.jsonl" or return;
   print $fh $JSON->encode({argv => [@ARGV], cwd => getcwd(), pid => $$, env => \%env}) . "\n";
   close $fh;
+}
+
+# A signal this process was sent, for the tests of a stop: what the hub did to
+# the docker CLI, and when.
+sub _log_signal {
+  my ($signal) = @_;
+  open my $fh, '>>', "$STATE/signals.jsonl" or return;
+  print $fh $JSON->encode({signal => $signal, pid => $$, time => time}) . "\n";
+  close $fh;
+  return;
 }
 
 sub _injected_failure {
