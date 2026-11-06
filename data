@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T22:19:19Z
+created: 2026-11-06T20:31:24Z
+id: 155
+priority: low
+started: 2026-11-06T21:09:59Z
+status: done
+tags:
+- http
+- sse
+- docs
+- drift
+title: 'Http''s ua attribute is unused: the SSE GET is a raw IOLoop stream'
+updated: 2026-11-06T22:19:23Z
+---
+
+Found by mcp-hub-worker during k150 (2026-11-06).
+Http's attribute `ua` ("The streaming user agent for the long-lived SSE GET stream (no timeout)", inactivity_timeout 0, max_response_size 0) is never used: the SSE GET is a raw Mojo::IOLoop stream. Its POD (=attr ua) and the runtime skill's sentence about the "Stream-UA (SSE-GET)" describe something that does not happen.
+Done when: either the attribute is removed with its POD and the skill sentence (the distribution is unreleased, so nothing outside depends on it -- check t/ and Docker::Http), or the docs say what the GET really uses; prove -lr t/ green.
+
+Done (mcp-hub-worker): removed has ua and =attr ua -- nothing in lib/, bin/, t/, Docker::Http or Compose used it (t/'s ua matches are Test::Mojo's). req_ua comment and POD, and the runtime skill, now say the SSE GET is a raw Mojo::IOLoop connection without a timeout (Mojo::UserAgent does not SSE-parse chunked bodies, checked in Mojo::Content 9.49). No test added (an absence test proves nothing); affected tests green EV+Poll. No Changes entry (unreleased, never used). Not committed.
+
+Committed as e887a9e
