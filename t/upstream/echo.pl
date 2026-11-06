@@ -24,6 +24,21 @@ if (defined $BAD_ERROR) { _bad_error_peer($BAD_ERROR); exit 0 }
 # The server itself is t/lib/EchoServer.pm, which `class` entries mount too.
 my $server = EchoServer->new;
 
+# --die-mid-line adds a tool `cut` that writes the first half of its answer
+# and is killed before the rest: what a child that crashes in the middle of a
+# line leaves the hub with.
+if (grep { $_ eq '--die-mid-line' } @ARGV) {
+  $server->tool(
+    name         => 'cut',
+    description  => 'Write half an answer, then die by SIGKILL',
+    input_schema => {type => 'object'},
+    code         => sub ($tool, $args) {
+      syswrite STDOUT, '{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"cut off';
+      kill 'KILL', $$;
+    },
+  );
+}
+
 # --http=PORT serves the same server over Streamable HTTP at
 # http://127.0.0.1:PORT/mcp instead of stdio: what t/upstream/fake-docker.pl
 # runs for an HTTP container. --http-delay=SECONDS waits that long before it

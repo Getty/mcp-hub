@@ -209,6 +209,26 @@ subtest 'a line over 16MB: the child is killed, once, and the next one starts cl
   settle;
 };
 
+subtest 'a child killed in the middle of a line leaves nothing for the next one' => sub {
+  # It is killed half-way through its answer. What it got out stayed in the
+  # buffer, in front of the next child's first line -- the answer to its
+  # initialize, which then did not parse: the start waited for it until the
+  # request timed out.
+  my @lines;
+  my $up  = upstream(args => ['-Ilib', "$ECHO", '--die-mid-line'], request_timeout => 10);
+  my $log = log_to(\@lines);
+  $log->level('debug');    # where a line that does not parse is reported
+  $up->log($log);
+
+  my $r = _await_bounded($up->call_tool('cut', {}), 30);
+  like _error_text($r), qr/exited \(signal 9\)/, 'the call fails as the child is killed mid-line';
+  my $next = _await_bounded($up->call_tool('echo', {msg => 'intact'}), 30);
+  is _error_text($next), 'intact', 'the next child answers the next call' or diag explain $next;
+  is_deeply [grep {/malformed/} @lines], [], 'its first line arrived whole';
+  $up->stop;
+  settle;
+};
+
 subtest 'failed after three quick exits' => sub {
   my $up = upstream()->fail_window($WINDOW);
   _await($up->call_tool('exit', {})) for 1 .. 3;

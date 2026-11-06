@@ -423,6 +423,10 @@ sub _attach ($self, $pid, $parent, $err_r) {
   $self->stats->{pid}        = $pid;
   $self->stats->{started_at} = time;
 
+  # And a new line buffer: what the last child left of a line when it died
+  # would go in front of this one's first.
+  $self->{inbuf} = '';
+
   # How this child ends -- its socket closed, its status in, killed -- and the
   # watch for its status, set up at once: under EV the status goes to whoever
   # watches by the time libev reaps it (MCP::Hub::Child).

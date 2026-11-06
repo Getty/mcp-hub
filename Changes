@@ -246,3 +246,5 @@ Revision history for MCP-Hub
   - A stop -- idle, reload or shutdown -- closes a stdio server's or forked
     worker's stdin and gives it two seconds to exit on its own; only one
     still running then gets SIGTERM, and SIGKILL five seconds later.
+  - A stdio server that crashed in the middle of writing a line no longer
+    garbles the first answer of the server started after it.
