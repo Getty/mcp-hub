@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T08:25:08Z
+created: 2026-11-06T07:29:07Z
+id: 106
+priority: low
+started: 2026-11-06T07:41:05Z
+status: done
+tags:
+- http
+- upstream
+- race
+title: 'Streamable HTTP: a call sent while another start is under way is taken for
+  a request of that start'
+updated: 2026-11-06T08:25:08Z
+---
+
+Found during k100 (pre-existing since k91). _http_send_p classifies a request as part of a start by $self->{start_promise} at the time it is sent ($of_start). A call that got its go-ahead just before another start began -- a stop then a start, or (since k100) a re-initialize after a 404 -- goes out as part of that start: before the initialize is answered it carries no Mcp-Session-Id (a stateful remote answers 400), it lands in {pending} so a stop cuts it off, and it is not counted in calls_on. Narrow window. Done: a call is tied to the session/start it was issued for (e.g. the handshake marks its own requests explicitly instead of inferring from start_promise), or a call issued during a start waits for it; test that drives a call into the window.
+
+Fixed in lib/MCP/Hub/Upstream/Http.pm, worker tree, uncommitted. The handshake now marks its own requests: start_p sets {handshake} when its handshake begins and clears it together with start_promise when the start settles. _http_request_p takes a request as the start's only while {handshake} is set and the method is not a call (%CALL: tools/call, prompts/get, resources/read). Any other request that finds a start under way waits for start_promise and goes out on the session that start opens; if the start fails or is stopped, the request fails with it. _http_send_p gets $of_start as an argument and no longer infers it from start_promise. Why calls are listed rather than handshake methods: a future handshake method taken for a call would deadlock on its own start; a future call method taken for a handshake request only brings the old race back. Test, t/http.t: 'a call let through just before a start goes out on the session it opens', two cases, stop+start and the k100 re-initialize after a 404. It drives the call into the window deterministically (next_tick, and a tx finish hook on the first POST). The test fails at HEAD 8e94994: bare tools/call before the initialize, cut off by a stop, not counted. It passes with the fix. Verified: t/http.t 5/5 under EV and 5/5 under MOJO_REACTOR=Mojo::Reactor::Poll. Full prove -lr t/ on a HEAD export with Http.pm and t/http.t on top: PASS, 37 files, 409 tests; skipped only docker-live.t, npx.t and wiki-live.t, which skip themselves on unset env vars. Split patch: scratchpad w-k101/k106.patch (HEAD -> k106), applied first.
+
+k106 done: the handshake marks its own requests ({handshake}); a call that finds a start under way waits for it and goes out on its session. Regression test in t/http.t fails at HEAD and passes now; t/http.t 5x EV + 5x Poll; full prove -lr t/ PASS. Proposed subject: 'Send a call that comes upon a Streamable HTTP start on the session that start opens (k106)'. Patch w-k101/k106.patch goes in before k101.patch.
+
+Committed as 29f3f9b
