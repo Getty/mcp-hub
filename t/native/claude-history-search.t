@@ -54,7 +54,7 @@ sub decode_all ($h, $args) {
   my $needle = lc $args->{query};
   my %roles  = map { $_ => 1 } @{$args->{roles} // ['user']};
   my @hits;
-  for my $s (@{$h->list_sessions({limit => 1e9})}) {
+  for my $s (@{$h->_sessions({limit => 1e9})}) {
     for my $line (split /\n/, Mojo::File->new($s->{_file})->slurp) {
       my $rec = eval { decode_json($line) } or next;
       my $type = $rec->{type} // '';

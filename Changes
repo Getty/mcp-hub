@@ -231,3 +231,6 @@ Revision history for MCP-Hub
     out as a string in `text`, `first_prompt` and `last_prompt` (a number or
     boolean as its string, an object as empty text) instead of as a JSON
     number, boolean or object.
+  - `list_sessions` no longer sends `_file`, the absolute path of each
+    session's file on the hub host, which leaked the host's user name and
+    home layout to every agent.

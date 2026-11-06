@@ -43,7 +43,7 @@ sub every_line ($f) {
   }
   return [{session_id => $session_id // 'inc', project => $project // '/home/tester/inc', started_at => $started,
     last_activity => $last // $started, messages => $count // 0, first_prompt => $first_prompt, title => $title,
-    git_branch => $branch, _file => "$f"}];
+    git_branch => $branch}];
 }
 
 my $h = MCP::Hub::Native::ClaudeHistory->new(root => "$root");

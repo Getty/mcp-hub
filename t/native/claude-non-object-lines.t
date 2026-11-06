@@ -47,7 +47,6 @@ sub answers ($name, $code) {
   is $@, '', "$name answers";
   return $got;
 }
-sub no_file ($sessions) { return [map { my %s = %$_; delete $s{_file}; \%s } @{$sessions // []}] }
 
 my $h     = MCP::Hub::Native::ClaudeHistory->new(root => "$with");
 my $clean = sub { MCP::Hub::Native::ClaudeHistory->new(root => "$without") };
@@ -60,7 +59,7 @@ subtest 'claude-history' => sub {
     $clean->()->search_conversations($needle), 'the same hits from the cache';
 
   my $sessions = answers('list_sessions', sub { $h->list_sessions });
-  is_deeply no_file($sessions), no_file($clean->()->list_sessions), 'the same sessions as without the odd lines';
+  is_deeply $sessions, $clean->()->list_sessions, 'the same sessions as without the odd lines';
   is $sessions->[0]{messages},     4,                            'the other lines count';
   is $sessions->[0]{first_prompt}, 'first prompt with a needle', 'the first prompt';
   is $sessions->[0]{title},        'Odd lines',                  'the title';
@@ -78,8 +77,8 @@ subtest 'claude-history' => sub {
   append($without, grep { !$odd{$_} } @more);
   is_deeply answers('a search_conversations after an append', sub { $h->search_conversations($needle) }),
     $clean->()->search_conversations($needle), 'the same hits as without the odd lines';
-  is_deeply no_file(answers('list_sessions after an append', sub { $h->list_sessions })),
-    no_file($clean->()->list_sessions), 'the same sessions';
+  is_deeply answers('list_sessions after an append', sub { $h->list_sessions }), $clean->()->list_sessions,
+    'the same sessions';
 };
 
 subtest 'claude-sessions' => sub {

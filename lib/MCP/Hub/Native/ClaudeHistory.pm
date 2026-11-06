@@ -128,6 +128,15 @@ sub list_projects ($self) {
 }
 
 sub list_sessions ($self, $args = {}) {
+  my $sessions = $self->_sessions($args);
+  delete $_->{_file} for @$sessions;
+  return $sessions;
+}
+
+# The sessions list_sessions returns, each a copy of the cached metadata that
+# also holds, as _file, the path of its session file; search_conversations
+# reads that file, list_sessions sends no path of this host.
+sub _sessions ($self, $args) {
   my $limit = $args->{limit} // 50;
   my @sessions;
   for my $dir ($self->_project_dirs) {
@@ -166,7 +175,7 @@ sub search_conversations ($self, $args) {
   }
 
   my @hits;
-  my $sessions = $self->list_sessions({project => $args->{project}, since => $args->{since}, until => $args->{until}, limit => 1e9});
+  my $sessions = $self->_sessions({project => $args->{project}, since => $args->{since}, until => $args->{until}, limit => 1e9});
   for my $session (@$sessions) {
     last if @hits >= $limit;
     my $found = $found{$session->{_file}};
