@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-11-06T04:16:37Z
+created: 2026-11-06T02:55:23Z
+id: 69
+priority: high
+started: 2026-11-06T03:05:29Z
+status: done
+tags:
+- auth
+- aggregate
+- bug
+- security
+title: A server name containing __ lets /all bypass the profile
+updated: 2026-11-06T04:16:44Z
+---
+
+Found by mcp-hub-worker during k68 (2026-11-06). /all reads everything before the first __ of a prefixed name as the server. With entries p and p__x and a profile allowing [p], /all tools/call p__x__echo succeeds (and since k68 p__x's prompts leak the same way, the prompt filter uses the same split). A profile allowing [p__x] sees none of its own tools. Separately, two entries can produce the same /all name (p + tool x__echo vs p__x + tool echo); the first wins.
+Chosen by the orchestrating agent (not the maintainer) while the maintainer was away: Option B -- Aggregate remembers which server each wrapped tool/prompt came from, and the filters decide by that origin, not by splitting the name. No config change.
+Left open for the maintainer: Option A -- refuse __ in server names in Config (with the JSON path), which would also remove the name collisions but narrows the config surface. The collisions stay a known gap until then.
+Done: profile filtering on /all by origin for tools and prompts (list and call/get); regression tests with p and p__x for both directions; the collision behaviour pinned by a test (first wins, documented).
+
+2026-11-06 03:10 Started (mcp-hub-worker). Option B as recorded: chosen by the orchestrating agent, not the maintainer. Plan: Aggregate records each wrapper's origin [server, own name] keyed by the wrapper object (refaddr) in rebuild -- not a name map, since colliding /all names (p + x__echo vs p__x + echo) would let a last-wins map decide the first entry by the wrong server. Auth::filter_aggregate / filter_aggregate_prompts take the aggregate and ask ->origin; an entry of unknown origin is dropped (fail closed); _aggregate_name goes. Tests first in t/aggregate-origin.t.
+
+2026-11-06 03:14 Implemented. Before (HEAD, t/aggregate-origin.t red, 20 failing assertions): profile [p] listed AND ran p__x__echo and got p__x__greet; profile [p__x] saw none of its own; tools:{p__x:{allow:[echo]}} hid all of p__x; a rule on p also hid all of p__x. After: green. Aggregate::origin(entry) -> (server, own name), recorded per wrapper object (refaddr) in rebuild; Auth::filter_aggregate/_prompts($profile, $list, $aggregate) decide by it, drop unknown origin (pinned in t/auth.t under a '*' profile -- removing the defined-guard turns it red); Auth::_aggregate_name removed (no other user). Collision pinned (p+x__echo vs p__x+echo: both listed as p__x__echo, call/get reach p = first in name order; a profile seeing one gets that one) and documented in Aggregate POD 'Known limit: colliding names'. Skill text: mcp-hub-runtime /all section, mcp-hub-core filter invariant.
+
+2026-11-06 03:38 Done (not committed). Security: before, with servers p and p__x, a client whose profile allows only [p] could list AND call every tool and get every prompt of p__x on /all (Auth split the name at the first __); a profile [p__x] saw none of its own, and tools rules for p__x / p hit the wrong server. Fix (Option B, orchestrator's choice, not the maintainer's): Aggregate::origin($entry) -> (server, own name), recorded per wrapper object (refaddr) in rebuild; Auth::filter_aggregate/filter_aggregate_prompts($profile, $list, $aggregate) decide by it and drop unknown origins; _aggregate_name removed. Collision (p+x__echo vs p__x+echo -> both 'p__x__echo', first wins) pinned in t/aggregate-origin.t and documented (Aggregate POD 'Known limit'), unchanged; Option A stays open. Files: lib/MCP/Hub/{Aggregate,Auth}.pm, lib/MCP/Hub.pm (2 lines), t/aggregate-origin.t (NEW, untracked: needs git add), t/auth.t, skills mcp-hub-core/-runtime, design spec. Verified: t/aggregate-origin.t red on HEAD (all 4 subtests), green after; full prove -lr t/ green on HEAD export + my files (30 files, 268 tests; skipped: docker-live, npx, wiki-live). Per-card patch: scratchpad/w-k69/k69.patch. Drift: under a collision title/icons/_meta are still looked up by name (last wins) -> a [p] client sees p__x's title on p's tool (probe confirmed); documented, not fixed.
+
+Committed as e5a5ef9.
