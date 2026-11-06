@@ -640,6 +640,29 @@ reconnected on every call. L<MCP::Hub::Upstream/refresh_p> (C<mcp-hub refresh
 NAME>) clears the failure and tries once more, mirroring the crash-loop handling
 of L<MCP::Hub::Upstream::Stdio>.
 
+A stop -- a configuration reload that replaces or removes the entry, or the
+daemon shutting down -- calls off a start under way, on both transports: the
+request of the start in flight is cut off, the next one is not sent, and the
+start is rejected as C<upstream NAME: stopped> without counting as a connect
+failure. A start asked for after the stop is a fresh one. It begins once the
+start the stop called off has settled, so that two handshakes never run at
+once, and whatever asks in the meantime shares it; a stop before it begins
+calls it off too.
+
+What a stop does to a call in flight depends on the transport. Over HTTP+SSE
+the call fails as stopped: its answer would come on the stream, and the stop
+closes the stream. Over Streamable HTTP a call on a ready upstream is left to
+finish: its answer comes on its own POST, and the remote may already be
+carrying it out.
+
+Over Streamable HTTP a stop also ends the session. Once no call is left on it,
+one C<DELETE> to the endpoint with its C<Mcp-Session-Id> tells the remote that
+the session is no longer needed. Nothing waits for it: a remote that answers
+C<405> -- it does not let clients end sessions -- or cannot be reached is only
+logged at debug level, and the connect and request timeouts of L</req_ua> bound
+it. One sent as the daemon shuts down may not get out before the process ends.
+The next start opens a new session: its C<initialize> carries no session id.
+
 An C<https> C<url> needs TLS in the perl the hub runs on: L<IO::Socket::SSL>
 2.009 or newer, which L<Mojolicious> speaks TLS with, and C<MOJO_NO_TLS> unset.
 Without it the constructor dies with a reason that says so, and the hub keeps

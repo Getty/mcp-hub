@@ -480,8 +480,7 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
     my $fake      = fake_sse(answer => sub ($req) {
       my $method = $req->{method} // '';
       return undef if $method eq $hold;
-      # No tools: the code of a façade tool holds its upstream, which would
-      # outlive the weak reference below whatever the stops left behind.
+      # Empty lists: what a start lists plays no part in its stop.
       return {jsonrpc => '2.0', id => $req->{id}, result => {tools => []}}   if $method eq 'tools/list';
       return {jsonrpc => '2.0', id => $req->{id}, result => {prompts => []}} if $method eq 'prompts/list';
       my $res = $handshake->($req);
