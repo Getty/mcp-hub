@@ -44,6 +44,15 @@ POST, JSON oder `text/event-stream`), `type: "sse"` = HTTP+SSE (langlebiger
 GET-Stream). `headers` trägt das Auth; eine Session-Id aus `Mcp-Session-Id` wird
 mitgeschickt. Drei Fehlschläge binnen 5 s → `failed`.
 
+Eine `https`-URL braucht TLS in diesem Perl: `IO::Socket::SSL` 2.009+ und
+`MOJO_NO_TLS` ungesetzt. `Mojo::IOLoop::TLS` entscheidet das einmal beim Laden —
+fehlt es, stirbt `Upstream::Http->new` mit einem Grund, der den Fix nennt, und
+der Hub behält einen `failed`-Upstream mit diesem Grund; kein Retry, `refresh`
+oder Reload heilt das, nur Modul installieren und Daemon neu starten. Dieselbe
+Prüfung (`Http::_tls_missing`, derselbe Text) läuft in `Upstream::Compose->new`
+für die `url` eines compose-Eintrags. Ein `docker`-Eintrag (und compose ohne
+`url`) braucht sie nicht: die Adresse baut der Hub selbst, immer `http://`.
+
 ### Perl — In-Process, ohne Kindprozess
 
 `class` via `Mojo::Loader`, `new(%args)` — `args` ist bei `class` ein **Objekt**
