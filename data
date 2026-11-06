@@ -1,0 +1,18 @@
+---
+class: standard
+completed: 2026-11-06T13:15:46Z
+created: 2026-11-06T03:41:48Z
+id: 78
+priority: low
+started: 2026-11-06T11:49:45Z
+status: done
+tags:
+- aggregate
+- notifications
+title: A manifest refresh rebuilds /all but sends it no list_changed
+updated: 2026-11-06T13:15:50Z
+---
+
+Found by mcp-hub-worker during k69/k71 (2026-11-06). The manifest-refresh path (Upstream.pm:152, Fork.pm:122, Hub::refresh_p) rebuilds /all but notifies its listeners of nothing; a per-server façade gets only tools/list_changed even when its prompts changed. Done: a refresh that changes an upstream's tools or prompts sends /all tools/list_changed and prompts/list_changed, and the server's own endpoint the notification(s) for what changed; tests with a real subscriptions/listen as in t/reload.t (k71).
+
+Fixed: refresh/start compares the façade's rendered lists before/after (_show_manifest); own endpoint gets list_changed per changed kind, /all gets tools/prompts via rebuild_aggregate(@changed); unchanged → no notification (worker's choice). Test t/list-changed.t (real listen, stdio+fork, /echo+/all), red on HEAD 4/4. Committed as fbb760b.
