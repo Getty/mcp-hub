@@ -122,3 +122,8 @@ Revision history for MCP-Hub
     reconnects on its next call, also after an earlier stop or failed start;
     it used to stay ready over the dead stream, every call timing out, until
     the daemon was restarted.
+  - /all keeps the scopes, cache_ttl and cache_scope of an in-process
+    class's tools and prompts. Once scopes are enforced, /all refuses and
+    hides what the class's own endpoint refuses instead of serving it; the
+    hub enforces none yet, so no call got through. Its lists also carry the
+    class's cache ttl and the private cache scope a scoped prompt needs.

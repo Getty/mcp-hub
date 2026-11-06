@@ -52,6 +52,13 @@ sub _listed_extra ($server, $kind) {
   return {map { $_->{name} => MCP::Hub::Facade::_extra($_) } @{$result->{$kind} // []}};
 }
 
+# The MCP::Primitive fields MCP::Server acts on rather than renders: the scopes
+# a listing or call needs -- checked here, since a wrapped call goes straight to
+# the original object, past its own server's check -- and the cache hints.
+sub _primitive_fields ($primitive) {
+  return map { $_ => $primitive->$_ } qw(scopes cache_ttl cache_scope);
+}
+
 sub _wrap_tool ($prefix, $tool, $extra) {
   return MCP::Hub::Facade::Tool->new(
     name         => $prefix . $tool->name,
@@ -59,6 +66,7 @@ sub _wrap_tool ($prefix, $tool, $extra) {
     input_schema => $tool->input_schema,
     ($tool->output_schema ? (output_schema => $tool->output_schema) : ()),
     annotations  => $tool->annotations,
+    _primitive_fields($tool),
     extra        => $extra,
     code         => sub ($wrapper, $args) { $tool->call($args, $wrapper->context) },
   );
@@ -69,6 +77,7 @@ sub _wrap_prompt ($prefix, $prompt) {
     name        => $prefix . $prompt->name,
     description  => $prompt->description,
     arguments   => $prompt->arguments,
+    _primitive_fields($prompt),
     code        => sub ($wrapper, $args) { $prompt->call($args, $wrapper->context) },
   );
 }
@@ -98,6 +107,13 @@ C<tools/list> and C<prompts/list> rendering when the aggregate is rebuilt -- a
 facade merges them in from its manifest, an in-process class renders them
 itself -- and merged back in by L<MCP::Hub::Facade::Server>, after the profile
 filter.
+
+Each also keeps the C<scopes>, C<cache_ttl> and C<cache_scope> of the original
+object (L<MCP::Primitive>). Since a call goes straight to that object, past its
+own server's scope check, C</all> runs that check itself: a primitive the
+request's scopes do not cover is refused and left out of the list here, as on
+its own endpoint. Only in-process classes set these fields; a facade built
+from a manifest has none to keep, as C<tools/list> does not carry them.
 
 Resources are not aggregated -- their URIs are opaque and would collide -- so use
 the per-server endpoint for those. The C<instructions> are the concatenation of
