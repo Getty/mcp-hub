@@ -226,3 +226,8 @@ Revision history for MCP-Hub
     that a stop calls off as its initialize goes out, now ends that session
     with a DELETE instead of leaving it open on the remote until its own
     timeout.
+  - A `tool_use` block without a name shows as `[tool_use]` instead of
+    warning on every read, and message content that is not an array now goes
+    out as a string in `text`, `first_prompt` and `last_prompt` (a number or
+    boolean as its string, an object as empty text) instead of as a JSON
+    number, boolean or object.

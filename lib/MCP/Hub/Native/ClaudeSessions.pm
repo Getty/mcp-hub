@@ -157,11 +157,15 @@ sub _record ($line) {
 }
 
 # The text blocks of a message; a block that is not an object ("x", 1, [1]) is
-# skipped, as MCP::Hub::Native::ClaudeHistory skips it.
+# skipped, as MCP::Hub::Native::ClaudeHistory skips it. Content that is not an
+# array is the text itself, made into a string as ClaudeHistory makes it: a
+# string as it is, a number or boolean as its string, an object as no text;
+# null stays undef.
 sub _text ($message) {
   return '' unless ref $message eq 'HASH';
   my $content = $message->{content};
-  return $content unless ref $content eq 'ARRAY';
+  return undef unless defined $content;
+  return ref $content eq 'HASH' ? '' : "$content" unless ref $content eq 'ARRAY';
   return join "\n", map { $_->{text} // '' } grep { ref $_ eq 'HASH' && ($_->{type} // '') eq 'text' } @$content;
 }
 

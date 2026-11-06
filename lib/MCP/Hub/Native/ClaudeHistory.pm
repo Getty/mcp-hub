@@ -13,7 +13,11 @@ has meta_cache => sub { {} };
 
 # Escapes that decode to a character a raw search needle can match: printable
 # ASCII, U+0130 and U+212A (see _raw_skip); and text, name and content values
-# that are not strings, which _text stringifies.
+# that are not strings but that _text makes into one: a number or boolean, as
+# any of the three, into its string (1e5 is "100000", true "1"); an object or
+# array as text or name into "HASH(0x...)" or "ARRAY(0x...)". Null, and an
+# object as content, _text makes into no text; these tests let them through
+# all the same.
 my $ESCAPE        = qr/\\u(?:00[2-7][0-9a-fA-F]|0130|212[aA])/;
 my $TEXT_VALUE    = qr/"text"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\x20\t\r\n]/;
 my $NAME_VALUE    = qr/"name"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\x20\t\r\n]/;
@@ -377,7 +381,8 @@ sub _file_for_session ($self, $session_id) {
 # ASCII character, a slash escaped as \/ when the needle holds '/', KELVIN SIGN
 # (lowercase "k") or U+0130 (lowercase "i\x{307}") when it holds that letter,
 # or a non-string text, name or content value when the needle could be such a
-# value stringified (1e5 is "100000", true "1", an object "HASH(0x...)").
+# value stringified (1e5 is "100000", true "1", an object as text or name
+# "HASH(0x...)").
 sub _raw_skip ($needle) {
   return undef unless $needle =~ /\A[\x20-\x7e]+\z/ && $needle !~ /["\\\[\]]/;
   return undef if grep { index($needle, substr('[tool_use ', $_)) == 0 } 1 .. 9;
@@ -396,17 +401,22 @@ sub _raw_skip ($needle) {
   };
 }
 
+# A message's text. Content that is not an array is the text itself: a string
+# as it is, a number or boolean as its string, an object as no text; null stays
+# undef. Of an array, the text blocks and a marker for each tool_use block
+# ("[tool_use]" if it has no name) and tool_result block.
 sub _text ($message) {
   return '' unless ref $message eq 'HASH';
   my $content = $message->{content};
-  return $content unless ref $content eq 'ARRAY';
+  return undef unless defined $content;
+  return ref $content eq 'HASH' ? '' : "$content" unless ref $content eq 'ARRAY';
 
   my @parts;
   for my $block (@$content) {
     next unless ref $block eq 'HASH';
     my $type = $block->{type} // '';
     if    ($type eq 'text')        { push @parts, $block->{text} // '' }
-    elsif ($type eq 'tool_use')    { push @parts, "[tool_use $block->{name}]" }
+    elsif ($type eq 'tool_use')    { push @parts, defined $block->{name} ? "[tool_use $block->{name}]" : '[tool_use]' }
     elsif ($type eq 'tool_result') { push @parts, '[tool_result]' }
   }
   return join "\n", @parts;
@@ -495,8 +505,9 @@ characters.
 
 Arguments C<session_id> (required), C<offset> (0), C<limit> (50), C<roles>
 (C<["user","assistant"]>). Returns C<< {entries, total, has_more} >>, with
-C<tool_use> blocks rendered as C<[tool_use <name>]> and C<tool_result> as
-C<[tool_result]>.
+C<tool_use> blocks rendered as C<[tool_use <name>]> (C<[tool_use]> for one
+without a name) and C<tool_result> as C<[tool_result]>. An entry's C<text> is
+a string, or null for a message without content.
 
 =back
 
