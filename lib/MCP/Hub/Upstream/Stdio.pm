@@ -557,9 +557,10 @@ C<notifications/cancelled>.
 
 The child is B<lazily> started: at daemon start a fresh cached manifest is
 enough to answer C<tools/list>, and nothing is spawned until the first
-C<tools/call>, C<prompts/get> or C<resources/read>. It is stopped again after
-L</idle_timeout> seconds of no requests (unless
-L<MCP::Hub::Upstream/always_on>), and restarted on the next call.
+C<tools/call>, C<prompts/get> or C<resources/read>. It is stopped again
+L</idle_timeout> seconds after its last request ended -- never while one is in
+flight, however long it runs -- unless L<MCP::Hub::Upstream/always_on>, and
+restarted on the next call.
 
 A stop closes the child's stdin and gives it two seconds to exit on its own, as
 a stdio server does at the end of its input. A child that does is never sent a
@@ -606,7 +607,8 @@ C<5>.
 
 =attr idle_timeout
 
-Seconds of no requests before the child is stopped. Defaults to C<300>.
+Seconds after the last request ended before the child is stopped. Defaults to
+C<300>.
 
 =head1 METHODS
 

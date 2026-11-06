@@ -248,3 +248,6 @@ Revision history for MCP-Hub
     still running then gets SIGTERM, and SIGKILL five seconds later.
   - A stdio server that crashed in the middle of writing a line no longer
     garbles the first answer of the server started after it.
+  - A call that runs longer than idle_timeout no longer has its server
+    stopped under it: the idle countdown starts when the last request in
+    flight ends.

@@ -112,6 +112,7 @@ sub _arm_idle_timer ($self) {
   my $timeout = $self->idle_timeout;
   return unless $timeout > 0;
   $self->_clear_idle_timer;
+  return if $self->{in_flight};    # the last request to end arms it (_forward_p)
   $self->{idle_timer} = Mojo::IOLoop->timer($timeout => sub {
     $self->log->info("[@{[$self->name]}] idle for ${timeout}s, stopping");
     $self->stop;
@@ -130,30 +131,39 @@ sub _clear_idle_timer ($self) {
 
 sub call_tool ($self, $name, $args) {
   $self->stats->{calls}++;
-  return $self->start_p->then(sub {
-    $self->touch;
-    return $self->_request_p('tools/call', {name => $name, arguments => $args});
-  })->catch(sub ($err) {
+  return $self->_forward_p('tools/call', {name => $name, arguments => $args})->catch(sub ($err) {
     $self->stats->{errors}++;
     return {content => [{type => 'text', text => "$err"}], isError => \1};
   });
 }
 
 sub get_prompt ($self, $name, $args) {
-  return $self->start_p->then(sub {
-    $self->touch;
-    return $self->_request_p('prompts/get', {name => $name, arguments => $args});
-  })->catch(sub ($err) {
+  return $self->_forward_p('prompts/get', {name => $name, arguments => $args})->catch(sub ($err) {
     return {description => "$err", messages => [{role => 'user', content => {type => 'text', text => "$err"}}]};
   });
 }
 
 sub read_resource ($self, $uri) {
-  return $self->start_p->then(sub {
-    $self->touch;
-    return $self->_request_p('resources/read', {uri => $uri});
-  })->catch(sub ($err) {
+  return $self->_forward_p('resources/read', {uri => $uri})->catch(sub ($err) {
     return {contents => [{uri => $uri, mimeType => 'text/plain', text => "$err"}]};
+  });
+}
+
+# Start the upstream if need be and send it the request. The idle countdown
+# is off while any request is in flight and starts when the last one ends: a
+# call that runs longer than idle_timeout must not have its upstream stopped
+# under it.
+sub _forward_p ($self, $method, $params) {
+  my $start = $self->start_p;
+  $self->{in_flight}++;
+  $self->_clear_idle_timer;
+  return $start->then(sub {
+    $self->touch;
+    return $self->_request_p($method, $params);
+  })->finally(sub {
+    $self->{in_flight}--;
+    $self->touch;
+    return;
   });
 }
 
@@ -514,7 +524,8 @@ CLI has stopped and removed its container. The daemon waits for it on shutdown.
 =method touch
 
 Reset L</last_used> and, for a running upstream that stops when idle, its idle
-timer.
+timer -- unless a request is in flight: then the countdown starts when the
+last one ends.
 
 =method type
 

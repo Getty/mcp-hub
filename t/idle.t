@@ -19,6 +19,27 @@ my $ECHO = curfile->sibling('upstream', 'echo.pl');
 
 sub quiet () { my $log = Mojo::Log->new; $log->unsubscribe('message'); return $log }
 
+# A log that keeps its lines, [time, "level message"], instead of printing them.
+sub log_to ($lines) {
+  my $log = quiet();
+  $log->on(message => sub ($l, $level, @msg) { push @$lines, [time, "$level @msg"] });
+  return $log;
+}
+
+# When the idle stop came, by its log line -- or undef.
+sub idle_stop_at ($lines) { my ($stop) = grep { $_->[1] =~ /idle for/ } @$lines; return $stop && $stop->[0] }
+
+# An upstream that idles and whose requests the test answers by hand: no
+# process, nothing but the base class's idle countdown.
+package Held {
+  use Mojo::Base 'MCP::Hub::Upstream', -signatures;
+  has idle_timeout => 1;
+  has held         => sub { [] };
+  sub start_p ($self) { $self->state('ready'); return Mojo::Promise->resolve($self) }
+  sub stop    ($self) { $self->state('stopped'); return $self }
+  sub _request_p ($self, $method, $params) { push @{$self->held}, my $p = Mojo::Promise->new; return $p }
+}
+
 sub upstream (%config) {
   return MCP::Hub::Upstream::Stdio->new(
     name      => 'echo',
@@ -71,6 +92,54 @@ subtest 'a request re-arms the timer' => sub {
   }
   is $up->state, 'ready', 'three seconds of requests, a second apart, keep it running';
   ok wait_until(sub { $up->state eq 'stopped' }), 'and it stops once they end';
+};
+
+subtest 'a call longer than idle_timeout is not stopped under it' => sub {
+  # The countdown started with the call, and the child was sent its EOF a
+  # second into this one: the start of a stop, while the call was running.
+  my @lines;
+  my $up   = upstream(idle_timeout => 1);
+  $up->log(log_to(\@lines));
+  my $call = $up->call_tool('sleep', {seconds => 2});    # idle_timeout + 1
+  my $pid  = $up->stats->{pid};
+  my $r    = await_bounded($call);
+  my $end  = time;
+  is $r->{content}[0]{text}, 'slept 2', 'the call is answered' or diag explain $r;
+  Mojo::Promise->timer(0.3)->wait;    # what a stop under it would have ended by now
+  is idle_stop_at(\@lines), undef, 'with no idle stop while it ran';
+  is $up->state, 'ready', 'the upstream is ready';
+  is $up->stats->{pid}, $pid, 'with the child that answered';
+  ok wait_until(sub { $up->state eq 'stopped' }), 'which stops once idle';
+  cmp_ok idle_stop_at(\@lines) // 0, '>=', $end + 0.9, 'idle_timeout after the call ended';
+};
+
+subtest 'a call longer than idle_timeout and the grace of a stop is answered' => sub {
+  # Two seconds after the EOF a stop sends SIGTERM: a call that ran past both
+  # was killed with its child.
+  my $up = upstream(idle_timeout => 1);
+  my $r  = await_bounded($up->call_tool('sleep', {seconds => 4}));
+  is $r->{content}[0]{text}, 'slept 4', 'the call is answered' or diag explain $r;
+  $up->stop;
+  ok wait_until(sub { !$up->stats->{pid} }), 'stopped';
+};
+
+subtest 'the countdown starts when the last request in flight ends' => sub {
+  my $up = Held->new(name => 'held', config => {type => 'held'}, log => quiet());
+  my $ended = 0;
+  $_->then(sub { $ended++ }) for $up->call_tool('a', {}), $up->get_prompt('b', {}), $up->read_resource('c://');
+  ok wait_until(sub { @{$up->held} == 3 }), 'a call, a prompt and a resource in flight';
+  ok !$up->{idle_timer}, 'no countdown while they run';
+  $up->apply_timeouts({idle_timeout => 2});
+  ok !$up->{idle_timer}, 'nor from a new idle_timeout';
+
+  $up->held->[0]->resolve({content => []});
+  $up->held->[1]->reject('upstream held: nope');
+  ok wait_until(sub { $ended == 2 }), 'two of them end';
+  ok !$up->{idle_timer}, 'and the one left holds the countdown off';
+
+  $up->held->[2]->resolve({contents => []});
+  ok wait_until(sub { $up->{idle_timer} }), 'which starts when it ends';
+  ok wait_until(sub { $up->state eq 'stopped' }), 'and stops the upstream';
 };
 
 subtest 'apply_timeouts on a stopped child arms nothing' => sub {
