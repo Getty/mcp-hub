@@ -20,10 +20,10 @@ use Scalar::Util qw(weaken);
 use constant FAIL_THRESHOLD => 3;
 use constant FAIL_WINDOW    => 5;
 
-# How Mojo::UserAgent rejects a POST it cut off for its time: its request
-# timeout, or its inactivity timeout. The hub has given up on such a request,
-# and cancels it on the remote (_cancel).
-use constant TIMED_OUT => qr/^(?:Request|Inactivity) timeout\z/;
+# How Mojo::UserAgent rejects a POST it cut off for its time: the request
+# timeout of req_ua, the only one it has. The hub has given up on such a
+# request, and cancels it on the remote (_cancel).
+use constant TIMED_OUT => qr/^Request timeout\z/;
 
 # The streaming user agent for the long-lived SSE GET stream (no timeout).
 has ua => sub {
@@ -34,9 +34,14 @@ has ua => sub {
 };
 
 # A separate agent for POSTs, so its request timeout never cuts the SSE stream.
+# That timeout is all that bounds a request: a remote may stay silent longer
+# than Mojo's inactivity timeout (40 s, or $MOJO_INACTIVITY_TIMEOUT) -- a long
+# tool call answered with one JSON body, an event stream without keep-alives
+# -- and is waited for all the same.
 has req_ua => sub ($self) {
   my $ua = Mojo::UserAgent->new;
   $ua->request_timeout($self->request_timeout || 60);
+  $ua->inactivity_timeout(0);
   $ua->max_response_size(0);
   return $ua;
 };
@@ -805,9 +810,8 @@ JSON-RPC error the remote answers with.
 A request the hub times out is cancelled on the remote, as a stdio child's is:
 the remote would go on with it otherwise, as a dropped connection is no
 cancellation to it. Over Streamable HTTP that is a POST that outlasts the
-request timeout of L</req_ua>, or its inactivity timeout; over HTTP+SSE one
-whose answer has not come on the stream within
-L<MCP::Hub::Upstream/request_timeout>. The hub sends a
+request timeout of L</req_ua>; over HTTP+SSE one whose answer has not come on
+the stream within L<MCP::Hub::Upstream/request_timeout>. The hub sends a
 C<notifications/cancelled> with the id the request went out with and the reason
 it failed with (C<Request timeout>, C<timed out after 60s>), as it sends any
 notification: over Streamable HTTP on the session of the request, with its
@@ -890,7 +894,10 @@ Where the manifest cache lives.
 =attr req_ua
 
 The L<Mojo::UserAgent> used for POSTs, with L<MCP::Hub::Upstream/request_timeout>
-applied.
+applied. That is all that bounds a request, over both transports: it has no
+L<Mojo::UserAgent/inactivity_timeout>, so a remote that stays silent longer
+than Mojo's default -- a long tool call answered with one JSON body, an event
+stream without keep-alives -- is waited for until the request timeout.
 
 =attr ua
 

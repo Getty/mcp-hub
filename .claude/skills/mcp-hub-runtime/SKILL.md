@@ -70,9 +70,12 @@ unterscheiden sich vorerst mit Absicht.
 
 `Mojo::UserAgent`, zwei Agenten: der Stream-UA (SSE-GET) läuft **ohne** Timeout,
 der POST-UA mit `request_timeout` (Default 60 s) — sonst kappt der POST-Timeout
-den langlebigen SSE-Stream. `type: "http"` = Streamable HTTP (Antwort auf dem
-POST, JSON oder `text/event-stream`), `type: "sse"` = HTTP+SSE (langlebiger
-GET-Stream). `headers` trägt das Auth. Drei Fehlschläge binnen 5 s → `failed`.
+den langlebigen SSE-Stream. Der POST-UA (`req_ua`) hat **keinen** Inactivity-Timeout:
+`request_timeout` ist die einzige Grenze eines Requests, auch wenn der Remote länger
+schweigt als Mojos Default (40 s bzw. `$MOJO_INACTIVITY_TIMEOUT`) — ein langer Call mit
+einer JSON-Antwort, ein Event-Stream ohne Keep-alive. `type: "http"` = Streamable HTTP
+(Antwort auf dem POST, JSON oder `text/event-stream`), `type: "sse"` = HTTP+SSE
+(langlebiger GET-Stream). `headers` trägt das Auth. Drei Fehlschläge binnen 5 s → `failed`.
 Jede Ablehnung liest `upstream NAME: …` — auch ohne Antwort (refused, `Request
 timeout`), wo Mojo `start_p` selbst nur mit seiner Meldung ablehnt: `_http_send_p`
 hängt dafür `$fail` als Reject-Handler an.
@@ -89,9 +92,9 @@ Start, wie jeder andere.
 
 Einen Request, den der Hub per Timeout aufgibt, sagt er auf der Gegenseite ab wie beim
 stdio-Kind — ein Verbindungsabbruch ist laut Spec keine Absage, der Remote arbeitete sonst
-weiter: Streamable HTTP, wenn `req_ua` den POST mit `Request timeout` oder `Inactivity
-timeout` abbricht (Mojos Meldungen, `TIMED_OUT`); SSE, wenn sein Timer feuert. `_cancel`
-schickt `notifications/cancelled` mit der id, mit der er rausging, und dem Grund seiner
+weiter: Streamable HTTP, wenn `req_ua` den POST mit `Request timeout` abbricht (Mojos
+Meldung, `TIMED_OUT`); SSE, wenn sein Timer feuert. `_cancel` schickt
+`notifications/cancelled` mit der id, mit der er rausging, und dem Grund seiner
 Ablehnung als `reason`, wie jede Notification (Streamable HTTP mit Session-Id und
 ausgehandelter Version, SSE an den Endpoint). Nie für `initialize` (Spec); nichts, wenn der
 Upstream nicht `ready`/`starting` ist oder nicht mehr auf der Session des Requests (`$sent`)

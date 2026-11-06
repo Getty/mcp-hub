@@ -892,7 +892,7 @@ start.
 | `listen` | `http://127.0.0.1:3080` | Listen address. |
 | `cache_dir` | `~/.cache/mcp-hub` | Where manifests are cached. |
 | `idle_timeout` | `300` | Seconds before an idle stdio, docker or compose upstream, or a forked class worker, is stopped. |
-| `request_timeout` | `60` | Seconds to wait for an upstream response. |
+| `request_timeout` | `60` | Seconds to wait for an upstream response, however long the upstream stays silent before it answers. |
 | `profiles` | `{}` | Named permission sets. |
 | `clients` | `{}` | `name → { token, profile }`. |
 | `public_profile` | `null` | Profile for tokenless requests in clients mode. |

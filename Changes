@@ -302,5 +302,9 @@ Revision history for MCP-Hub
     'stopped' also when the child ends on its EOF before it answers, not as
     'exited'.
   - An HTTP upstream sends notifications/cancelled for a request it times
-    out (Streamable HTTP request or inactivity timeout, HTTP+SSE request
-    timer), never for initialize.
+    out (Streamable HTTP request timeout, HTTP+SSE request timer), never
+    for initialize.
+  - An HTTP upstream waits for a remote that stays silent longer than
+    Mojo's 40 s inactivity timeout (or `$MOJO_INACTIVITY_TIMEOUT`):
+    `request_timeout` alone bounds a request, and a reload that changes it
+    applies it.

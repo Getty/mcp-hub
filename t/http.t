@@ -2154,41 +2154,37 @@ subtest 'a warming fetch that cannot connect is failed, with the reason, until a
 sub cancels_on ($fake) { return [grep { ($_->{method} // '') eq 'notifications/cancelled' } @{$fake->{posts}}] }
 
 subtest 'streamable http upstream: a request it times out is cancelled on the remote' => sub {
-  # The hub gave up on it -- Mojo's request timeout, or its inactivity timeout,
-  # cut the POST off -- and nothing told the remote, which went on with it: a
-  # disconnect is no cancellation (MCP 2025-06-18, Streamable HTTP and
-  # Cancellation). A long tool call kept the remote busy after the agent read
-  # that it timed out. It is cancelled, as a stdio child's is: a
-  # notifications/cancelled with the id it went out with, and why, on its
-  # session and with the negotiated version, as any notification.
+  # The hub gave up on it -- the request timeout of req_ua cut the POST off --
+  # and nothing told the remote, which went on with it: a disconnect is no
+  # cancellation (MCP 2025-06-18, Streamable HTTP and Cancellation). A long
+  # tool call kept the remote busy after the agent read that it timed out. It
+  # is cancelled, as a stdio child's is: a notifications/cancelled with the id
+  # it went out with, and why, on its session and with the negotiated version,
+  # as any notification.
   my $fake = fake_http(answer => pong_answer(sub ($req) {
     return ($req->{params}{name} // '') eq 'hold' ? Mojo::Promise->new : undef;    # never answered
   }));
-  for my $case (['Request timeout', 1, undef], ['Inactivity timeout', 5, 1]) {
-    my ($reason, $request_timeout, $inactivity) = @$case;
-    my $up = MCP::Hub::Upstream::Http->new(
-      name      => 'fake',
-      config    => {type => 'http', url => $fake->{url}, request_timeout => $request_timeout},
-      cache_dir => tempdir->to_string,
-    );
-    $up->log->level('fatal');
-    $up->req_ua->inactivity_timeout($inactivity) if $inactivity;
-    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$reason: started";
-    @{$fake->{posts}} = ();
-    is _error_text(_await_bounded($up->call_tool('hold', {}), 10)), "upstream fake: $reason", "$reason: the call times out";
-    my ($posted) = grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}};
-    ok until_true(sub { @{cancels_on($fake)} }), "$reason: and is cancelled";
-    my $cancels = cancels_on($fake);
-    is scalar @$cancels, 1, "$reason: once";
-    is_deeply $cancels->[0]{params}, {requestId => $posted->{id}, reason => $reason},
-      "$reason: by the id it went out with, and why" or diag explain $cancels;
-    ok !exists $cancels->[0]{id}, "$reason: as a notification";
-    is $cancels->[0]{session}, $posted->{session}, "$reason: on its session";
-    is $cancels->[0]{version}, '2025-06-18', "$reason: with the negotiated version";
-    is $up->state, 'ready', "$reason: the upstream stays ready";
-    is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', "$reason: and answers the next call";
-    _stop($up);
-  }
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 1},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  @{$fake->{posts}} = ();
+  is _error_text(_await_bounded($up->call_tool('hold', {}), 10)), 'upstream fake: Request timeout', 'the call times out';
+  my ($posted) = grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}};
+  ok until_true(sub { @{cancels_on($fake)} }), 'and is cancelled';
+  my $cancels = cancels_on($fake);
+  is scalar @$cancels, 1, 'once';
+  is_deeply $cancels->[0]{params}, {requestId => $posted->{id}, reason => 'Request timeout'},
+    'by the id it went out with, and why' or diag explain $cancels;
+  ok !exists $cancels->[0]{id}, 'as a notification';
+  is $cancels->[0]{session}, $posted->{session}, 'on its session';
+  is $cancels->[0]{version}, '2025-06-18', 'with the negotiated version';
+  is $up->state, 'ready', 'the upstream stays ready';
+  is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'and answers the next call';
+  _stop($up);
   $fake->{daemon}->stop;
 };
 
@@ -2299,6 +2295,39 @@ subtest 'sse upstream: a request it times out is cancelled on the remote' => sub
   is_deeply [map { $_->{params}{requestId} } @{cancels_on($fake)}], [$listed->{id}], 'by its id';
 
   $up->stop;
+  $fake->{daemon}->stop;
+};
+
+subtest 'streamable http upstream: request_timeout bounds a request, however long the remote stays silent' => sub {
+  # Mojo's inactivity timeout -- 40 s, or MOJO_INACTIVITY_TIMEOUT -- cut off a
+  # POST the remote sent nothing back on for that long, whatever
+  # request_timeout said: a long tool call answered with one JSON body failed
+  # as "upstream NAME: Inactivity timeout" after 40 s, though its entry gave it
+  # 300. The remote is waited for until request_timeout, and a reload that
+  # moves request_timeout moves that bound. MOJO_INACTIVITY_TIMEOUT stands in
+  # for Mojo's default here, half a second instead of 40; the fake server's
+  # own bound is set apart from it.
+  local $ENV{MOJO_INACTIVITY_TIMEOUT} = 0.5;
+  my $fake = fake_http(answer => pong_answer(sub ($req) {
+    my $quiet = $req->{params}{arguments}{quiet} or return undef;
+    return Mojo::Promise->timer($quiet)->then(sub {
+      return {jsonrpc => '2.0', id => $req->{id}, result => {content => [{type => 'text', text => "after ${quiet}s"}]}};
+    });
+  }));
+  $fake->{daemon}->inactivity_timeout(30);
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 2},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  is _error_text(_await_bounded($up->call_tool('ping', {quiet => 1}), 5)), 'after 1s',
+    'a remote silent past the inactivity bound, but within request_timeout, is waited for';
+  $up->apply_timeouts({request_timeout => 3});
+  is _error_text(_await_bounded($up->call_tool('ping', {quiet => 2.5}), 6)), 'after 2.5s',
+    'and one silent past the old request_timeout, within the one a reload set';
+  _stop($up);
   $fake->{daemon}->stop;
 };
 
