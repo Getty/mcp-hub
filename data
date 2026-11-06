@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-06T17:53:47Z
+created: 2026-11-06T16:14:55Z
+id: 145
+priority: low
+started: 2026-11-06T16:42:32Z
+status: done
+tags:
+- stdio
+- logging
+- drift
+title: Stdio logs a start a stop called off as an error, Http as debug
+updated: 2026-11-06T17:53:52Z
+---
+
+Found by mcp-hub-worker during k138 (2026-11-06).
+A start that a stop calls off is logged differently by the transports: Http's start_p catch logs it at debug ("start called off by a stop"), Stdio's start_p catch logs it at error ("handshake failed: upstream NAME: stopped") -- since k138 that start fails at once as stopped. A configuration reload that replaces a starting stdio entry thus writes an error line for something that is no failure.
+Done when: Stdio logs a start a stop called off as Http does (debug, no "handshake failed"), while a start that fails on its own still logs at error; checked with a test that captures the log.
+
+Done (mcp-hub-worker): Stdio start_p's catch works out $stopped = $child->{eof} first; a start a stop called off logs debug 'start called off by a stop' (Http's text), any other failure still logs error 'handshake failed'. Counting and kill handling unchanged. Fork and Docker-stdio inherit it (checked ad hoc). Regression test in t/stdio-stop.t, red 4/30 on HEAD, plus a guard for a start that fails on its own (exit 3). POD and runtime skill updated. Found on the way: k148 (such a start can reject as 'exited' rather than 'stopped'). Not committed.
+
+Committed as d2c73ff
