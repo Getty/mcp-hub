@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-06T06:37:18Z
+id: 99
+priority: low
+status: backlog
+tags:
+- native
+- cache
+title: ClaudeHistory misses a same-size rewrite within the same second
+updated: 2026-11-06T06:37:18Z
+---
+
+Found during k85 (already in HEAD before it). The metadata cache treats a file as unchanged when dev, inode, size and mtime match. mtime is whole seconds (stat), so a rewrite in place that keeps the size within the same second is not seen until the file changes again. Claude Code only appends, so in practice rare. Options: Time::HiRes::stat for a sub-second mtime, or also compare ctime. Decide whether it is worth it.
