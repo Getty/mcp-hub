@@ -122,6 +122,8 @@ Revision history for MCP-Hub
     get -c JSON and daemon -c N keep their own -c.
   - mcp-hub --config (or -c) without a PATH, or with an empty one, is an error
     instead of silently reading the default file or none.
+  - mcp-hub help shows mcp-hub's own usage and examples instead of
+    Mojolicious'.
   - /all keeps the title, icons and _meta of every tool and prompt, as the
     server's own endpoint lists them; they were dropped since v1.
   - An HTTP+SSE upstream whose stream the remote drops is stopped and

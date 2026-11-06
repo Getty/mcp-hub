@@ -13,6 +13,33 @@ use Mojo::Util   qw(tablify);
 # Mojolicious application or a CPAN distribution, nothing a hub has a use for.
 has namespaces => sub { ['MCP::Hub::Command', 'Mojolicious::Command'] };
 
+# The text above and below the command list. The inherited one is the mojo
+# command's: its examples, CGI/PSGI auto-detection and PLACK_ENV as the mode.
+has message => <<'MESSAGE';
+Usage: mcp-hub [--config PATH] COMMAND [OPTIONS]
+
+  mcp-hub daemon
+  mcp-hub config --client main
+  mcp-hub --config ~/hub.yml status
+  mcp-hub help daemon
+
+Options (before the command name):
+  -c, --config <path>   Configuration file, JSON or YAML; defaults to the value
+                        of MCP_HUB_CONFIG, else config.json, config.yml or
+                        config.yaml in ~/.config/mcp-hub
+
+Options (for all commands, after the command name):
+  -h, --help            Get more information on a specific command
+  -m, --mode <name>     Operating mode, defaults to the value of MOJO_MODE or
+                        "development"
+
+Commands:
+MESSAGE
+has hint => <<'HINT';
+
+See 'mcp-hub help COMMAND' for more information on a specific command.
+HINT
+
 # The Mojolicious commands that would serve the hub outside the one daemon
 # process, and why each cannot.
 my %REFUSED = (
@@ -124,6 +151,17 @@ C<cpanify> -- are not searched; C<get>, C<routes>, C<eval> and C<version> stay.
 =attr namespaces
 
 Defaults to C<MCP::Hub::Command> and C<Mojolicious::Command>, in that order.
+
+=attr message
+
+The usage printed above the command list: C<mcp-hub> examples, the global
+C<--config> and the options every command takes. It replaces the C<mojo> usage
+of L<Mojolicious::Commands/message>, whose examples, CGI and PSGI auto-detection
+and C<PLACK_ENV> mode the hub has no use for.
+
+=attr hint
+
+The line below the command list, pointing at C<mcp-hub help COMMAND>.
 
 =head1 METHODS
 

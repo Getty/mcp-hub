@@ -272,6 +272,28 @@ subtest 'the command list leaves them out and keeps the commands worth having' =
   }
 };
 
+subtest "the text around the list is mcp-hub's own, not Mojolicious's" => sub {
+  # Regression: the usage above the list and the hint below it were the
+  # inherited Mojolicious ones -- "mojo generate lite-app", CGI and PSGI
+  # auto-detection, PLACK_ENV setting the mode, "APPLICATION help COMMAND".
+  delete local $ENV{HARNESS_ACTIVE};
+  delete local @ENV{qw(PLACK_ENV PATH_INFO GATEWAY_INTERFACE MOJO_NO_DETECT)};
+  for my $args ([], ['help'], ['--help'], ['-h']) {
+    my ($out) = run_command($app, @$args);
+    my ($usage, $rest) = split /^Commands:\n/m, $out, 2;
+    my (undef, $hint)  = split /^\n/m, $rest // '', 2;
+    my $text = join '', $usage // '', $hint // '';
+
+    like $usage, qr/\AUsage: mcp-hub /,        "mcp-hub @$args: the usage is mcp-hub's";
+    like $usage, qr/^  mcp-hub daemon$/m,      '...with mcp-hub examples';
+    like $usage, qr/^  -c, --config <path> /m, '...and the global --config';
+    like $hint,  qr/See 'mcp-hub help COMMAND'/, "...and the hint names mcp-hub";
+    unlike $text, qr/\b$_\b/i, "...never naming $_" for @REFUSED, qw(cpanify generate inflate);
+    unlike $text, qr/PLACK_ENV|automatically detected|\bmojo\b|myapp|APPLICATION/,
+      '...nor auto-detection, PLACK_ENV or a Mojolicious example';
+  }
+};
+
 subtest 'the Mojolicious author tools are not hub commands' => sub {
   is_deeply $app->commands->namespaces, ['MCP::Hub::Command', 'Mojolicious::Command'],
     'ours first, then the core commands; no Mojolicious::Command::Author';
