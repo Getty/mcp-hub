@@ -1,0 +1,46 @@
+---
+class: standard
+completed: 2026-11-06T14:53:21Z
+created: 2026-11-06T00:13:54Z
+id: 57
+priority: low
+started: 2026-11-06T13:23:56Z
+status: done
+tags:
+- skill
+- docs
+- docker
+- drift
+title: Skills miss the Docker/Compose upstreams
+updated: 2026-11-06T15:07:12Z
+---
+
+Found by mcp-hub-worker during k49/k51. (1) mcp-hub-runtime has no Docker/Compose upstream section: nothing on the engine (Docker::{Engine,Http,Stdio}), the stdio-or-HTTP decision, the readiness wait or the crash loop; its manifest-hash line names only [command, args, cwd] and [url, type], not the docker/compose hash inputs; its description names only stdio, HTTP and Perl upstreams. (2) mcp-hub-core module map lacks MCP::Hub::Docker, Upstream/Docker.pm, Upstream/Compose.pm, Upstream/Docker/{Engine,Http,Stdio}.pm; its Config paragraph does not say docker/compose entries refuse every key outside %CONTAINER_KEYS. Lane: mcp-hub-worker (skill text). The house rules hazard row on the manifest hash (mcp-hub-rules.md) has the same gap -- maintainer wording.
+
+From k52 (2026-11-06): the Stdio section of mcp-hub-runtime could also say that a child's fds above 2 are closed before exec (MCP::Hub::Child, also used by Docker::run_p and Fork::_isolate_fds).
+
+From k34/k30 (2026-11-06): mcp-hub-core still says there is no prefork command (now: prefork/cgi/psgi refused by MCP::Hub::Commands); its module map lacks MCP::Hub::Commands and MCP::Hub::Child; its global --config/-c line should say 'only before the command name'. The 2026-08-25 spec's command list (l.84) is incomplete (that part belongs with k51's open spec question).
+
+From k61 (2026-11-06): the /all section of mcp-hub-runtime mentions only title/icons/_meta being kept; add scopes, cache_ttl, cache_scope (in-process classes only; manifest tools never carry them).
+
+From k23 (2026-11-06): mcp-hub-core/mcp-hub-runtime should say that any assignment to $SIG{CHLD} in the hub process, a local one too, removes libev's reaping for good ('IGNORE' makes every exit status 'unknown'); child exits go through MCP::Hub::Child::watch_exit. Spec 2026-08-25 l.237 'reap with waitpid' is vague: the status is collected without blocking, a child that closes stdout and lives on is killed after 5 s, a call during a stop waits for the next child (spec part belongs with k51's open spec question).
+
+From k40 (2026-11-06): mcp-hub-core says ClaudeHistory search 'streams and filters' -- the code reads each whole file into memory (see k85).
+
+From k73 (2026-11-06): mcp-hub-runtime 'Die Façade' ('Jedes Tool ruft $upstream->call_tool …') should add that the primitives hold the upstream weakly and a primitive whose upstream is gone answers with an error result.
+
+From k77 (2026-11-06): mcp-hub-runtime l.135-136 ('nur title/icons/_meta werden weiter per Name gesucht') is now wrong -- each /all entry keeps its own fields, by wrapper object; l.145-146 ('extra->{prompts}{<u>__<p>}') wrong -- Aggregate keeps prompt extras in private _prompt_extras keyed by wrapper, $agg->extra->{prompts} stays empty; l.111-117 could add that Facade::Server matches rendered entries to their objects by position (_pairs). Also POD: Facade::Server DESCRIPTION still says 'the MCP::Server the hub mounts for each stdio upstream' -- it serves http, fork and docker façades too.
+
+From k84/k85/k86 (natives worker): .claude/skills/mcp-hub-runtime/SKILL.md lines 177-178 claim the natives 'streamt und filtert' -- wrong before k85 (whole-file slurp), roughly true after: line by line, raw-line test before decode (k84), incremental cache keyed by dev/inode/size/mtime + offset (k85); ClaudeSessions reads only head and tail (k86) -- add that. Also docs/superpowers/specs/2026-08-25-mcp-hub-design.md line 286 still says the cache is keyed by (path, mtime, size).
+
+From k94/k100 (HTTP worker): the Http section of .claude/skills/mcp-hub-runtime/SKILL.md does not mention the Streamable HTTP session handling now in Http.pm -- fresh session per start, session id only from the initialize answer, DELETE on stop deferred to the last call on the session (k94), a start after a stop is a fresh start (k96), re-initialize + one retry on a 404 that carried a session id (k100), no MCP-Protocol-Version on initialize (k102).
+
+Skill drift found during k39: mcp-hub-core around line 72 still says the idle timer closes stdin, SIGTERM, SIGKILL after 5 s; after k39 it is EOF first, TERM only after 2 s (EOF_GRACE), KILL 5 s after the TERM (KILL_GRACE).
+
+mcp-hub-worker: mcp-hub-core and mcp-hub-runtime brought in line with the code (checked against the modules, not the notes). Added: Docker/Compose upstreams and engines (stdio-or-HTTP decision per start, readiness wait, crash loop counted by the owner, labels/owner id/orphan cleanup, compose adopt/--no-recreate), their manifest-hash inputs, %CONTAINER_KEYS and the extra ${VAR} fields, Commands refusing prefork/cgi/psgi/hypnotoad, Child (fds > 2 closed, MOJO_REUSE, watch_exit, the $SIG{CHLD} hazard), --config only before the command name, the stop chain EOF -> TERM after 2 s -> KILL after 5 s, Streamable HTTP sessions (k94/k96/k100/k102), weak primitives (k73), _pairs/_prompt_extras/scopes on /all (k61/k77), native streaming and cache (k84-k86), fake-docker.pl, slow_lists and the opt-in live tests. Facade::Server POD DESCRIPTION fixed. Growth: core 205 -> 241 lines, runtime 223 -> 313. The k40 note named the wrong skill (runtime, not core) and is outdated after k85. Still open: the manifest-hash hazard row in .claude/rules/mcp-hub-rules.md (maintainer wording) and the dated specs (k51/k126). Found: ClaudeSessions' pgrep backticks fallback -> k136. Main agent review: two corrections (HTTP 3 failures within 5 s; slow_lists) applied. No Changes entry (skill text + one POD sentence, as k126's prose commit) -- main agent's choice. -> review.
+
+commit-ready: w-k57 snapshots
+
+Committed as 4d95b2d and 43760d2.
+
+Trailer reworded to Opus by the main agent (backup refs/backup/pre-reword-k133-k57b): 4d95b2d is now 86b0b9f; 43760d2 is now 7175354.
