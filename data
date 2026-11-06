@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-06T11:43:36Z
+created: 2026-11-06T10:06:49Z
+id: 127
+priority: low
+started: 2026-11-06T10:44:28Z
+status: done
+tags:
+- test
+- docker
+title: 'Test: a docker stdio stop sends EOF first and TERM only after the grace'
+updated: 2026-11-06T11:47:28Z
+---
+
+Follow-up of k39. Docker::Stdio uses the same stop path as Upstream::Stdio, and the existing t/docker.t stop/settle subtests are green, but there is no docker-specific signal test: fake-docker logs no signals. For the test-writer: let fake-docker record the signals it receives and assert no TERM for a child that exits on EOF within 2 s, TERM after the grace otherwise.
+
+t/upstream/fake-docker.pl logs the TERMs its attached run -i process receives to signals.jsonl; a stdio image takes echo_args. Two new t/docker.t subtests: a container that exits on EOF gets no signal within the 2 s grace; one with --ignore-eof gets no signal during the grace, then exactly one TERM, and is gone by the end of the kill grace. Red with Docker::Stdio::stop sending TERM together with EOF (4 assertions). Green 3x each under default and Poll. No lib change.
+
+Committed as 153d9e9
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): 153d9e9 is now 425c8ac on local main.
