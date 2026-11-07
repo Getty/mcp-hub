@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-07T06:46:18Z
+id: 170
+priority: low
+status: backlog
+tags:
+- native
+- decision
+- wire
+title: 'Decide: should list_sessions send a truncated first_prompt instead of the
+  whole one?'
+updated: 2026-11-07T06:46:18Z
+---
+
+Proposed by mcp-hub-worker during k167 (2026-11-07). On the real history, list_sessions sends the whole first prompt of every session row: median 6.2 KB, max 49.7 KB per row, and the cache keeps 4.6 MB of them for sessions. A truncated first_prompt (for example the first N characters plus a marker) would shrink the reply and the cache. It changes the wire output of an existing tool, so it is the maintainer's call. Done when decided; if yes, a worker card with the length and the marker, and a test.
