@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-07T04:51:00Z
+created: 2026-11-07T03:04:06Z
+id: 162
+priority: high
+started: 2026-11-07T03:16:24Z
+status: done
+tags:
+- binary
+- json
+- performance
+title: 'Binary: pack Cpanel::JSON::XS for JSON::MaybeXS and assert it in the smoke
+  (k82 follow-up)'
+updated: 2026-11-07T04:51:44Z
+---
+
+Binary part of k82 (mcp-hub-binary-worker lane). Since k82 the natives decode through JSON::MaybeXS, which loads its backend by name at runtime, so PAR::Packer will not find Cpanel::JSON::XS on its own; scripts/loaded-modules.pl even drops Cpanel::JSON::XS and Cpanel::JSON::XS:: explicitly (@LEFT_OUT, ~line 53), with the now false comment 'neither the hub nor MCP uses them'. Done when: Cpanel::JSON::XS (with its .so) and JSON::MaybeXS are packed; loaded-modules.pl no longer leaves Cpanel out and its comment is true; the binary smoke asserts Mojo::JSON::JSON_XS and JSON::MaybeXS::JSON() eq 'Cpanel::JSON::XS' inside the packed binary; the build scripts/workflow make sure Cpanel::JSON::XS is installed on the build host; a local build + verify + smoke pass.
+
+k162 (mcp-hub-binary-worker, 2026-11-07): Cpanel::JSON::XS is no longer left out of the binary. loaded-modules.pl dropped it and its namespace from @LEFT_OUT (the comment now lists only Socks, DNS::Native, Role::Tiny and AsyncAwait, which are still true) and dies unless Mojo::JSON::JSON_XS and JSON::MaybeXS::JSON() eq 'Cpanel::JSON::XS'. build-binary.sh has the same guard, naming `cpanm Cpanel::JSON::XS`. smoke-binary.sh asserts both inside the binary, plus that XS.pm and XS.so load from PAR_TEMP. Built with -M Cpanel::JSON::XS; the archive holds XS.pm and XS.so (libc only, GLIBC_2.14). verify: OK (288 modules). Smoke OK in trixie-slim without perl, including a list_sessions call through the binary's hub. check-binary-libs shows only the expected dev-box findings (libcrypt, host libssl/libz/libzstd, glibc 2.38). A binary built at 961296f fails the new smoke check (JSON::PP). Decoding 4 MB took 8.69 s CPU with JSON::PP and 0.07 s with Cpanel. prove -lr t/ under EV: 48 files, 605 tests, PASS (opt-in skips only). README unchanged; Changes bullet proposed. Reviewed by main session: tree matches tree.sha1, patch applies on 961296f, scripts/ only.
+
+Committed as 3e38327 (Pack Cpanel::JSON::XS into the standalone binary, so it decodes JSON in C like the Docker image (k162))
+
+3e38327 is now b3106c7: the commit message was reworded by the main session. Its loaded-modules.pl and build-binary.sh lines had swapped what each script does; loaded-modules.pl stops leaving Cpanel::JSON::XS out, build-binary.sh only guards. Tree, parent, author and dates are unchanged. Backup: refs/backup/k162-3e38327.
