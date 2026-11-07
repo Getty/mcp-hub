@@ -1,0 +1,74 @@
+---
+class: standard
+completed: 2026-11-06T04:49:11Z
+created: 2026-11-03T19:27:36Z
+id: 40
+priority: low
+started: 2026-11-06T03:35:28Z
+status: done
+tags:
+- native
+- research
+- performance
+title: 'Research: does Native::ClaudeHistory stall the loop on a large history?'
+updated: 2026-11-07T02:09:11Z
+---
+
+From the k37 design. ClaudeHistory slurps and searches synchronously inside the hub's single IOLoop. Measure the stall on a large ~/.claude history (fixture-sized, not the real one), then decide whether it should run as a forked class worker (if k37 is accepted) or be made incremental.
+
+Progress: synthetic fixtures S 54 MB / M 503 MB / L 1968 MB built from the real history's size layout (stat only, 944 files/640 dirs). In-process matrix running against a git-archive export of 6c2f3e0; hub e2e harness (in-process vs hub.fork) works. Early finding: the Docker image and the PAR binary run pure-Perl Mojo::JSON, which decodes at ~2.6 MB/s (~70x slower than Cpanel::JSON::XS).
+
+k40 findings (read-only; measured against a git-archive export of 6c2f3e0 with synthetic fixtures; the real ~/.claude was only stat'ed).
+
+FIXTURES, built from the real history's layout (sizes per dir only, taken with stat): S 54 MB / 24 files, M 503 MB / 285 files, L 1968 MB / 944 files. L is this machine's history today (1.92 GB of top-level session files; largest 73 MB). The host was at load 11-23, so wall times are inflated 2-3x; CPU seconds are the idle-machine estimate.
+
+STALL = CALL TIME in-process (a 10 ms timer and an HTTP probe agree). It grows linearly, about 8 ms CPU per MB, with Cpanel::JSON::XS:
+- L list_sessions / list_projects, cold meta: 37-52 s wall, 16-18 s CPU. With the meta cache warm: 0.3-0.45 s.
+- L search_conversations (rare needle) on every call: 43 s wall, 20 s CPU; with a cold meta cache 83 s / 35 s CPU (reads every file twice). A common word exits early: 0.9 s.
+- L get_conversation on the 73 MB session: 1.6 s warm, 15 s with a cold meta cache.
+- L ClaudeSessions list_running_sessions, 8 sessions on the largest files: 4.3 s (2.1 s CPU); 8 median-sized sessions: 0.24 s.
+- M: cold list 6.4 s, search 13.7 s. S: about 0.5 s each.
+- Peak RSS in-process: 275-318 MB (hub baseline 66 MB). About 240 MB stays resident afterwards.
+
+THROUGH THE HUB, L, in-process: list_sessions (39.9 s) and search (39.3 s) were DROPPED, and the client got "Premature connection close". The cause: Mojo::Server::Daemon's 30 s inactivity_timeout fires when the blocked loop resumes. The hub logged "200 OK", then "Inactivity timeout" twice (the caller's connection and the probe's). So an in-process call over 30 s returns nothing at all.
+
+FORKED (hub.fork; works today with config only): hub max stall 54-109 ms at every size, the same as idle probe noise. Hub RSS stays at 67-68 MB. The worker peaks at 271-310 MB and frees it at idle stop. Call latency is about the same as in-process: L first list 35.7 s including the spawn, search 44.9 s, get_conversation 2.4 s. Long calls survive because MCP's transport streams promise results with inactivity_timeout(0).
+
+PURE-PERL DECODER (MOJO_NO_JSON_XS): this is what the Docker image runs (checked: Mojo::JSON::JSON_XS is false in raudssus/mcp-hub:latest) and what the PAR binary runs (scripts/loaded-modules.pl leaves Cpanel::JSON::XS out). The cpanfile does not require it; JSON::Schema::Tiny only "suggests" it.
+- Decode runs at 2.6 MB/s instead of ~180 MB/s (about 70x slower).
+- S cold list: 16.5 s CPU (XS: 0.41 s). S search: 13 s CPU. Peak RSS is already 305-324 MB on S.
+- L estimate: about 10 min CPU per cold list and about 8 min per search.
+- Forked on M (cold list): "upstream hist: timed out after 60s" (the default request_timeout), while the hub stall stayed at 95 ms.
+
+WHAT DOMINATES: JSON decoding. With XS: decode 44-50%, slurp 17-27%, split 8-13%, _text+lc+index (the search itself) 12-13%. With pure Perl: decode 96-97%. An evicted page cache adds 30-50% (cold-disk runs).
+- Searchable text is only 3.3% of the bytes (L: 14 MB user + 52 MB assistant).
+- A raw-line prefilter (decode only the lines whose raw bytes contain the needle) gives the same hits: S pure Perl 41.8 s -> 0.7 s; M XS 10.4 s -> 5.3 s.
+
+RECOMMENDATION: run ClaudeHistory and ClaudeSessions as forked class workers (hub.fork).
+- In-process, the stall is the whole call and grows with history size. On this machine's history it freezes every upstream for every agent for 16-35 s of CPU (40-80 s under load), and past 30 s the caller gets no answer.
+- Forked removes the stall, keeps the hub at 67 MB, needs no code, and the memory leaves with the worker.
+- Not "incremental/non-blocking in-process": that means rewriting four tools as chunked promise code and still holding ~250 MB in the hub. Not "leave as is".
+- Fork does not make the call faster. That is what the follow-up cards are for.
+- Caveats of fork: Linux only (macOS stays in-process); the worker's meta cache dies at every idle stop (default 300 s), so the next list rescans everything (L 36 s); the default request_timeout of 60 s is exceeded by pure-Perl histories from about 150 MB; calls to the same forked server queue behind a long one; a timed-out call keeps the worker busy until it finishes.
+
+PROPOSED CARDS (for the dispatcher to file):
+1. [high] Require Cpanel::JSON::XS so the Docker image and the PAR binary stop decoding with pure-Perl Mojo::JSON. Done when: the cpanfile requires Cpanel::JSON::XS >= 4.20 (Mojo::JSON's own floor); `perl -MMojo::JSON -e 'exit !Mojo::JSON::JSON_XS'` passes in the image and in the binary; loaded-modules.pl no longer leaves it out and its comment ("neither the hub nor MCP uses them") is corrected; smoke-binary.sh asserts it; Changes entry. Lanes: worker (cpanfile/Docker) + binary-worker.
+2. [high] Mount ClaudeHistory/ClaudeSessions with "hub": {"fork": true} in the README example config and the natives section, with the reason (the stall equals the call time; in-process calls over 30 s lose their response). Done when: the README is updated and a test drives forked ClaudeHistory against t/fixtures/claude (list_sessions, search_conversations, get_conversation) with the same results as in-process. Lanes: docs + test-writer.
+3. [medium] search_conversations: test the needle against the raw JSON line before decoding. Done when: for a printable-ASCII needle without '"' or '\', non-matching lines are not decoded and any other needle takes today's path; results are identical on fixtures with escaped quotes, newlines and non-ASCII (mind the case where lc of a non-ASCII character gives ASCII, e.g. KELVIN SIGN); the speed-up is measured.
+4. [medium] ClaudeHistory: read session files line by line instead of slurp+split, and rescan only the appended tail of a file that grew. Done when: peak RSS is bounded by the largest line (today 275-318 MB on L); meta_cache keeps (dev, ino, size, offset); a list_sessions after appending to a 73 MB session costs O(appended bytes); a cold search no longer reads every file twice.
+5. [low] ClaudeSessions: list_running_sessions decodes each running session's whole newest file on every call. Done when: it reads only the head (session id, branch, start) and scans back from the tail for the last prompt and timestamp, so the cost no longer depends on file size (under 50 ms for 8 sessions of 73 MB).
+6. [low] Keep ClaudeHistory's meta cache across worker restarts. Done when: there is an atomically written cache file named by a class arg, validated per file by (dev, ino, size, mtime), and a fresh worker's first list_sessions on L takes 1 s or less. Note that it would put the first prompts on disk. Or document always_on instead.
+7. [low] Decide how to handle in-process class calls over 30 s losing their response (the Mojo inactivity_timeout fires as the loop resumes): document it next to the README's in-process class paragraph, or have the hub defer an in-process tools/call behind a promise so the transport streams it. Done when: that decision is made, plus a test with MOJO_INACTIVITY_TIMEOUT lowered.
+
+DRIFT (notes only):
+(a) ClaudeHistory never reads <session>/subagents/*.jsonl, because its directory listing is not recursive. That is 3256 files, ~2.7 GB of the 4.7 GB here. Neither native reads history.jsonl. Whether this is intended is a product question.
+(b) get_conversation on a cold meta cache scans the files in dir order until it finds the session (15 s on L).
+(c) The mcp-hub-core skill says the search "streams and filters" ("streamt und filtert"); the code slurps each file and splits it in memory.
+
+FILES in /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/: results.md (all tables), results-inproc.jsonl, results-hub.jsonl, hub-*.log; scripts gen-fixture.pl, bench-inproc.pl, run-inproc.pl, bench-hub.pl, breakdown.pl, prefilter.pl, text-volume.pl, table.pl; real-shape.json (sizes only). The fixtures under /var/tmp/claude-k40-fixtures were deleted. They were put on disk rather than in the tmpfs scratch dir so they would not pin 2.5 GB of RAM and so the page cache could be evicted for the cold runs.
+
+Research done (read-only, nothing in the repo changed). Recommendation: run ClaudeHistory and ClaudeSessions forked (hub.fork). In-process, the loop stalls for the whole call: on this machine's 1.92 GB history a cold list_sessions takes 16 s CPU and each search 20 s CPU (37-83 s wall under load), and in-process calls over 30 s were dropped by Mojo's inactivity_timeout. Forked, the hub stall stays under 110 ms and the hub RSS at 67 MB. Biggest secondary finding: the Docker image and the PAR binary decode with pure-Perl Mojo::JSON (about 70x slower). Seven proposed cards and the full numbers are in the previous note; scripts and results are in the scratch dir w-k40/results.md.
+
+Follow-ups filed: k82 (require Cpanel::JSON::XS), k83 (recommend hub.fork for the natives in README), k84 (search prefilter), k85 (line-by-line + incremental rescan), k86 (ClaudeSessions head/tail), k87 (persist cache across worker restarts), k88 (in-process calls over 30 s). Open product question for the maintainer: ClaudeHistory never reads <session>/subagents/*.jsonl (~2.7 GB of 4.7 GB here) and neither native reads history.jsonl -- intended? Research only, no commit.
+
+Maintainer decision 2026-11-07 on the open product question: subagent runs should be available -> k159. history.jsonl still open.
