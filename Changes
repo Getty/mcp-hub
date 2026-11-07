@@ -337,3 +337,9 @@ Revision history for MCP-Hub
     to mean no timeout over stdio and for an HTTP+SSE answer, but 60 s for
     a Streamable HTTP POST and 30 s for the HTTP+SSE endpoint; every
     transport now waits the one configured value.
+  - ClaudeHistory makes the subagent runs of a session available: the new
+    list_subagents tool lists them (agent type, description, first and
+    last activity, message count), get_conversation reads one given its
+    `agent_id`, and search_conversations searches them too with
+    `include_subagents`, a match from a run carrying its `agent_id`.
+    Without the new arguments, every tool answers as before.

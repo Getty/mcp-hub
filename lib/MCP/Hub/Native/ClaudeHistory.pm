@@ -20,8 +20,8 @@ has meta_cache => sub { {} };
 my $JSON = JSON::MaybeXS->new(utf8 => 1);
 $JSON->allow_dupkeys if $JSON->can('allow_dupkeys');
 
-# A line's bytes, decoded; dies on a line that is not JSON. Every line read
-# is decoded here, and only here.
+# A line's bytes, decoded; dies on a line that is not JSON. Every line read,
+# and every subagent run's meta file, is decoded here, and only here.
 sub decode_json ($bytes) { $JSON->decode($bytes) }
 
 # Escapes that decode to a character a raw search needle can match: printable
@@ -92,6 +92,10 @@ sub _register ($self) {
         until   => {type => 'string'},
         roles   => {type => 'array', items => {type => 'string'}, description => 'Roles to search (default ["user"])'},
         limit   => {type => 'integer', description => 'Maximum matches (default 30)'},
+        include_subagents => {
+          type        => 'boolean',
+          description => 'Also search the subagent runs of each session (default false); their matches carry agent_id',
+        },
       },
       required => ['query'],
     },
@@ -111,12 +115,30 @@ sub _register ($self) {
         offset     => {type => 'integer', description => 'Skip this many messages (default 0)'},
         limit      => {type => 'integer', description => 'Maximum messages (default 50)'},
         roles      => {type => 'array', items => {type => 'string'}, description => 'Roles to include (default user, assistant)'},
+        agent_id   => {type => 'string', description => 'Read this subagent run of the session instead (see list_subagents)'},
       },
       required => ['session_id'],
     },
     code => sub ($tool, $args) {
       return $tool->text_result($gone, 1) unless $self;
-      return _json($tool, $self->get_conversation($args));
+      my $conversation = $self->get_conversation($args);
+      return _json($tool, $conversation) if $conversation;
+      my $missing = $self->name . ': no subagent run ' . $args->{agent_id} . ' in session ' . $args->{session_id};
+      return $tool->text_result($missing, 1);
+    },
+  );
+
+  $self->tool(
+    name         => 'list_subagents',
+    description  => 'List the subagent runs of one conversation session, in the order they started',
+    input_schema => {
+      type       => 'object',
+      properties => {session_id => {type => 'string'}},
+      required   => ['session_id'],
+    },
+    code => sub ($tool, $args) {
+      return $tool->text_result($gone, 1) unless $self;
+      return _json($tool, $self->list_subagents($args));
     },
   );
 
@@ -183,24 +205,42 @@ sub search_conversations ($self, $args) {
   # A file whose metadata is out of date is read once, for the metadata and the
   # matches together; on a cold cache that is every file.
   my %found;
-  for my $file (map { _session_files($_) } $self->_project_dirs) {
-    my @found;
-    $found{"$file"} = \@found if $self->_refresh($file, $skip, sub ($rec) { $match->($rec, \@found, $limit) });
-  }
+  my $scan = sub (@files) {
+    for my $file (@files) {
+      my @found;
+      $found{"$file"} = \@found if $self->_refresh($file, $skip, sub ($rec) { $match->($rec, \@found, $limit) });
+    }
+  };
+  $scan->(map { _session_files($_) } $self->_project_dirs);
 
+  # The matches of one file, each with %of, until the limit is reached.
   my @hits;
-  my $sessions = $self->_sessions({project => $args->{project}, since => $args->{since}, until => $args->{until}, limit => 1e9});
-  for my $session (@$sessions) {
-    last if @hits >= $limit;
-    my $found = $found{$session->{_file}};
+  my $take = sub ($file, %of) {
+    my $found = $found{$file};
     unless ($found) {
       $found = [];
       my $want = $limit - @hits;
-      _each_record($session->{_file}, $skip, sub ($rec) { $match->($rec, $found, $want) });
+      _each_record($file, $skip, sub ($rec) { $match->($rec, $found, $want) });
     }
     for my $hit (@$found) {
-      push @hits, {session_id => $session->{session_id}, project => $session->{project}, %$hit};
+      push @hits, {%of, %$hit};
       last if @hits >= $limit;
+    }
+  };
+
+  # A session's own matches come first, then those of its subagent runs, run
+  # by run in the order they started. The runs are read only if asked for.
+  my $sessions = $self->_sessions({project => $args->{project}, since => $args->{since}, until => $args->{until}, limit => 1e9});
+  for my $session (@$sessions) {
+    last if @hits >= $limit;
+    my %of = (session_id => $session->{session_id}, project => $session->{project});
+    $take->($session->{_file}, %of);
+    next unless $args->{include_subagents} && @hits < $limit;
+    my @runs = _run_files($session->{_file});
+    $scan->(@runs);
+    for my $run ($self->_runs(@runs)) {
+      last if @hits >= $limit;
+      $take->($run->{_file}, %of, agent_id => $run->{agent_id});
     }
   }
   return [@hits];
@@ -210,9 +250,17 @@ sub get_conversation ($self, $args) {
   my $offset = $args->{offset} // 0;
   my $limit  = $args->{limit}  // 50;
   my %roles  = map { $_ => 1 } @{$args->{roles} // ['user', 'assistant']};
+  my $agent_id = $args->{agent_id};
 
-  my ($file, $entries) = $self->_file_for_session($args->{session_id});
+  my ($file, $entries) = $self->_file_for_session($args->{session_id}, !defined $agent_id);
   return {entries => [], total => 0, has_more => \0} unless $file;
+
+  # The agent_id is compared with the names of the run files listed, never
+  # made into a path, as a session_id is.
+  if (defined $agent_id) {
+    ($file) = grep { _agent_id($_) eq $agent_id } _run_files($file);
+    return unless $file;
+  }
 
   my @entries = grep { $roles{$_->{role}} } @{$entries // $self->_entries($file)};
   my $total   = scalar @entries;
@@ -224,6 +272,21 @@ sub get_conversation ($self, $args) {
     total    => $total,
     has_more => ($offset + $limit < $total ? \1 : \0),
   };
+}
+
+# A run's type and description come from its meta file, null where it is
+# missing or unreadable; its times and message count from its lines.
+sub list_subagents ($self, $args) {
+  my ($file) = $self->_file_for_session($args->{session_id}, 0);
+  return [] unless $file;
+
+  my @runs = $self->_runs(_run_files($file));
+  for my $run (@runs) {
+    my $meta = $self->_run_meta(delete $run->{_file});
+    $run->{agent_type}  = _string($meta->{agentType});
+    $run->{description} = _string($meta->{description});
+  }
+  return \@runs;
 }
 
 # --- reading and caching ---------------------------------------------------
@@ -240,6 +303,40 @@ sub _session_files ($dir) {
 
 sub _sessions_in ($self, $dir) {
   return map { $self->_meta($_) } _session_files($dir);
+}
+
+# Claude Code keeps the subagent runs of a session beside its file, in
+# <session>/subagents/agent-<agent_id>.jsonl, each with an
+# agent-<agent_id>.meta.json next to it; anything else in there is no run.
+sub _run_files ($file) {
+  $file = path($file);
+  my $dir = $file->sibling($file->basename =~ s/\.jsonl\z//r, 'subagents');
+  return () unless -d $dir;
+  return grep { defined _agent_id($_) } @{$dir->list->to_array};
+}
+
+sub _agent_id ($file) {
+  return $file->basename =~ /\Aagent-(.+)\.jsonl\z/ ? $1 : undef;
+}
+
+# The runs of the run files given, in the order they started, each with the
+# cached metadata of its file and, as _file, its path. The metadata cache
+# keeps a run file as it keeps a session file.
+sub _runs ($self, @files) {
+  my @runs = map {
+    my $meta = $self->_meta($_);
+    +{agent_id => _agent_id($_), started_at => $meta->{started_at}, last_activity => $meta->{last_activity},
+      messages => $meta->{messages}, _file => $meta->{_file}};
+  } @files;
+  return sort { ($a->{started_at} // '') cmp($b->{started_at} // '') || $a->{agent_id} cmp $b->{agent_id} } @runs;
+}
+
+# The object a run's meta file holds; an empty one if the file is missing or
+# holds no object.
+sub _run_meta ($self, $file) {
+  my $meta = path($file =~ s/\.jsonl\z/.meta.json/r);
+  my $bytes = -f $meta ? eval { $meta->slurp } : undef;
+  return (defined $bytes ? _record($bytes) : undef) // {};
 }
 
 sub _meta ($self, $file) {
@@ -381,13 +478,16 @@ sub _lines ($fh, $from, $cb) {
 # path, so it cannot reach outside the projects dir. If the file of that name
 # has to be read at all, it is read once, for its metadata and its entries
 # together; the others, which seldom hold the session, only for their
-# metadata. Returns the file, and its entries if they were read so.
-sub _file_for_session ($self, $session_id) {
+# metadata. Returns the file, and its entries if they were read so; with
+# $entries false, they are not read.
+sub _file_for_session ($self, $session_id, $entries = 1) {
   my @files = map { _session_files($_) } $self->_project_dirs;
   my $name  = "$session_id.jsonl";
   for my $file ((grep { $_->basename eq $name } @files), (grep { $_->basename ne $name } @files)) {
     my @entries;
-    my $visit = $file->basename eq $name ? sub ($rec) { my $entry = _entry($rec) or return; push @entries, $entry } : undef;
+    my $visit = $entries && $file->basename eq $name
+      ? sub ($rec) { my $entry = _entry($rec) or return; push @entries, $entry }
+      : undef;
     my $read  = $self->_refresh($file, undef, $visit);
     next unless ($self->meta_cache->{"$file"}{meta}{session_id} // '') eq $session_id;
     return $file, ($visit && $read ? \@entries : undef);
@@ -508,7 +608,10 @@ sub _json ($tool, $data) {
 L<MCP::Hub::Native::ClaudeHistory> is a native Perl replacement for the Claude
 Code history MCP server, which today costs a ~120 MB node process per session.
 It reads the JSONL session files under C<$CLAUDE_CONFIG_DIR/projects> (or
-C<~/.claude/projects>) and offers four tools.
+C<~/.claude/projects>), and the subagent runs Claude Code keeps beside each
+session file (C<< <session_id>/subagents/agent-<agent_id>.jsonl >>, each with an
+C<< agent-<agent_id>.meta.json >>), and offers five tools. A run is no session
+of its own: C<list_sessions> and C<list_projects> do not count it.
 
 Session files are read a line at a time. Per-session metadata is cached in
 memory together with the file's device, inode, size, modification time and the
@@ -518,7 +621,9 @@ rewritten without growing is read again from the start. A search reads a file
 whose metadata is out of date only once, for both. C<get_conversation> reads
 the file named after the session (C<< <session_id>.jsonl >>, as Claude Code
 names it) first, and the others only if that one does not hold the session;
-it too reads that file only once where its metadata is out of date.
+it too reads that file only once where its metadata is out of date. Run files
+are read and cached as session files are; a search reads them only when asked
+to.
 
 =head2 Tools
 
@@ -537,16 +642,34 @@ title, git_branch}]>, newest first.
 =item C<search_conversations>
 
 Arguments C<query> (required), C<project?>, C<since?>, C<until?>, C<roles>
-(C<["user"]>), C<limit> (30). Case-insensitive substring match, snippet ±120
-characters.
+(C<["user"]>), C<limit> (30), C<include_subagents> (false). Case-insensitive
+substring match, snippet ±120 characters. With C<include_subagents>, the
+subagent runs of each session the filters keep are searched too: a session's
+own matches come first, then those of its runs in the order they started, each
+carrying the run's C<agent_id> besides the session's C<session_id> and
+C<project>. The limit counts them all.
 
 =item C<get_conversation>
 
 Arguments C<session_id> (required), C<offset> (0), C<limit> (50), C<roles>
-(C<["user","assistant"]>). Returns C<< {entries, total, has_more} >>, with
-C<tool_use> blocks rendered as C<[tool_use <name>]> (C<[tool_use]> for one
-without a name or with an empty one) and C<tool_result> as C<[tool_result]>.
-An entry's C<text> is a string, or null for a message without content.
+(C<["user","assistant"]>), C<agent_id?>. Returns
+C<< {entries, total, has_more} >>, with C<tool_use> blocks rendered as
+C<[tool_use <name>]> (C<[tool_use]> for one without a name or with an empty
+one) and C<tool_result> as C<[tool_result]>. An entry's C<text> is a string,
+or null for a message without content. With C<agent_id>, the messages of that
+subagent run of the session, in the same shape; an C<agent_id> that names no
+run of the session is an error result (C<claude-history: no subagent run
+AGENT_ID in session SESSION_ID>). An unknown session is an empty result, with
+C<agent_id> or without.
+
+=item C<list_subagents>
+
+Argument C<session_id> (required). Returns C<[{agent_id, agent_type,
+description, started_at, last_activity, messages}]>, one row per subagent run
+of the session, in the order the runs started. C<agent_type> and
+C<description> come from the run's meta file, null where it is missing or
+unreadable; the times and the message count from the run's lines. A session
+without runs, and an unknown session, give an empty list.
 
 =back
 
@@ -562,9 +685,11 @@ C<~/.claude>.
 
 =head1 METHODS
 
-The four tools are also plain methods (C<list_projects>, C<list_sessions>,
-C<search_conversations>, C<get_conversation>) taking an arguments hash reference,
-so they can be tested without going through the MCP layer.
+The five tools are also plain methods (C<list_projects>, C<list_sessions>,
+C<search_conversations>, C<get_conversation>, C<list_subagents>) taking an
+arguments hash reference, so they can be tested without going through the MCP
+layer. C<get_conversation> returns undef where its tool answers with the error
+for an C<agent_id> that names no run.
 
 =head1 SEE ALSO
 

@@ -329,7 +329,7 @@ subtest 'refresh via the admin API' => sub {
   my $app = MCP::Hub->new(hub_config_input => $config);
   my $t   = Test::Mojo->new($app);
   $t->post_ok('/_hub/refresh' => json => {})->status_is(200)
-    ->json_is('/history/count', 4)->json_is('/history/state', 'ready')
+    ->json_is('/history/count', 5)->json_is('/history/state', 'ready')
     ->json_is('/broken/state', 'failed')->json_like('/broken/error', qr/No::Such::Class/);
 };
 

@@ -289,8 +289,11 @@ Reads `$CLAUDE_CONFIG_DIR` or `~/.claude`, subdirectory `projects/`. The project
 |---|---|---|
 | `list_projects` | — | `[{project, dir, sessions, last_activity}]` |
 | `list_sessions` | `project?`, `since?`, `until?` (filter on `last_activity`), `limit` (50) | `[{session_id, project, started_at, last_activity, messages, first_prompt, title, git_branch}]`, newest first |
-| `search_conversations` | `query` (required), `project?`, `since?`, `until?`, `roles` (`["user"]`), `limit` (30) | `[{session_id, project, timestamp, role, snippet}]` — case-insensitive substring match over the text content, snippet ±120 characters |
-| `get_conversation` | `session_id` (required), `offset` (0), `limit` (50), `roles` (`["user","assistant"]`) | `{entries: [{uuid, timestamp, role, text}], total, has_more}` — text blocks joined, `tool_use` blocks rendered as `[tool_use <name>]`, `tool_result` as `[tool_result]` |
+| `search_conversations` | `query` (required), `project?`, `since?`, `until?`, `roles` (`["user"]`), `limit` (30), `include_subagents` (false) | `[{session_id, project, timestamp, role, snippet}]` — case-insensitive substring match over the text content, snippet ±120 characters; with `include_subagents` the session's subagent runs are searched too, after its own messages, and their matches also carry `agent_id` |
+| `get_conversation` | `session_id` (required), `offset` (0), `limit` (50), `roles` (`["user","assistant"]`), `agent_id?` | `{entries: [{uuid, timestamp, role, text}], total, has_more}` — text blocks joined, `tool_use` blocks rendered as `[tool_use <name>]`, `tool_result` as `[tool_result]`; with `agent_id` the messages of that subagent run, an `agent_id` naming no run of the session being an error result |
+| `list_subagents` | `session_id` (required) | `[{agent_id, agent_type, description, started_at, last_activity, messages}]`, the session's subagent runs in the order they started; `[]` for a session without runs or an unknown one |
+
+Claude Code keeps a session's subagent runs beside its file, in `<session_id>/subagents/agent-<agent_id>.jsonl` with an `agent-<agent_id>.meta.json` (type, description) each. A run is no session: `list_sessions` and `list_projects` do not count it. Run files are cached like session files; `agent_id` is only matched against those file names, never made into a path.
 
 Dates are ISO 8601; `since`/`until` accept `YYYY-MM-DD` or a full timestamp, interpreted in the hub's local time zone. Text content is `message.content` when a string, else the `text` fields of the block array.
 
