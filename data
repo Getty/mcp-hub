@@ -1,0 +1,18 @@
+---
+class: standard
+created: 2026-11-07T03:04:11Z
+id: 163
+priority: low
+status: backlog
+tags:
+- native
+- json
+- drift
+title: 'Decide: on a host without a C compiler, should the natives decode with Mojo::JSON
+  instead of JSON::PP?'
+updated: 2026-11-07T04:07:10Z
+---
+
+Found by mcp-hub-worker during k82 (2026-11-07). Without a compiler JSON::MaybeXS falls back to JSON::PP, which decodes 8 of 59 checked edge cases differently from Mojo::JSON's pure-Perl decoder (bigint, nul_escape internal form, nonchar_esc, bad_surr, bad_big, nonchar_raw, raw_del, num_dot -- all malformed or extreme lines; logs in scratchpad w-k82/logs/eq-noxs.txt). With Cpanel::JSON::XS all 59 match. Option: one line per native -- use Mojo::JSON::decode_json unless JSON::MaybeXS::JSON() is Cpanel::JSON::XS -- so the fallback is identical too. Question for the maintainer: worth it, or is JSON::PP fine on such hosts?
+
+Info from k162 (2026-11-07): the standalone binary now packs Cpanel::JSON::XS, and scripts/build-binary.sh and loaded-modules.pl refuse a perl without it. So the JSON::PP fallback can no longer happen in the binary or in the Docker image (k82). This card only matters for a CPAN install on a machine without a C compiler.
