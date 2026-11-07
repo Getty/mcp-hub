@@ -205,13 +205,13 @@ sub search_conversations ($self, $args) {
   # A file whose metadata is out of date is read once, for the metadata and the
   # matches together; on a cold cache that is every file.
   my %found;
-  my $scan = sub (@files) {
+  my $scan = sub ($run, @files) {
     for my $file (@files) {
       my @found;
-      $found{"$file"} = \@found if $self->_refresh($file, $skip, sub ($rec) { $match->($rec, \@found, $limit) });
+      $found{"$file"} = \@found if $self->_refresh($file, $skip, sub ($rec) { $match->($rec, \@found, $limit) }, $run);
     }
   };
-  $scan->(map { _session_files($_) } $self->_project_dirs);
+  $scan->(0, map { _session_files($_) } $self->_project_dirs);
 
   # The matches of one file, each with %of, until the limit is reached.
   my @hits;
@@ -237,7 +237,7 @@ sub search_conversations ($self, $args) {
     $take->($session->{_file}, %of);
     next unless $args->{include_subagents} && @hits < $limit;
     my @runs = _run_files($session->{_file});
-    $scan->(@runs);
+    $scan->(1, @runs);
     for my $run ($self->_runs(@runs)) {
       last if @hits >= $limit;
       $take->($run->{_file}, %of, agent_id => $run->{agent_id});
@@ -321,10 +321,10 @@ sub _agent_id ($file) {
 
 # The runs of the run files given, in the order they started, each with the
 # cached metadata of its file and, as _file, its path. The metadata cache
-# keeps a run file as it keeps a session file.
+# keeps a run file as it keeps a session file, but for its first prompt.
 sub _runs ($self, @files) {
   my @runs = map {
-    my $meta = $self->_meta($_);
+    my $meta = $self->_meta($_, 1);
     +{agent_id => _agent_id($_), started_at => $meta->{started_at}, last_activity => $meta->{last_activity},
       messages => $meta->{messages}, _file => $meta->{_file}};
   } @files;
@@ -339,8 +339,8 @@ sub _run_meta ($self, $file) {
   return (defined $bytes ? _record($bytes) : undef) // {};
 }
 
-sub _meta ($self, $file) {
-  $self->_refresh($file);
+sub _meta ($self, $file, $run = 0) {
+  $self->_refresh($file, undef, undef, $run);
   return {%{$self->meta_cache->{"$file"}{meta}}, _file => "$file"};
 }
 
@@ -351,8 +351,11 @@ sub _meta ($self, $file) {
 # changed without growing, is read from the start. With $visit, a file that has
 # to be read at all is read from the start, and $visit sees every record
 # of it -- lines before the offset only if the raw test $skip lets them
-# through. Returns whether the file was read.
-sub _refresh ($self, $file, $skip = undef, $visit = undef) {
+# through. With $run, $file is a subagent run, whose first prompt the cache
+# keeps nowhere: no tool sends it, and it is often a whole briefing of tens of
+# KB, which over thousands of runs would be most of what the cache holds.
+# Returns whether the file was read.
+sub _refresh ($self, $file, $skip = undef, $visit = undef, $run = 0) {
   my $old  = $self->meta_cache->{"$file"};
   my $same = sub (@stat) { $old && @stat && $old->{dev} == $stat[0] && $old->{ino} == $stat[1] };
   my @stat = stat "$file";
@@ -370,8 +373,8 @@ sub _refresh ($self, $file, $skip = undef, $visit = undef) {
     if ($start >= $from) {
       $rec = _record($line) or return;
       # An unterminated last line counts for now, but is read again next time.
-      if ($whole) { _absorb(\%state, $rec) }
-      else        { _absorb($tail = {%state}, $rec) }
+      if ($whole) { _absorb(\%state, $rec, $run) }
+      else        { _absorb($tail = {%state}, $rec, $run) }
     }
     else {
       return if $skip && $skip->($line);
@@ -395,8 +398,9 @@ sub _refresh ($self, $file, $skip = undef, $visit = undef) {
 
 # A record's sessionId, cwd and timestamp are made into strings by _string, so
 # one that is an object or array counts as absent and a later record's fills
-# it; the lookups, filters and sorts compare strings only.
-sub _absorb ($state, $rec) {
+# it; the lookups, filters and sorts compare strings only. Of a run ($run), the
+# first prompt is not kept.
+sub _absorb ($state, $rec, $run = 0) {
   my $timestamp = _string($rec->{timestamp});
   $state->{session_id} //= _string($rec->{sessionId});
   $state->{project}    //= _string($rec->{cwd});
@@ -409,7 +413,7 @@ sub _absorb ($state, $rec) {
 
   if ($type eq 'user' || $type eq 'assistant') {
     $state->{count}++;
-    $state->{first_prompt} //= _text($rec->{message}) if $type eq 'user';
+    $state->{first_prompt} //= _text($rec->{message}) if $type eq 'user' && !$run;
   }
 }
 
@@ -622,8 +626,9 @@ whose metadata is out of date only once, for both. C<get_conversation> reads
 the file named after the session (C<< <session_id>.jsonl >>, as Claude Code
 names it) first, and the others only if that one does not hold the session;
 it too reads that file only once where its metadata is out of date. Run files
-are read and cached as session files are; a search reads them only when asked
-to.
+are read and cached as session files are, but for a run's first prompt, which
+no tool sends and the cache does not keep; a search reads them only when
+asked to.
 
 =head2 Tools
 

@@ -347,3 +347,7 @@ Revision history for MCP-Hub
     JSON in C like the Docker image instead of in pure Perl (4 MB of
     session lines: 8.7 s CPU -> 0.07 s); scripts/build-binary.sh refuses a
     perl without it, and the binary smoke checks it.
+  - A search with `include_subagents` no longer keeps the first prompt of
+    every subagent run in memory, which no tool sends and which is often a
+    whole briefing: a cold search over 3,371 runs peaks at 74 MB instead of
+    183 MB.

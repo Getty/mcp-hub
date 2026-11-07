@@ -251,6 +251,56 @@ subtest 'the metadata cache keeps run files too' => sub {
     'the metadata the search brought up to date';
 };
 
+# Every plain string under $value.
+sub strings ($value) {
+  return map { strings($_) } @$value        if ref $value eq 'ARRAY';
+  return map { strings($_) } values %$value if ref $value eq 'HASH';
+  return defined $value && !ref $value ? $value : ();
+}
+
+# Which of @texts the metadata cache of $server holds, whole or in part, for a
+# run file.
+sub held ($server, @texts) {
+  my $cache   = $server->meta_cache;
+  my @strings = map { strings($cache->{$_}) } grep {m{/subagents/}} keys %$cache;
+  return grep { my $text = $_; grep { index($_, $text) >= 0 } @strings } @texts;
+}
+
+# No tool sends a run's first prompt, which is often a whole briefing of tens
+# of KB; on a history of thousands of runs it would be most of what the cache
+# holds. So the cache keeps it nowhere, whichever tool read the run, cold or
+# grown; a session's first prompt it keeps.
+subtest 'the cache keeps no first prompt of a run' => sub {
+  my @prompts = ('Find the kubernetes pod specs', 'Fix the widget', 'Check the kubernetes deployment');
+
+  my $searched = history;
+  $searched->search_conversations({query => 'wörd', include_subagents => 1});
+  is scalar(grep {m{/subagents/}} keys %{$searched->meta_cache}), 3, 'a cold search caches the three runs';
+  is_deeply [held($searched, @prompts)], [], 'and keeps none of their first prompts';
+  is_deeply $searched->list_sessions, $plain->list_sessions, "a session's first prompt it keeps";
+
+  my $listed = history;
+  $listed->list_subagents({session_id => $_}) for qw(a1 b1);
+  is scalar(grep {m{/subagents/}} keys %{$listed->meta_cache}), 3, 'list_subagents caches them too';
+  is_deeply [held($listed, @prompts)], [], 'and keeps none either';
+
+  my $appended = 'a zebra prompt appended to a run';
+  open my $fh, '>>:raw', $a1->child('agent-bworker2.jsonl') or die $!;
+  print {$fh} line('a1', 'bworker2', 'w3', '2026-08-10T10:00:07Z', user($appended)), "\n";
+  close $fh;
+  is decodes(sub { $listed->list_subagents({session_id => 'a1'}) }), 1 + 2,
+    'a grown run is read from where its scan stopped: the appended line and the meta files';
+  my $hits = $searched->search_conversations({query => 'zebra', include_subagents => 1});
+  is_deeply [map { $_->{agent_id} } @$hits], ['bworker2'], 'a search reads the grown run too';
+  is_deeply [held($_, @prompts, $appended)], [], 'neither keeps a prompt of a grown run' for $listed, $searched;
+
+  my $fresh = history;
+  is_deeply $listed->list_subagents({session_id => 'a1'}), $fresh->list_subagents({session_id => 'a1'}),
+    'list_subagents sends what a fresh instance sends';
+  is_deeply $hits, $fresh->search_conversations({query => 'zebra', include_subagents => 1}), 'so does the search';
+  is_deeply $searched->list_sessions, $plain->list_sessions, 'and list_sessions';
+};
+
 subtest 'registration' => sub {
   my %tool = map { $_->name => $_ } @{$h->tools};
   is_deeply [map { $_->name } @{$h->tools}],
