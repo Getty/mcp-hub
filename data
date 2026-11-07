@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-07T07:05:24Z
+created: 2026-11-07T04:13:49Z
+id: 167
+priority: medium
+started: 2026-11-07T06:02:25Z
+status: done
+tags:
+- native
+- perf
+- memory
+title: Find why a cold search with include_subagents peaks at 193 MB RSS (73 MB without)
+updated: 2026-11-07T07:05:24Z
+---
+
+Found by mcp-hub-worker during k159 (2026-11-07), measured on the real history (3354 runs, 3.17 GB of run files): a cold search_conversations peaks at 73 MB VmHWM by default and at 193 MB with include_subagents; warm with the flag at 198 MB. A likely cause, not verified: the meta cache holds first_prompt twice per file (in the scan state and in the summary), and a run's first_prompt is never sent anywhere. Done when the cause is measured, and either the cache holds less per run file (with a test that the run outputs are unchanged) or the card says why the growth is inherent. Lane: mcp-hub-worker.
+
+k167 (mcp-hub-worker, 2026-11-07). Cause measured: memory retained, not a transient peak. Each measurement ran in a fresh process, using mallinfo2. Cold include_subagents search on HEAD: VmHWM = VmRSS after = 182.6 MB; malloc in use 167.6 MB on a 166.8 MB heap; growth linear in files read. 107.9 MB of it is the first prompts of 3,371 runs (median 26 KB each), which no tool sends. Dropping them frees 108.9 MB. The scan-state copy shares its buffer through copy-on-write and frees only 0.2 MB, so 'kept twice' holds only on paper. Transient ruled out: largest run line 0.79 MB, session lines up to 1.33 MB. The 193/198 MB figures came from timing.pl holding three instances in one process. Fix: a $run flag through _refresh/_absorb (search $scan and _runs set it), so a run's first prompt is kept nowhere; scan state and incremental read are unchanged. Cold include_subagents: 182.6 -> 73.5 MB peak; 164.9 s wall both; CPU 126.8 vs 126.3 s (load 1.25/1.36). The regression subtest fails 4 of 12 asserts on HEAD's lib and passes after. The wire capture (32 calls, cold/warm/grown/fresh) is cmp-identical. prove -lr under EV and Poll: 49 files, 614 tests, PASS, 3 opt-in skips. Devel::Size 0.87 was installed under ~/perl5 for measuring only; it is not in the cpanfile. Main session: diff reviewed; every cache-filling path for a run file passes $run (search scan, _runs); get_conversation with agent_id reads through _each_record without the cache; tree matches tree.sha1.
+
+Committed as e50d7ac (Keep no first prompt of a subagent run in ClaudeHistory's cache, so a cold search with the runs peaks at 74 MB instead of 183 MB (k167))
