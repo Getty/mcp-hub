@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T04:13:53Z
+id: 168
+priority: low
+status: backlog
+tags:
+- native
+- pod
+- docs
+title: 'Fix ClaudeHistory POD: C<[tool_use <name>]> renders as [tool_use <name]>'
+updated: 2026-11-07T04:13:53Z
+---
+
+Found by mcp-hub-worker during k159 (pre-existing). In lib/MCP/Hub/Native/ClaudeHistory.pm, get_conversation POD, C<[tool_use <name>]> closes at the first > and renders as "[tool_use <name]>". Fix with C<< [tool_use <name>] >>. Check the rest of the file for the same pattern. Done when podchecker is clean and perldoc renders the right text. Lane: mcp-hub-worker (POD in lib/).
