@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T03:54:20Z
+id: 165
+priority: medium
+status: backlog
+tags:
+- test
+- flake
+- refresh
+title: t/refresh.t 'a refresh cut short keeps the manifest' fails under load
+updated: 2026-11-07T03:54:20Z
+---
+
+Found by mcp-hub-release-manager during the k82 commit (2026-11-07). With the load average near 6 on 8 cores (a parallel worker's docker build and suite), t/refresh.t subtest 'a refresh cut short keeps the manifest, an error answer is an empty list' failed 1 of 2: test 'the prompts/list times out: started' got HASH(0x...) where it expected an MCP::Hub::Upstream::Stdio object, and '...the prompts are listed' got [] instead of greet (t/refresh.t lines 110-111). Standalone reruns under EV then failed 3 times in a row, and the same file failed twice on a 5e2ec4a export -- so not a k82 regression; it passed again on 5e2ec4a, 961296f and 1d6cbb9 once the load dropped to ~2. Logs: scratchpad full-ev.log (x-k82, x-head1 exports). Same pattern as k156 (a short request_timeout racing a loaded machine). Done when: the cause is shown under load (bounded burners, N = cores, timeout 120), the test is fixed without weakening its claim, and it passes 5/5 under EV and Poll with that load.
