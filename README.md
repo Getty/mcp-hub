@@ -921,9 +921,12 @@ the image. For the CPAN install: Perl 5.20+,
 [`IO::Socket::SSL`](https://metacpan.org/pod/IO::Socket::SSL) 2.009+ for TLS —
 `https://` `url` upstreams and an `https://` `hub.listen` (its `Net::SSLeay`
 compiles against the OpenSSL and zlib development files, e.g. Debian's
-`libssl-dev` and `zlib1g-dev`), and the pure-Perl
+`libssl-dev` and `zlib1g-dev`), the pure-Perl
 [`YAML::PP`](https://metacpan.org/pod/YAML::PP) (loaded only when a YAML config
-is read). No process-management dependencies; everything else is core. On a perl
+is read), and [`JSON::MaybeXS`](https://metacpan.org/pod/JSON::MaybeXS) 1.004006+,
+which installs `Cpanel::JSON::XS` wherever a C compiler is found — without one,
+the hub decodes JSON in pure Perl, dozens of times slower. No process-management
+dependencies; everything else is core. On a perl
 without TLS, an `https://` `url` upstream — or a compose entry with an
 `https://` `url` — shows up as `failed`, with the fix in its reason.
 

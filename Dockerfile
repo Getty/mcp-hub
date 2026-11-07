@@ -25,6 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 COPY cpanfile ./
 RUN cpanm --notest --local-lib=/opt/perl5 --installdeps .
+# JSON::MaybeXS requires Cpanel::JSON::XS only when its install finds a C
+# compiler (build-essential above); without it the hub would decode JSON in
+# pure Perl, dozens of times slower. Stop the build rather than ship that.
+RUN PERL5LIB=/opt/perl5/lib/perl5 perl -MMojo::JSON -MJSON::MaybeXS -e \
+      'Mojo::JSON::JSON_XS && JSON::MaybeXS::JSON() eq "Cpanel::JSON::XS" or die "no Cpanel::JSON::XS: JSON would decode in pure Perl\n"'
 
 ########################################
 # Stage 2: the runtime image

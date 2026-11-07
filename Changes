@@ -89,6 +89,11 @@ Revision history for MCP-Hub
     instead of silently ignoring them.
   - IO::Socket::SSL 2.009 is now a hard requirement, for https `url`
     upstreams and an https `hub.listen`.
+  - JSON::MaybeXS 1.004006 is now a requirement; it installs
+    Cpanel::JSON::XS wherever a C compiler is found. ClaudeHistory and
+    ClaudeSessions decode session files through it, and Mojo::JSON goes XS
+    with it, so the Docker image no longer decodes JSON in pure Perl (a cold
+    list_sessions of a 54 MB history: 16.5 s CPU -> 0.4 s).
   - An https `url` upstream, or a compose entry with an https `url`, on a
     perl without TLS (IO::Socket::SSL missing or older than 2.009, or
     MOJO_NO_TLS set) is now a failed upstream whose reason names the fix,

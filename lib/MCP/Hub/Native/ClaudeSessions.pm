@@ -2,8 +2,9 @@ package MCP::Hub::Native::ClaudeSessions;
 our $VERSION = '0.001';
 use Mojo::Base 'MCP::Server', -signatures;
 
+use JSON::MaybeXS ();
 use Mojo::File qw(path);
-use Mojo::JSON qw(decode_json encode_json);
+use Mojo::JSON qw(encode_json);
 use Scalar::Util qw(weaken);
 
 # ABSTRACT: Native MCP server for discovering live Claude Code sessions
@@ -12,6 +13,15 @@ has root      => sub { $ENV{CLAUDE_CONFIG_DIR} || ($ENV{HOME} ? "$ENV{HOME}/.cla
 has proc_root => '/proc';
 
 use constant TAIL_CHUNK => 65536;
+
+# Lines are decoded as MCP::Hub::Native::ClaudeHistory decodes them: by
+# JSON::MaybeXS, a key held twice read with its last value.
+my $JSON = JSON::MaybeXS->new(utf8 => 1);
+$JSON->allow_dupkeys if $JSON->can('allow_dupkeys');
+
+# A line's bytes, decoded; dies on a line that is not JSON. Every line read
+# is decoded here, and only here.
+sub decode_json ($bytes) { $JSON->decode($bytes) }
 
 sub new ($class, %args) {
   my $self = $class->SUPER::new(name => 'claude-sessions', version => $VERSION, %args);

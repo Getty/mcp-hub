@@ -2,14 +2,27 @@ package MCP::Hub::Native::ClaudeHistory;
 our $VERSION = '0.001';
 use Mojo::Base 'MCP::Server', -signatures;
 
+use JSON::MaybeXS ();
 use Mojo::File qw(path);
-use Mojo::JSON qw(decode_json encode_json);
+use Mojo::JSON qw(encode_json);
 use Scalar::Util qw(weaken);
 
 # ABSTRACT: Native MCP server for browsing the local Claude Code history
 
 has root => sub { $ENV{CLAUDE_CONFIG_DIR} || ($ENV{HOME} ? "$ENV{HOME}/.claude" : '.claude') };
 has meta_cache => sub { {} };
+
+# The lines of a session file are decoded by JSON::MaybeXS, which picks
+# Cpanel::JSON::XS where it is installed: on a history of many megabytes, a
+# fraction of a second where pure Perl takes many. A line that holds a key
+# twice is read as Mojo::JSON reads it, the last value winning, where
+# Cpanel::JSON::XS would refuse the line.
+my $JSON = JSON::MaybeXS->new(utf8 => 1);
+$JSON->allow_dupkeys if $JSON->can('allow_dupkeys');
+
+# A line's bytes, decoded; dies on a line that is not JSON. Every line read
+# is decoded here, and only here.
+sub decode_json ($bytes) { $JSON->decode($bytes) }
 
 # Escapes that decode to a character a raw search needle can match: printable
 # ASCII, U+0130 and U+212A (see _raw_skip); and text, name and content values
