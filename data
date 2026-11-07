@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-11-07T00:41:52Z
+created: 2026-11-07T00:10:40Z
+id: 158
+priority: low
+started: 2026-11-07T00:31:08Z
+status: done
+tags:
+- http
+- sse
+- docs
+- drift
+title: 'Http POD: req_ua does not bound an HTTP+SSE request alone; a held POST times
+  out, it does not fail at once'
+updated: 2026-11-07T00:41:58Z
+---
+
+Found by mcp-hub-worker during k157 (2026-11-07), by reading; docs only (POD in lib/MCP/Hub/Upstream/Http.pm).
+(a) The req_ua POD says its request timeout "is all that bounds a request, over both transports". Over HTTP+SSE the request's own timer (request_timeout, _sse_request_p) bounds the answer on the stream; req_ua bounds only the POST that carries it. Pre-dates k157.
+(b) The HTTP+SSE POST paragraph lists "no response" among the failures that fail "at once, with that reason". Since k157 a POST held past request_timeout (req_ua's "Request timeout") fails as "timed out after Ns" and is cancelled -- the paragraph can be read as contradicting that. The code comment above _sse_post already says so; the POD does not.
+Done when: both POD passages say what the code does (SSE: request timer bounds the request, req_ua the POST; a timed-out POST of a request is the request timing out), nothing else changed.
+
+Also check the comment above req_ua (Http.pm ~line 31, 'That timeout is all that bounds a request'): true for Streamable HTTP, not for an HTTP+SSE request, whose own timer bounds it.
+
+Done (main agent, prose only: POD + one code comment in lib/MCP/Hub/Upstream/Http.pm, no code). (a) req_ua comment and =attr req_ua: 'all that bounds a request, over both transports' -> 'all that bounds a POST, on either transport'; over Streamable HTTP the POST is the whole request, over HTTP+SSE the request's own timer (as long) bounds the wait for the answer on the stream. (b) HTTP+SSE POST paragraph: added that a POST the remote holds open until the request timeout cuts it off is the request timing out -- fails 'upstream NAME: timed out after 60s' and is cancelled (k157). request_timeout 0 left unmentioned (k152). podchecker: the same 7 messages as HEAD (=attr/=method and the woven req_ua link), none new; perl -c OK. No Changes entry (prose only, as k95/k126). Snapshots in scratchpad w-k158. Not committed.
+
+Committed as 1d6cbb9
