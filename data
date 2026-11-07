@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-07T03:10:04Z
+created: 2026-11-06T18:52:19Z
+id: 152
+priority: low
+started: 2026-11-07T02:09:50Z
+status: done
+tags:
+- config
+- timeout
+- decision
+title: 'Decide: what should request_timeout 0 mean -- no timeout, or refused?'
+updated: 2026-11-07T03:10:12Z
+---
+
+Found by mcp-hub-worker during k147 (2026-11-06). Needs a decision before code.
+request_timeout 0 means different things per transport: Stdio and the HTTP+SSE request timer take it as "no timeout" (if ((my $timeout = $self->request_timeout) > 0)), Streamable HTTP's req_ua as 60 s (request_timeout || 60), the SSE endpoint wait as 30 s (request_timeout || 30). README, Config POD and Upstream POD only say "Seconds to wait for an upstream response. Defaults to 60" -- nothing about 0. Config accepts 0 (_int).
+Question: what should 0 mean -- no timeout everywhere, or refused by Config (a positive number required)? Then make every transport agree, document it in README and POD, and test it.
+
+2026-11-06 (from k154): 'request_timeout || 60' now appears twice in Http.pm -- the req_ua builder and apply_timeouts, which since k154 sets the new value on the existing agent. Whatever 0 is decided to mean must change both. See also k157 (SSE's two clocks).
+
+Maintainer decision 2026-11-07: refuse request_timeout 0 (config error with its JSON path, as for other bad values) -- and negatives, which _int lets through today. No upper bound: a request_timeout of a day is allowed.
+
+Done (mcp-hub-worker, 2026-11-07), as the maintainer decided. hub.request_timeout and an entry's hub.request_timeout must be a positive integer: new Config::_positive_int (only for request_timeout; _int, idle_timeout, port unchanged). 0, negatives and non-integers fail "Invalid configuration at <path>: must be a positive integer" -- worker's choice: non-integers now get this message too instead of "must be an integer". No upper bound; 86400 loads. 0 special cases removed: Stdio (> 0), Http (|| 60 in req_ua builder and apply_timeouts, || 30 on the SSE endpoint wait, > 0 on the SSE request timer, $pending->{timer} && in _sse_post_failed), Docker _ready_p (|| 60). Also removed (worker's choice, reviewed by main agent): four timer-presence guards that only existed for 0 -- Stdio _on_response/_on_exit, Http _sse_post_failed fail branch and _on_message (SSE GET stream only); Http::_fail_pending keeps its guard (Streamable HTTP start requests carry {promise, tx}, no timer). Undef guards for inheriting the global value kept. Config POD, Upstream POD, README updated; one incompatible-change Changes bullet. New t/config.t subtest (29 checks): on HEAD all 24 refusal checks failed (0 and -5 loaded; non-integers on wording only); the 5 acceptance checks guard against a future cap. Two t/http.t subtests no longer use 0 (one dropped its 0 variant, one uses 30); a mutation run shows both still catch their bug. prove -lr t/ green under EV and Poll (47 files, 602 tests; only the docker-live, npx, wiki-live opt-ins skipped). Not committed; snapshots in scratchpad w-k152.
+
+Committed as 5e2ec4a
