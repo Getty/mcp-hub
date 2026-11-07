@@ -321,3 +321,7 @@ Revision history for MCP-Hub
     Docker HTTP engine) no longer fails its calls in flight as 'Premature
     connection close': they finish within the timeout they went out with,
     and the next request gets the new one.
+  - HTTP+SSE: a request whose POST the remote holds open past
+    request_timeout always fails as 'timed out after Ns' and is cancelled
+    on the remote. Which of two equal timers fired first decided before,
+    and one of them failed it as 'Request timeout' without a cancel.

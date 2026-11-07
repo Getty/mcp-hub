@@ -2343,6 +2343,50 @@ subtest 'sse upstream: a request it times out is cancelled on the remote' => sub
   $fake->{daemon}->stop;
 };
 
+subtest 'sse upstream: a request whose POST the remote holds past request_timeout fails one way, and is cancelled' => sub {
+  # Two clocks bound such a request, both request_timeout long and started
+  # together: its own timer, and req_ua's request timeout on the POST that
+  # carries it. The remote held the POST open as long, both were due in one
+  # tick, and the one that fired first decided -- under Mojo::Reactor::Poll in
+  # hash order, at random. The timer failed the call "timed out after 1s" and
+  # cancelled it on the remote; the POST's timeout failed it "Request timeout",
+  # and nothing told the remote, which went on with it. Either clock now times
+  # the request out the same way, and once. Besides both clocks as they are,
+  # req_ua's is set shorter and then longer than the request's own, so that
+  # each of them fires first.
+  my $handshake = mcp_answer('unused');
+  my $fake      = fake_sse(answer => sub ($req) {
+    return $handshake->($req) unless ($req->{method} // '') eq 'tools/call';
+    my $name = $req->{params}{name};
+    return {hold => 1} if $name eq 'hold';    # its POST held open, unanswered
+    return {jsonrpc => '2.0', id => $req->{id}, result => {content => [{type => 'text', text => "pong $name"}]}};
+  });
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 1},
+    cache_dir => tempdir->to_string,
+  );
+  $up->log->level('fatal');
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+
+  for my $clock (['as long as the request', 1], ['shorter', 0.5], ['longer', 2]) {
+    my ($post, $timeout) = @$clock;
+    $up->req_ua->request_timeout($timeout);
+    @{$fake->{posts}} = ();
+    is _error_text(_await_bounded($up->call_tool('hold', {}), 5)), 'upstream fake: timed out after 1s',
+      "POST timeout $post: the call times out";
+    my ($posted) = grep { ($_->{method} // '') eq 'tools/call' } @{$fake->{posts}};
+    ok until_true(sub { @{cancels_on($fake)} }), "POST timeout $post: and is cancelled";
+    Mojo::Promise->timer(abs($timeout - 1) + 0.3)->wait;    # the other clock is through as well
+    is_deeply [map { $_->{params} } @{cancels_on($fake)}], [{requestId => $posted->{id}, reason => 'timed out after 1s'}],
+      "POST timeout $post: once, by the id it went out with, and why" or diag explain cancels_on($fake);
+    is $up->state, 'ready', "POST timeout $post: the upstream stays ready";
+    is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong ping', "POST timeout $post: and answers the next call";
+  }
+  _stop($up);
+  $fake->{daemon}->stop;
+};
+
 subtest 'streamable http upstream: request_timeout bounds a request, however long the remote stays silent' => sub {
   # Mojo's inactivity timeout -- 40 s, or MOJO_INACTIVITY_TIMEOUT -- cut off a
   # POST the remote sent nothing back on for that long, whatever
@@ -2400,9 +2444,7 @@ subtest 'a reload that moves request_timeout leaves the requests in flight to fi
     http => fake_http(answer => pong_answer($after)),
     sse  => fake_sse(answer => sub ($req) { ($req->{method} // '') eq 'tools/call' ? $after->($req) : $handshake->($req) }),
   );
-  # Two clocks bound a request over HTTP+SSE, both the request timeout: its
-  # own timer, and req_ua's on its POST, which the remote holds as long.
-  my %timed_out = (http => qr/^upstream fake: Request timeout\z/, sse => qr/^upstream fake: (?:timed out after 1s|Request timeout)\z/);
+  my %timed_out = (http => qr/^upstream fake: Request timeout\z/, sse => qr/^upstream fake: timed out after 1s\z/);
 
   for my $type (qw(http sse)) {
     my $fake = $fake{$type};

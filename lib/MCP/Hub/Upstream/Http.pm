@@ -599,28 +599,39 @@ sub _sse_request_p ($self, $method, $params) {
     unless $self->{endpoint} && $self->{sse} && $self->{sse}{stream};
 
   my $id      = ++$self->{id};
-  my $promise = Mojo::Promise->new;
-
-  # One that times out is cancelled on the remote as well (_cancel).
-  my $timer;
+  my $pending = $self->{pending}{$id} = {promise => Mojo::Promise->new, method => $method};
   if ((my $timeout = $self->request_timeout) > 0) {
-    $timer = Mojo::IOLoop->timer($timeout => sub {
-      my $pending = delete $self->{pending}{$id} or return;
-      my $why     = "timed out after ${timeout}s";
-      $self->_cancel($id, $method, $why);
-      $pending->{promise}->reject("upstream @{[$self->name]}: $why");
-    });
+    $pending->{timeout} = $timeout;
+    $pending->{timer}   = Mojo::IOLoop->timer($timeout => sub { $self->_sse_timed_out($id) });
   }
-  $self->{pending}{$id} = {promise => $promise, timer => $timer};
   $self->_sse_post({jsonrpc => '2.0', id => $id, method => $method, params => $params});
-  return $promise;
+  return $pending->{promise};
+}
+
+# A request whose answer has not come within request_timeout fails as timed
+# out, and is cancelled on the remote as well (_cancel). Two clocks tell so:
+# its timer, and -- should the remote hold the POST that carries it open as
+# long -- the request timeout of req_ua on that POST (_sse_post_failed). Both
+# are request_timeout long and start together, so both come due in one tick,
+# in no set order: Mojo::Reactor::Poll fires the timers due in a tick in hash
+# order. Whichever fires first times the request out, and the other finds it
+# gone; a request fails the same way, and is cancelled once, either way.
+sub _sse_timed_out ($self, $id) {
+  my $pending = delete $self->{pending}{$id} or return $self;
+  Mojo::IOLoop->remove($pending->{timer});
+  my $why = "timed out after $pending->{timeout}s";
+  $self->_cancel($id, $pending->{method}, $why);
+  $pending->{promise}->reject("upstream @{[$self->name]}: $why");
+  return $self;
 }
 
 # A POST the remote does not take -- an HTTP error status, no response, a
 # refused connection -- carries nothing on to the stream, and a request in it
 # would wait out the request timeout for an answer that cannot come. It fails
 # at once instead, with the reason after the name of the upstream, as over
-# Streamable HTTP (_http_send_p). What the remote accepts -- 202, or any other
+# Streamable HTTP (_http_send_p) -- unless req_ua cut it off for its time, with
+# the request's timer running as long: that is the request timing out
+# (_sse_timed_out). What the remote accepts -- 202, or any other
 # 2xx -- is answered on the stream. A POST of the hub's own answer to a request
 # of the remote (ping, roots/list) or of a notification has nothing waiting for
 # it: its failure is only logged, at debug. Only a request of the hub's has a
@@ -639,7 +650,10 @@ sub _sse_post ($self, $obj) {
 
 sub _sse_post_failed ($self, $obj, $reason) {
   my $request = defined $obj->{method} && defined $obj->{id};
-  if (my $pending = $request ? delete $self->{pending}{$obj->{id}} : undef) {
+  my $pending = $request ? $self->{pending}{$obj->{id}} : undef;
+  return $self->_sse_timed_out($obj->{id}) if $pending && $pending->{timer} && $reason =~ TIMED_OUT;
+  if ($pending) {
+    delete $self->{pending}{$obj->{id}};
     Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
     $pending->{promise}->reject("upstream @{[$self->name]}: $reason");
     return $self;
@@ -809,8 +823,10 @@ Whatever makes a request fail, on either transport, the reason starts with the
 name of the upstream, and that is what the agent reads in the error result of
 its call: C<upstream NAME: Connection refused> (over HTTP+SSE C<upstream NAME:
 connect failed: Connection refused>), C<upstream NAME: Request timeout> for a
-POST that outlasts the request timeout, C<upstream NAME:> and the message of a
-JSON-RPC error the remote answers with.
+POST that outlasts the request timeout (over HTTP+SSE C<upstream NAME: timed
+out after 60s> for a request whose answer has not come within it, one whose
+POST the remote holds open as long among them), C<upstream NAME:> and the
+message of a JSON-RPC error the remote answers with.
 
 A request the hub times out is cancelled on the remote, as a stdio child's is:
 the remote would go on with it otherwise, as a dropped connection is no
