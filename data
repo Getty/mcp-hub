@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-07T00:30:32Z
+created: 2026-11-06T21:56:22Z
+id: 157
+priority: low
+started: 2026-11-06T23:28:58Z
+status: done
+tags:
+- http
+- sse
+- timeout
+- drift
+title: 'HTTP+SSE: a POST held past request_timeout races two equal timers (cancel
+  or not)'
+updated: 2026-11-07T00:30:36Z
+---
+
+Found by mcp-hub-worker during k154 (2026-11-06), by reading the code; no dedicated test.
+HTTP+SSE bounds one request with two clocks of the same length: its own pending timer in _sse_request_p (request_timeout) and, since k150, req_ua's request timeout on the POST that carries it (request_timeout || 60). When the remote holds that POST open past request_timeout, both fire in the same tick. If the request timer wins, the call fails "upstream NAME: timed out after Ns" and a notifications/cancelled goes out (k147); if the POST timer wins, _sse_post_failed (k144) fails it "upstream NAME: Request timeout" and nothing is cancelled. Under Mojo::Reactor::Poll timers due in the same tick fire in hash order, so which one wins is random. With request_timeout 0 only the POST's 60 s applies, with no cancel (see k152).
+Done when: a request held past request_timeout over HTTP+SSE always fails the same way and is always cancelled (e.g. a POST timed out by req_ua cancels its request too, or the POST is bounded by more than the request timer); a test in t/http.t that holds a POST open past request_timeout asserts one reason and the cancel, under EV and Poll.
+
+Done (mcp-hub-worker, 2026-11-07). Mechanism (worker's choice): either clock ends the request the same way. A POST of a request that req_ua cuts off with "Request timeout", while the request has its own timer, now goes through the same new _sse_timed_out as the timer: it fails "timed out after Ns" and sends one notifications/cancelled; whichever clock fires first wins, the other finds nothing pending. A longer POST bound was rejected: under Poll timers due in one tick still fire in hash order once the loop stalls past the margin. request_timeout 0 unchanged ("Request timeout" at 60 s, no cancel; k152). Streamable HTTP, non-timeout POST failures and answer/notification POSTs unchanged. New t/http.t subtest holds the POST open with req_ua's timeout at 1, 0.5 and 2 s and checks one reason and one cancel each time; on the old code the 0.5 s run fails every time (20/20 Poll, 5/5 EV), the equal-clock run 9/20 under Poll. The k154 reload test now expects the single SSE reason. POD reasons paragraph updated. t/http.t 5x EV + 5x Poll green; prove -lr t/ green under EV and Poll (47 files, 601 tests; only the docker-live, npx, wiki-live opt-ins skipped). Changes: one bullet. Reviewed by the main agent. Not committed; snapshots in scratchpad w-k157.
+
+Committed as 8f4e5b5
