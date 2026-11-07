@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-07T03:04:16Z
+id: 164
+priority: low
+status: backlog
+tags:
+- skill
+- native
+- drift
+title: 'mcp-hub-runtime skill: describe the natives'' decode_json seam (JSON::MaybeXS,
+  allow_dupkeys)'
+updated: 2026-11-07T03:04:16Z
+---
+
+Found by mcp-hub-worker during k82 (2026-11-07). Since k82 ClaudeHistory and ClaudeSessions decode every line through a package-level decode_json backed by JSON::MaybeXS->new(utf8 => 1) with allow_dupkeys (a key held twice: last value wins, as Mojo::JSON reads it); encoding stays Mojo::JSON. The mcp-hub-runtime skill's natives section does not say so. Done when: the skill names the seam, why (Cpanel::JSON::XS speed, k40/k82), and that all line decoding goes through it.
