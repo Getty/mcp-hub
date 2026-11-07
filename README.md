@@ -865,7 +865,7 @@ Exactly one of `command`, `class`, `url`, `docker` or `compose` is required.
 | `path`, `type`, `headers` (with `docker`, `compose`) | For an HTTP container: the URL path (default `/mcp`), `http` or `sse`, extra headers. |
 | `hub.idle_timeout` | Seconds; `0` means never stop. Overrides the global default (stdio, docker, compose and forked class). |
 | `hub.always_on` | Start at daemon start and never stop. |
-| `hub.request_timeout` | Seconds per request. |
+| `hub.request_timeout` | Seconds per request: a positive integer, with no upper bound; `0` or a negative value is a config error. |
 
 On a `class` entry without `hub.fork` the three are an error: it has no process
 of its own.
@@ -892,7 +892,7 @@ start.
 | `listen` | `http://127.0.0.1:3080` | Listen address. |
 | `cache_dir` | `~/.cache/mcp-hub` | Where manifests are cached. |
 | `idle_timeout` | `300` | Seconds before an idle stdio, docker or compose upstream, or a forked class worker, is stopped. |
-| `request_timeout` | `60` | Seconds to wait for an upstream response, however long the upstream stays silent before it answers. |
+| `request_timeout` | `60` | Seconds to wait for an upstream response, however long the upstream stays silent before it answers. A positive integer, with no upper bound; `0` or a negative value is a config error. |
 | `profiles` | `{}` | Named permission sets. |
 | `clients` | `{}` | `name → { token, profile }`. |
 | `public_profile` | `null` | Profile for tokenless requests in clients mode. |

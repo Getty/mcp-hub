@@ -500,7 +500,9 @@ version the upstream answers with is what the hub then uses.
 
 =attr request_timeout
 
-Seconds to wait for an upstream response. Defaults to C<60>.
+Seconds to wait for an upstream response: a positive integer, with no upper
+bound. Defaults to C<60>. The configuration refuses C<0> and negative values
+(L<MCP::Hub::Config/request_timeout>).
 
 =attr server
 

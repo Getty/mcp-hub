@@ -220,15 +220,13 @@ sub _request_p ($self, $method, $params = {}, $of_start = 0, $child = undef) {
   # its id and the reason it was rejected with, as over HTTP
   # (MCP::Hub::Upstream::Http::_cancel). Never the initialize, which a client
   # must not cancel (MCP 2025-06-18, Cancellation).
-  my $timer;
-  if ((my $timeout = $self->request_timeout) > 0) {
-    $timer = Mojo::IOLoop->timer($timeout => sub {
-      my $pending = delete $self->{pending}{$id} or return;
-      my $why     = "timed out after ${timeout}s";
-      $self->_notify('notifications/cancelled', {requestId => $id, reason => $why}) unless $method eq 'initialize';
-      $pending->{promise}->reject("upstream @{[$self->name]}: $why");
-    });
-  }
+  my $timeout = $self->request_timeout;
+  my $timer   = Mojo::IOLoop->timer($timeout => sub {
+    my $pending = delete $self->{pending}{$id} or return;
+    my $why     = "timed out after ${timeout}s";
+    $self->_notify('notifications/cancelled', {requestId => $id, reason => $why}) unless $method eq 'initialize';
+    $pending->{promise}->reject("upstream @{[$self->name]}: $why");
+  });
 
   $self->{pending}{$id} = {promise => $promise, timer => $timer};
   $self->_send({jsonrpc => '2.0', id => $id, method => $method, params => $params});
@@ -290,7 +288,7 @@ sub _on_message ($self, $line) {
 sub _on_response ($self, $msg) {
   my $pending = delete $self->{pending}{$msg->{id}}
     or return $self->log->debug("[@{[$self->name]}] response with unknown id @{[$msg->{id} // '?']}");
-  Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
+  Mojo::IOLoop->remove($pending->{timer});
   if (my $err = $msg->{error}) {
     $pending->{promise}->reject($self->_error_answer($err));
   }
@@ -415,7 +413,7 @@ sub _on_exit ($self, $status) {
   my $why    = $child->{exited} = "exited ($reason)" . $self->_exec_hint($status);
   for my $id (keys %{$self->{pending}}) {
     my $pending = delete $self->{pending}{$id};
-    Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
+    Mojo::IOLoop->remove($pending->{timer});
     $pending->{promise}->reject("upstream @{[$self->name]}: $why");
   }
 

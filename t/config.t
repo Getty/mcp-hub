@@ -459,4 +459,40 @@ subtest 'public_profile must exist' => sub {
   like $@, qr/unknown profile 'ghost'/, 'public_profile validated';
 };
 
+# --- request_timeout ---------------------------------------------------------
+
+subtest 'request_timeout is a positive integer, with no upper bound' => sub {
+  # 0 passed as an integer and meant something else on each transport: no
+  # timeout over stdio and for an answer over HTTP+SSE, 60 s for a Streamable
+  # HTTP POST, 30 s for the SSE endpoint. A negative one passed too. Both are
+  # configuration errors now, in the hub block and in an entry's, with the
+  # path -- and so is anything else that is no whole number of seconds.
+  my %entry = (
+    command => sub (%hub) { {command => 'a', hub => {%hub}} },
+    url     => sub (%hub) { {url => 'http://127.0.0.1:1/mcp', hub => {%hub}} },
+    forked  => sub (%hub) { {class => 'X', hub => {fork => true, %hub}} },
+  );
+  my %bad = (zero => 0, negative => -5, 'a fraction' => 1.5, 'a string' => '30s', 'a JSON true' => true,
+    'null' => undef);
+  for my $what (sort keys %bad) {
+    like config_error({command => 'a'}, {request_timeout => $bad{$what}}),
+      qr/^Invalid configuration at hub\.request_timeout: must be a positive integer$/m,
+      "hub.request_timeout: $what is refused";
+    for my $kind (sort keys %entry) {
+      like config_error($entry{$kind}->(request_timeout => $bad{$what})),
+        qr/^Invalid configuration at mcpServers\.x\.hub\.request_timeout: must be a positive integer$/m,
+        "hub.request_timeout of a $kind entry: $what is refused";
+    }
+  }
+
+  my $day = MCP::Hub::Config->from_data({
+    mcpServers => {map { $_ => $entry{$_}->(request_timeout => 86400) } keys %entry},
+    hub        => {request_timeout => 86400},
+  });
+  is $day->request_timeout, 86400, 'a day is a request_timeout, in the hub block';
+  is $day->server($_)->{request_timeout}, 86400, "and in a $_ entry's" for sort keys %entry;
+  is(MCP::Hub::Config->from_data({mcpServers => {}, hub => {request_timeout => 1}})->request_timeout, 1,
+    'and so is one second');
+};
+
 done_testing;

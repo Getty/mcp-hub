@@ -168,9 +168,9 @@ Revision history for MCP-Hub
     memory; a call to a primitive whose upstream is gone now answers with
     an error naming it.
   - An HTTP+SSE upstream stopped between two requests of its handshake no
-    longer leaves the next request waiting for request_timeout (forever with
-    request_timeout 0) and the start stuck with it; a request with no
-    stream to answer on fails at once.
+    longer leaves the next request waiting for request_timeout and the
+    start stuck with it; a request with no stream to answer on fails at
+    once.
   - A stop during the start of a Streamable HTTP upstream calls the start
     off: the request in flight is cut off, the upstream stays stopped
     instead of going ready, and nothing is logged or counted as a failure.
@@ -325,3 +325,10 @@ Revision history for MCP-Hub
     request_timeout always fails as 'timed out after Ns' and is cancelled
     on the remote. Which of two equal timers fired first decided before,
     and one of them failed it as 'Request timeout' without a cancel.
+  - Incompatible change: `request_timeout`, in the `hub` block and in a
+    server's own, must be a positive integer of seconds, with no upper
+    bound. A config that sets it to 0 or to a negative value no longer
+    loads: it is refused with the JSON path, as other bad values are. 0 used
+    to mean no timeout over stdio and for an HTTP+SSE answer, but 60 s for
+    a Streamable HTTP POST and 30 s for the HTTP+SSE endpoint; every
+    transport now waits the one configured value.

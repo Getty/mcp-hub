@@ -37,7 +37,7 @@ use constant TIMED_OUT => qr/^Request timeout\z/;
 # (_sse_request_p).
 has req_ua => sub ($self) {
   my $ua = Mojo::UserAgent->new;
-  $ua->request_timeout($self->request_timeout || 60);
+  $ua->request_timeout($self->request_timeout);
   $ua->inactivity_timeout(0);
   $ua->max_response_size(0);
   return $ua;
@@ -195,7 +195,7 @@ sub apply_timeouts ($self, $timeouts) {
   # request's timer with it. A request in flight finishes on the agent it went
   # out on, within the timeout it went out with -- an agent dropped for a new
   # one closed its connections, and failed it as "Premature connection close".
-  $self->{req_ua}->request_timeout($self->request_timeout || 60) if $self->{req_ua};
+  $self->{req_ua}->request_timeout($self->request_timeout) if $self->{req_ua};
   return $self;
 }
 
@@ -501,7 +501,7 @@ sub _open_sse_p ($self) {
   # (_close_sse). Left behind, it rejected whichever connect was current when
   # it fired, a later one still waiting for its endpoint, and held the
   # upstream until then.
-  $s->{timer} = Mojo::IOLoop->timer($self->request_timeout || 30 => sub {
+  $s->{timer} = Mojo::IOLoop->timer($self->request_timeout => sub {
     $self->_sse_resolve(0, 'timed out waiting for the SSE endpoint', $s);
   });
 
@@ -594,19 +594,17 @@ sub _sse_closed ($self) {
 sub _sse_request_p ($self, $method, $params) {
   # Its answer comes back on the stream, so a request without the stream, or
   # without the endpoint to post it to, would wait for an answer that cannot
-  # come -- request_timeout long, and with request_timeout 0 for good. A stop
-  # takes both away, a remote that drops the stream that one. A request after
-  # that -- the next one of a handshake a stop called off, say -- is rejected
-  # at once instead of holding its start, or its call, until then.
+  # come, request_timeout long. A stop takes both away, a remote that drops
+  # the stream that one. A request after that -- the next one of a handshake a
+  # stop called off, say -- is rejected at once instead of holding its start,
+  # or its call, until then.
   return Mojo::Promise->reject("upstream @{[$self->name]}: not connected")
     unless $self->{endpoint} && $self->{sse} && $self->{sse}{stream};
 
   my $id      = ++$self->{id};
-  my $pending = $self->{pending}{$id} = {promise => Mojo::Promise->new, method => $method};
-  if ((my $timeout = $self->request_timeout) > 0) {
-    $pending->{timeout} = $timeout;
-    $pending->{timer}   = Mojo::IOLoop->timer($timeout => sub { $self->_sse_timed_out($id) });
-  }
+  my $timeout = $self->request_timeout;
+  my $pending = $self->{pending}{$id} = {promise => Mojo::Promise->new, method => $method, timeout => $timeout};
+  $pending->{timer} = Mojo::IOLoop->timer($timeout => sub { $self->_sse_timed_out($id) });
   $self->_sse_post({jsonrpc => '2.0', id => $id, method => $method, params => $params});
   return $pending->{promise};
 }
@@ -632,8 +630,8 @@ sub _sse_timed_out ($self, $id) {
 # refused connection -- carries nothing on to the stream, and a request in it
 # would wait out the request timeout for an answer that cannot come. It fails
 # at once instead, with the reason after the name of the upstream, as over
-# Streamable HTTP (_http_send_p) -- unless req_ua cut it off for its time, with
-# the request's timer running as long: that is the request timing out
+# Streamable HTTP (_http_send_p) -- unless req_ua cut it off for its time, as
+# long as the request's own timer: that is the request timing out
 # (_sse_timed_out). What the remote accepts -- 202, or any other
 # 2xx -- is answered on the stream. A POST of the hub's own answer to a request
 # of the remote (ping, roots/list) or of a notification has nothing waiting for
@@ -654,10 +652,10 @@ sub _sse_post ($self, $obj) {
 sub _sse_post_failed ($self, $obj, $reason) {
   my $request = defined $obj->{method} && defined $obj->{id};
   my $pending = $request ? $self->{pending}{$obj->{id}} : undef;
-  return $self->_sse_timed_out($obj->{id}) if $pending && $pending->{timer} && $reason =~ TIMED_OUT;
+  return $self->_sse_timed_out($obj->{id}) if $pending && $reason =~ TIMED_OUT;
   if ($pending) {
     delete $self->{pending}{$obj->{id}};
-    Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
+    Mojo::IOLoop->remove($pending->{timer});
     $pending->{promise}->reject("upstream @{[$self->name]}: $reason");
     return $self;
   }
@@ -671,7 +669,7 @@ sub _on_message ($self, $msg) {
 
   if (exists $msg->{id} && !exists $msg->{method}) {
     my $pending = delete $self->{pending}{$msg->{id}} or return;
-    Mojo::IOLoop->remove($pending->{timer}) if $pending->{timer};
+    Mojo::IOLoop->remove($pending->{timer});
     if (my $err = $msg->{error}) {
       $pending->{promise}->reject($self->_error_answer($err));
     }

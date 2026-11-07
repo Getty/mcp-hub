@@ -365,7 +365,8 @@ sub _parse_entry_hub ($self, $path, $hub) {
     _err("$path.hub.$key", "unknown key '$key'") unless $ENTRY_HUB_KEYS{$key};
   }
   $out{idle_timeout}    = _int("$path.hub.idle_timeout",    $hub->{idle_timeout})    if exists $hub->{idle_timeout};
-  $out{request_timeout} = _int("$path.hub.request_timeout", $hub->{request_timeout}) if exists $hub->{request_timeout};
+  $out{request_timeout} = _positive_int("$path.hub.request_timeout", $hub->{request_timeout})
+    if exists $hub->{request_timeout};
   $out{always_on}       = $hub->{always_on} ? 1 : 0                                  if exists $hub->{always_on};
   $out{fork}            = $hub->{fork} ? 1 : 0                                       if exists $hub->{fork};
   return %out;
@@ -380,7 +381,8 @@ sub _parse_hub ($self, $hub) {
   $self->cache_dir(_tilde($self->_expand($hub->{cache_dir}, 'hub.cache_dir')))
     if defined $hub->{cache_dir};
   $self->idle_timeout(_int('hub.idle_timeout', $hub->{idle_timeout}))       if exists $hub->{idle_timeout};
-  $self->request_timeout(_int('hub.request_timeout', $hub->{request_timeout})) if exists $hub->{request_timeout};
+  $self->request_timeout(_positive_int('hub.request_timeout', $hub->{request_timeout}))
+    if exists $hub->{request_timeout};
   $self->auto_reload($hub->{auto_reload} ? 1 : 0)                          if exists $hub->{auto_reload};
   $self->docker_command(_tilde($self->_string($hub->{docker_command}, 'hub.docker_command', 1)))
     if defined $hub->{docker_command};
@@ -468,6 +470,13 @@ sub _default_cache_dir {
 # A JSON true is no 1: it would read as one second, or as port 1.
 sub _int ($path, $value) {
   _err($path, 'must be an integer') unless defined $value && !ref $value && $value =~ /^-?\d+$/;
+  return $value + 0;
+}
+
+# A request_timeout bounds every request, on every transport alike: 0 or less
+# would bound none, or time each out at once. No upper bound -- a day will do.
+sub _positive_int ($path, $value) {
+  _err($path, 'must be a positive integer') unless defined $value && !ref $value && $value =~ /^\d+$/ && $value > 0;
   return $value + 0;
 }
 
@@ -631,7 +640,9 @@ C<undef>.
 
 =attr request_timeout
 
-Seconds to wait for an upstream response. Defaults to C<60>.
+Seconds to wait for an upstream response, from C<hub.request_timeout>: a
+positive integer, with no upper bound. Defaults to C<60>. C<0> and negative
+values are configuration errors, here and in an entry's C<hub> block.
 
 =attr servers
 

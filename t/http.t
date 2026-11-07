@@ -562,17 +562,15 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
   # A stop between two requests of the handshake -- the initialize answered,
   # the tools/list not sent yet -- took the endpoint away, and the tools/list
   # went nowhere: it waited request_timeout for an answer that could not come,
-  # with request_timeout 0 for good, and the start with it, which every later
-  # start then waited on too. A request without an endpoint is rejected at once.
+  # and the start with it, which every later start then waited on too. A
+  # request without an endpoint is rejected at once.
   #
   # A stop during a prompts/list failed it, and the handshake takes a failed
   # prompts/list (or resources/list) for an empty one: the upstream went
   # `ready` after the stop, over the stream the stop had closed.
   my @when = ('before it is connected', 'before the endpoint', 'during the handshake', 'between two requests',
     'during a prompts/list');
-  for my $case (map { my $timeout = $_; map { [$_, $timeout] } @when } 5, 0) {
-    my ($when, $timeout) = @$case;
-    my $phase = $timeout ? $when : "$when, request_timeout 0";
+  for my $when (@when) {
     # The request the remote does not answer -- none between two requests.
     my $hold = {'between two requests' => '', 'during a prompts/list' => 'prompts/list'}->{$when} // 'initialize';
     my $handshake = mcp_answer('unused');
@@ -590,7 +588,7 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
 
     my $up = MCP::Hub::Upstream::Http->new(
       name      => 'fake',
-      config    => {type => 'sse', url => $fake->{url}, request_timeout => $timeout},
+      config    => {type => 'sse', url => $fake->{url}, request_timeout => 5},
       cache_dir => tempdir->to_string,
     );
     my @logged;
@@ -620,41 +618,41 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
       $fake->{tx} = undef;
       @{$fake->{posts}} = @sent = ();
       my $start = $up->start_p;
-      ok $until->(sub { $fake->{tx} }), "$phase, start $n: the stream is open"
+      ok $until->(sub { $fake->{tx} }), "$when, start $n: the stream is open"
         if $when eq 'before the endpoint';
       ok $until->(sub { grep { ($_->{method} // '') eq $hold } @{$fake->{posts}} }),
-        "$phase, start $n: the $hold is on its way"
+        "$when, start $n: the $hold is on its way"
         if $when =~ /^during /;
       $up->stop unless $stop_at;
 
-      # Well inside the request_timeout of 5 s, and the endpoint wait of 30 s
-      # without one.
+      # Well inside the request_timeout of 5 s, which the endpoint wait is as
+      # long as.
       my $r = _await_bounded($start, 2);
-      is $r->{err}, 'upstream fake: stopped', "$phase, start $n: rejected at once, as stopped"
+      is $r->{err}, 'upstream fake: stopped', "$when, start $n: rejected at once, as stopped"
         or diag explain $r;
       is_deeply \@sent, ['initialize', 'notifications/initialized'],
-        "$phase, start $n: the stop came after the initialize was answered, nothing went out after it"
+        "$when, start $n: the stop came after the initialize was answered, nothing went out after it"
         if $stop_at;
     }
-    is $up->state, 'stopped', "$phase: stopped, not failed";
-    is $up->error, undef, "$phase: no failure reason";
-    is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$phase: nothing logged as a failure"
+    is $up->state, 'stopped', "$when: stopped, not failed";
+    is $up->error, undef, "$when: no failure reason";
+    is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$when: nothing logged as a failure"
       or diag explain \@logged;
-    ok !(grep {/timed out waiting for the SSE endpoint/} @logged), "$phase: no endpoint timeout";
+    ok !(grep {/timed out waiting for the SSE endpoint/} @logged), "$when: no endpoint timeout";
 
     # Nor did they lock it out: the next start connects.
     ($hold, $stop_at, $fake->{endpoint_delay}) = ('', '', 0);
     # (Resolved to a string: the upstream it resolves with would be held here.)
     my $again = _await_bounded($up->start_p->then(sub { 'started' }), 5);
-    is $again, 'started', "$phase: the next start connects" or diag explain $again;
-    is $up->state, 'ready', "$phase: ready";
+    is $again, 'started', "$when: the next start connects" or diag explain $again;
+    is $up->state, 'ready', "$when: ready";
     $up->stop;
 
     # And they left nothing behind: the endpoint timer of each start went with
     # it, instead of holding the upstream for request_timeout.
     weaken(my $gone = $up);
     undef $up;
-    is $gone, undef, "$phase: no timer holds the upstream";
+    is $gone, undef, "$when: no timer holds the upstream";
 
     $fake->{daemon}->stop;
   }
@@ -663,8 +661,9 @@ subtest 'sse upstream: a stop while it starts calls the start off, it does not f
 subtest 'sse upstream: a request without the stream to answer on is rejected at once' => sub {
   # A remote that drops the stream between two requests of a handshake took the
   # way back for every answer, but left the endpoint: the next request was
-  # posted to it and waited for an answer that could not come -- with
-  # request_timeout 0 for good, and the start with it.
+  # posted to it and waited for an answer that could not come --
+  # request_timeout long, and the start with it. Here that is 30 s, far past
+  # the 2 s the start is given.
   my $handshake = mcp_answer('unused');
   my $fake      = fake_sse(answer => sub ($req) {
     return {jsonrpc => '2.0', id => $req->{id}, result => {tools => []}} if ($req->{method} // '') eq 'tools/list';
@@ -672,7 +671,7 @@ subtest 'sse upstream: a request without the stream to answer on is rejected at 
   });
   my $up = MCP::Hub::Upstream::Http->new(
     name      => 'fake',
-    config    => {type => 'sse', url => $fake->{url}, request_timeout => 0},
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 30},
     cache_dir => tempdir->to_string,
   );
   $up->log->level('fatal');

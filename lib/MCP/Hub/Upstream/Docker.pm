@@ -388,7 +388,7 @@ sub _watch ($self, $engine) {
 # status will do -- then leave the handshake to the transport. Gives up when
 # the container exits, or after request_timeout.
 sub _ready_p ($self, $engine, $plan) {
-  my $timeout  = $self->request_timeout || 60;
+  my $timeout  = $self->request_timeout;
   my $deadline = time + $timeout;
   my $url      = $engine->url;
   my $ua       = Mojo::UserAgent->new(connect_timeout => 2, inactivity_timeout => 2, request_timeout => 2);
