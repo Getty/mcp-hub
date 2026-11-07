@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-11-07T04:32:58Z
+created: 2026-11-07T02:09:17Z
+id: 159
+priority: medium
+started: 2026-11-07T03:16:18Z
+status: done
+tags:
+- native
+- claude-history
+title: 'ClaudeHistory: make subagent runs (<session>/subagents/agent-*.jsonl) available'
+updated: 2026-11-07T04:32:58Z
+---
+
+Maintainer decision on k40's product question (2026-11-07): the subagent runs should be available. Today ClaudeHistory lists only <project>/<session>.jsonl; the runs under <project>/<session>/subagents/agent-<id>.jsonl (each with agent-<id>.meta.json: agentType, description, toolUseId, spawnDepth; every line carries sessionId of the parent, agentId, isSidechain: true) are never read -- about 2.7 GB of 4.7 GB on this machine, in 678 session dirs.
+Design (main agent's proposal, not the maintainer's -- he said "somewhere"): additive, no existing tool output changes.
+1. list_sessions stays as it is (subagent runs are not sessions of their own).
+2. New tool list_subagents(session_id): one row per run -- agent_id, agent_type, description, first/last timestamp, message count -- from the meta file and the run's lines; empty list for a session without runs; unknown session as today's get_conversation does.
+3. get_conversation(session_id, agent_id?): with agent_id, the messages of that run instead of the session's, same shape.
+4. search_conversations: an optional include_subagents (default false, so the cost of a search stays as today); hits from a run carry agent_id.
+5. The meta cache (k85) covers run files the same way (dev, ino, size, offset).
+Done when: the three tools do the above against new fixtures under t/fixtures/claude (a session with two runs, one without meta file, one with a malformed line); POD + README natives section list the new tool and parameters; Changes entry; prove -lr t/ green under EV and Poll.
+Still open (not part of this card): history.jsonl, which neither native reads.
+
+k159 (mcp-hub-worker, 2026-11-07) built as designed. New tool list_subagents(session_id) returns rows of agent_id, agent_type, description, started_at, last_activity and messages, oldest run first. get_conversation takes agent_id; search_conversations takes include_subagents (default false), and hits from a run carry agent_id. Runs use the same meta cache, raw prefilter and decode seam, and are found beside the session's file by file name only. Premise fix: today an unknown session is an empty result, not an error. So an unknown session stays empty in every tool, and an unknown agent_id is the error 'claude-history: no subagent run X in session Y'. Old tools' output is byte-identical: a 224-line wire capture is cmp-equal to HEAD, and existing t/native tests are unedited. t/hub.t count 4->5 for the new tool. New t/native/claude-history-subagents.t builds its runs in a tempdir copy of the fixtures; 40 of its assertions fail on HEAD. prove -lr t/: 49 files, 613 tests, green under EV and Poll; skipped only docker-live, npx and wiki-live. Real data: 3354 runs, all with meta files, no duplicate ids. Cold list_subagents on the largest session took 14.7 s; a cold search took 66.9 s by default and 160 s with include_subagents (loaded machine). Main session: diff reviewed, tree matches tree.sha1; added the new tool and parameters to the design spec's ClaudeHistory table (docs/superpowers/specs/2026-08-25-mcp-hub-design.md).
+
+Committed as 66ecda0 (Make Claude Code's subagent runs listable, readable and searchable in ClaudeHistory (k159))
