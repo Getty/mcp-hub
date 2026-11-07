@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-11-07T03:53:22Z
+created: 2026-11-06T04:46:41Z
+id: 82
+priority: high
+started: 2026-11-07T02:09:55Z
+status: done
+tags:
+- deps
+- performance
+- docker
+- binary
+- native
+title: 'Require Cpanel::JSON::XS: the Docker image and the binary decode JSON in pure
+  Perl'
+updated: 2026-11-07T03:53:27Z
+---
+
+From k40 research (2026-11-06, results: /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/results.md). raudssus/mcp-hub:latest has Mojo::JSON::JSON_XS false, and the binary deliberately leaves Cpanel::JSON::XS out (scripts/loaded-modules.pl says nothing uses it -- wrong). Pure-Perl decoding runs at ~2.6 MB/s vs ~180 MB/s: a cold ClaudeHistory list on a 54 MB history costs 16.5 s CPU instead of 0.41 s, peak RSS 305-324 MB. Done: cpanfile requires Cpanel::JSON::XS >= 4.20; 'perl -MMojo::JSON -e "exit !Mojo::JSON::JSON_XS"' passes in the Docker image and in the packed binary; loaded-modules.pl no longer drops it and its comment is fixed; the binary smoke asserts it; Changes entry. Lanes: mcp-hub-worker (cpanfile, Dockerfile) and mcp-hub-binary-worker (scripts). New runtime dependency: maintainer go-ahead before work starts.
+
+Maintainer decision 2026-11-07: introduce JSON::MaybeXS (it prefers Cpanel::JSON::XS). Checked: JSON-MaybeXS-1.004008/Makefile.PL is dynamic_config and adds Cpanel::JSON::XS as a runtime PREREQ_PM (>= 4.38 on perl >= 5.36, else 2.3310) whenever can_compile_loadable_object and PUREPERL_ONLY is unset -- i.e. on every install with a compiler. 4.38 is above Mojo::JSON's floor 4.09, so Mojo::JSON goes XS too. Without a compiler (or PUREPERL_ONLY=1) it does not.
+
+Done, non-binary part (mcp-hub-worker, 2026-11-07, in worktree .claude/worktrees/agent-a31447ccc344f8ba5; patch scratchpad w-k82/k82.patch against 1d6cbb9). cpanfile: requires JSON::MaybeXS 1.004006 -- worker read all 27 releases' Makefile.PL: 1.004001 is the first to require Cpanel::JSON::XS whenever a compiler is found (older ones skipped it when JSON::XS was present), 1.004006 raised it to Cpanel 4.38 on perl 5.36+. Correction to the main agent's earlier note: Mojo::JSON goes XS from Cpanel::JSON::XS 4.20 (Mojo/JSON.pm line 14), not 4.09. ClaudeHistory and ClaudeSessions decode lines through a file-level JSON::MaybeXS->new(utf8 => 1) with allow_dupkeys where the backend has it (a key held twice: last value wins, as Mojo::JSON); package decode_json seam kept; encode still Mojo::JSON; Mojo/MCP/transport untouched. Worker's choices: a Dockerfile guard step that fails the build unless Mojo::JSON and JSON::MaybeXS both use Cpanel; README Requirements names JSON::MaybeXS. Equivalence vs Mojo::JSON: 59/59 with Cpanel; the JSON::PP fallback (no compiler) differs in 8 malformed/extreme cases -> k163. New t/native/claude-json-decoder.t fails 3 assertions on HEAD. Local image mcp-hub:k82-test (sha256:20b015dfb633...): JSON-MaybeXS 1.004008 pulled Cpanel-JSON-XS 4.80, Mojo::JSON::JSON_XS true, JSON::MaybeXS::JSON() = Cpanel::JSON::XS; not pushed. prove -lr t/ green under EV and Poll (48 files, 604 tests; only the docker-live, npx, wiki-live opt-ins skipped). Binary part moved to k162. Reviewed by the main agent.
+
+Committed as 961296f
