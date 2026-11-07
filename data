@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T04:13:58Z
+id: 169
+priority: low
+status: backlog
+tags:
+- skill
+- native
+- drift
+title: 'mcp-hub-runtime skill: ClaudeHistory has five tools and reads subagent runs'
+updated: 2026-11-07T04:13:58Z
+---
+
+Found by mcp-hub-worker during k159 (2026-11-07). .claude/skills/mcp-hub-runtime/SKILL.md:363 still says "vier Tools" for ClaudeHistory. Since k159 there is list_subagents, get_conversation takes agent_id, search_conversations takes include_subagents, and run files (<session>/subagents/agent-<id>.jsonl plus .meta.json) go through the same meta cache and decode seam; agent_id is matched against file names only. Done when the skill says so. Could go together with k164 (same skill section). Lane: skill text, an mcp-hub agent.
