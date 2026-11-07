@@ -5,8 +5,9 @@
 #   scripts/smoke-binary.sh <binary>
 # SMOKE_NO_PERL=1 additionally fails when a perl is on PATH, to prove the point.
 #
-# Covered: a cold and a warm start, token, config (JSON and YAML, every kind of
-# entry), an error path, and two daemon runs -- the first fetches the stdio
+# Covered: a cold and a warm start, token, JSON decoded in C (Cpanel::JSON::XS under
+# Mojo::JSON and JSON::MaybeXS, from the archive), config (JSON and YAML, every kind
+# of entry), an error path, and two daemon runs -- the first fetches the stdio
 # upstream's manifest once, the second serves tools/list from that cache without
 # starting it, starts it on tools/call (t/upstream/echo.sh, a stdio MCP server in
 # POSIX sh; on Linux it must hold neither an fd on the binary nor the listening
@@ -43,7 +44,7 @@ fail() {
 
 # Nothing of this host's Perl or of anybody's configuration, trust store or proxy.
 unset PERL5LIB PERL5OPT MCP_HUB_CONFIG XDG_CONFIG_HOME XDG_CACHE_HOME CLAUDE_CONFIG_DIR \
-      MOJO_MODE MOJO_REACTOR MOJO_HOME MOJO_LOG_LEVEL MOJO_CA_FILE MOJO_INSECURE \
+      MOJO_MODE MOJO_REACTOR MOJO_NO_JSON_XS MOJO_HOME MOJO_LOG_LEVEL MOJO_CA_FILE MOJO_INSECURE \
       SSL_CERT_FILE SSL_CERT_DIR HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 export HOME="$work/home" PAR_GLOBAL_TMPDIR="$work/par"
 mkdir -p "$HOME" "$PAR_GLOBAL_TMPDIR"
@@ -74,6 +75,31 @@ echo "start: cold $(secs "$t0" "$t1")s, warm $(secs "$t1" "$t2")s (MCP::Hub $v1)
 grep -Eqx '[A-Za-z0-9_-]{43}' "$work/t1" || fail "token: '$(cat "$work/t1")' is not 43 base64url characters"
 [ "$(cat "$work/t1")" != "$(cat "$work/t2")" ] || fail "token: the same value twice"
 echo "token: OK ($(cut -c1-6 "$work/t1")...)"
+
+# --- JSON in C: Cpanel::JSON::XS is packed, its shared object with it --------------
+# Mojo::JSON (the wire) and JSON::MaybeXS (the natives' decoder) each load it by name
+# and fall back to pure Perl without it: every other check here would still pass, and
+# the natives would read a large Claude Code history dozens of times slower. It must
+# come from the archive -- PAR's cache -- not from a perl of this host's.
+"$BIN" eval '
+  require JSON::MaybeXS;
+  my $par  = $ENV{PAR_TEMP} // "";
+  my $from = sub { my $f = shift // "nowhere"; length($par) && index($f, "$par/") == 0 ? "the archive" : $f };
+  my %so;
+  @so{@DynaLoader::dl_modules} = @DynaLoader::dl_shared_objects;
+  print "Mojo::JSON::JSON_XS: ", (Mojo::JSON::JSON_XS() ? "true" : "false"), "\n",
+    "JSON::MaybeXS::JSON(): ", JSON::MaybeXS::JSON(), "\n",
+    "Cpanel::JSON::XS from: ", $from->($INC{"Cpanel/JSON/XS.pm"}), "\n",
+    "its shared object from: ", $from->($so{"Cpanel::JSON::XS"}), "\n",
+    "info: Cpanel::JSON::XS ", Cpanel::JSON::XS->VERSION // "none", ", JSON::MaybeXS $JSON::MaybeXS::VERSION\n";
+' >"$work/out" 2>"$work/err" || fail "JSON backend: $(cat "$work/err")"
+want="Mojo::JSON::JSON_XS: true
+JSON::MaybeXS::JSON(): Cpanel::JSON::XS
+Cpanel::JSON::XS from: the archive
+its shared object from: the archive"
+[ "$(grep -v '^info: ' "$work/out")" = "$want" ] || fail "JSON does not decode in C: $(cat "$work/out")"
+echo "JSON in C: OK (Mojo::JSON::JSON_XS true, JSON::MaybeXS::JSON() is Cpanel::JSON::XS, it and its" \
+  "shared object from the archive; $(sed -n 's/^info: //p' "$work/out"))"
 
 # --- config: JSON and YAML (YAML::PP, loaded on demand) print the expected client config
 want=$(cat t/fixtures/binary/config.expected)

@@ -5,7 +5,7 @@
 # This is the local build. Release binaries come from the [@Author::GETTY] bundle's
 # binary release form (dzil-binary), which packs with its own portable perl and needs
 # what this script passes to pp: the -M set, the -X set, the Mojolicious resources
-# and PAR_VERBATIM=1.
+# and PAR_VERBATIM=1 -- and, in that perl, what the guards below require.
 #
 # pp exits 0 on a binary that only dies at run time; scripts/verify-binary.sh and
 # scripts/smoke-binary.sh are what prove a build.
@@ -25,6 +25,13 @@ perl -Ilib -MMCP::Hub -MYAML::PP -e1 \
 # dev-box build links the host's libssl, which check-binary-libs.sh then rejects.
 perl -MIO::Socket::SSL=2.009 -MMozilla::CA -e1 \
   || { echo "ERROR: TLS modules missing (scripts/build-binary-openssl.sh, or cpanm IO::Socket::SSL Mozilla::CA)" >&2; exit 1; }
+# JSON in C: Mojo::JSON (4.20+) and JSON::MaybeXS, the natives' decoder, each load
+# Cpanel::JSON::XS by name and fall back to pure Perl without it -- dozens of times
+# slower on a large Claude Code history. JSON::MaybeXS installs it wherever its own
+# install finds a C compiler; a perl that got JSON::MaybeXS without one lacks it.
+env -u MOJO_NO_JSON_XS perl -MMojo::JSON -MJSON::MaybeXS \
+  -e 'exit !(Mojo::JSON::JSON_XS && JSON::MaybeXS::JSON() eq "Cpanel::JSON::XS")' \
+  || { echo "ERROR: Cpanel::JSON::XS 4.20+ missing: the binary would decode JSON in pure Perl (cpanm Cpanel::JSON::XS)" >&2; exit 1; }
 
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 
@@ -32,8 +39,9 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 # and prints every module that came from its own file -- what pp's scanner cannot see
 # included: the commands Mojolicious finds by namespace (MCP::Hub::Command::*,
 # Mojolicious::Command::*), the natives Upstream::Perl mounts by `class`, YAML::PP and
-# the schema it loads by name, Mojolicious' plugins and reactor. It dies when the round
-# trip fails. verify-binary.sh requires the same list inside the archive.
+# the schema it loads by name, Mojolicious' plugins and reactor, and Cpanel::JSON::XS
+# (pp packs its shared object with it). It dies when the round trip fails or JSON
+# would decode in pure Perl. verify-binary.sh requires the same list inside the archive.
 perl -Ilib scripts/loaded-modules.pl >"$work/loaded" \
   || { echo "ERROR: scripts/loaded-modules.pl failed" >&2; exit 1; }
 loaded=(); while IFS= read -r m; do loaded+=("$m"); done <"$work/loaded"

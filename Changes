@@ -343,3 +343,7 @@ Revision history for MCP-Hub
     `agent_id`, and search_conversations searches them too with
     `include_subagents`, a match from a run carrying its `agent_id`.
     Without the new arguments, every tool answers as before.
+  - Standalone binary: Cpanel::JSON::XS is packed, so the binary decodes
+    JSON in C like the Docker image instead of in pure Perl (4 MB of
+    session lines: 8.7 s CPU -> 0.07 s); scripts/build-binary.sh refuses a
+    perl without it, and the binary smoke checks it.

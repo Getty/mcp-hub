@@ -15,10 +15,11 @@
 # by namespace, its plugins and the reactor by name; Upstream::Perl mounts a `class`
 # (the natives MCP::Hub::Native::*) through Mojo::Loader; MCP::Hub::Config requires
 # YAML::PP only when a .yml/.yaml is read, and YAML::PP loads its schema by name;
-# Mojo::IOLoop::TLS requires IO::Socket::SSL in an eval, and IO::Socket::SSL requires
-# Mozilla::CA only when the host has no trust store of its own. Running all of that
-# for real -- the daemon listens on http and https, and a `url` upstream speaks https
-# -- is what makes the set complete.
+# Mojo::JSON and JSON::MaybeXS (the natives' decoder) each require Cpanel::JSON::XS
+# in an eval; Mojo::IOLoop::TLS requires IO::Socket::SSL in an eval, and
+# IO::Socket::SSL requires Mozilla::CA only when the host has no trust store of its
+# own. Running all of that for real -- the daemon listens on http and https, and a
+# `url` upstream speaks https -- is what makes the set complete.
 use strict;
 use warnings;
 
@@ -29,9 +30,10 @@ use warnings;
 #                          Docker image and a plain `cpanm MCP::Hub` (EV is no
 #                          dependency). MCP::Hub uses EV only when it is the
 #                          running reactor (SIGHUP watcher, Docker child reaping).
-#   IO::Socket::Socks, Net::DNS::Native, Cpanel::JSON::XS, Role::Tiny,
-#   Future::AsyncAwait     Mojolicious extras switched on only when installed;
-#                          neither the hub nor MCP uses them.
+#   IO::Socket::Socks, Net::DNS::Native, Role::Tiny, Future::AsyncAwait
+#                          Mojolicious extras switched on only when installed;
+#                          neither the hub nor MCP uses them. (Cpanel::JSON::XS is
+#                          no such extra: it is packed, see the check below.)
 #   JSON, JSON::XS, JSON::backportPP
 #                          CryptX requires JSON.pm when installed, for JWK only,
 #                          and JSON.pm picks its backend by name. JSON::PP is core
@@ -50,7 +52,7 @@ my @LEFT_OUT;
 BEGIN {
   @LEFT_OUT = qw(
     EV EV:: Mojo::Reactor::EV
-    IO::Socket::Socks IO::Socket::Socks:: Net::DNS::Native Cpanel::JSON::XS Cpanel::JSON::XS::
+    IO::Socket::Socks IO::Socket::Socks:: Net::DNS::Native
     Role::Tiny Role::Tiny:: Future::AsyncAwait Future::AsyncAwait::
     JSON JSON::XS JSON::XS:: JSON::backportPP JSON::backportPP::
     LWP LWP:: URI URI:: Net::IDN::Encode Net::IDN:: Net::LibIDN Net::LibIDN::
@@ -87,11 +89,12 @@ BEGIN {
     return;
   };
 
-  # Never the maintainer's own configuration, never a live reactor choice, never a
-  # trust store or proxy of this shell's.
+  # Never the maintainer's own configuration, never a live reactor or JSON backend
+  # choice, never a trust store or proxy of this shell's.
   delete @ENV{qw( MCP_HUB_CONFIG XDG_CONFIG_HOME CLAUDE_CONFIG_DIR MOJO_MODE MOJO_REACTOR MOJO_HOME
-    SSL_CERT_FILE SSL_CERT_DIR MOJO_CA_FILE MOJO_CERT_FILE MOJO_KEY_FILE MOJO_INSECURE
-    HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy )};
+    MOJO_NO_JSON_XS SSL_CERT_FILE SSL_CERT_DIR MOJO_CA_FILE MOJO_CERT_FILE MOJO_KEY_FILE
+    MOJO_INSECURE HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+    http_proxy https_proxy all_proxy no_proxy )};
 }
 
 use File::Temp ();
@@ -130,6 +133,13 @@ require MCP::Hub;
 require Mojo::IOLoop::TLS;
 Mojo::IOLoop::TLS->can_tls
   or die "loaded-modules: no TLS in this perl: IO::Socket::SSL 2.009+ and Net::SSLeay are needed\n";
+# The binary decodes JSON in C. Without Cpanel::JSON::XS (4.20+ for Mojo::JSON),
+# Mojo::JSON and JSON::MaybeXS fall back to pure Perl without a word, and the set
+# would come out without it: the natives would read a large Claude Code history
+# dozens of times slower.
+require JSON::MaybeXS;
+Mojo::JSON::JSON_XS() && JSON::MaybeXS::JSON() eq 'Cpanel::JSON::XS'
+  or die "loaded-modules: no Cpanel::JSON::XS 4.20+ in this perl: JSON would decode in pure Perl\n";
 
 # --- fixtures ----------------------------------------------------------------
 
