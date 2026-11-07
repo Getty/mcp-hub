@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T02:45:33Z
+id: 160
+priority: low
+status: backlog
+tags:
+- config
+- yaml
+- drift
+title: YAML true loads as 1 for integer config keys (idle_timeout, port, request_timeout)
+updated: 2026-11-07T02:45:33Z
+---
+
+Found by mcp-hub-worker during k152 (2026-11-07), checked: a YAML config with idle_timeout: true and request_timeout: true loads as idle_timeout 1, request_timeout 1. YAML::PP's boolean => 'perl' turns true into a plain 1, so the integer checks (_int, _positive_int) cannot tell it from 1 -- while JSON true is refused, and _int's own comment says 'A JSON true is no 1'. Done when: a YAML boolean for an integer key is refused with its JSON path, as in JSON (e.g. YAML::PP boolean => 'JSON::PP' or another way to keep booleans distinct), with a test for idle_timeout, port and request_timeout in YAML.
