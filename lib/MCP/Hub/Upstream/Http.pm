@@ -28,10 +28,13 @@ use constant TIMED_OUT => qr/^Request timeout\z/;
 # The agent for every POST, and for the DELETE that ends a session. The
 # long-lived HTTP+SSE GET stream is on no agent -- it is a raw Mojo::IOLoop
 # connection without a timeout (_open_sse_p) -- so this agent's request timeout
-# never cuts it. That timeout is all that bounds a request: a remote may stay
+# never cuts it. That timeout is all that bounds a POST: a remote may stay
 # silent longer than Mojo's inactivity timeout (40 s, or
 # $MOJO_INACTIVITY_TIMEOUT) -- a long tool call answered with one JSON body, an
-# event stream without keep-alives -- and is waited for all the same.
+# event stream without keep-alives -- and is waited for all the same. Over
+# Streamable HTTP the POST is the whole request; over HTTP+SSE a timer of the
+# request's own, as long, bounds the wait for its answer on the stream
+# (_sse_request_p).
 has req_ua => sub ($self) {
   my $ua = Mojo::UserAgent->new;
   $ua->request_timeout($self->request_timeout || 60);
@@ -848,8 +851,11 @@ the remote does not take -- an HTTP error status, no response, a refused
 connection -- fails its request at once, with that reason (C<upstream NAME:
 Internal Server Error>, C<upstream NAME: Connection refused>), as over
 Streamable HTTP, instead of leaving it to wait out the request timeout. A POST
-the remote accepts, with C<202> or any other C<2xx>, is answered on the stream.
-A failed POST of the hub's own answer to a request of the remote's (C<ping>,
+the remote holds open until the request timeout cuts it off is the request
+timing out: it fails as C<upstream NAME: timed out after 60s> and is cancelled,
+as one whose answer does not come on the stream in time. A POST the remote
+accepts, with C<202> or any other C<2xx>, is answered on the stream. A failed
+POST of the hub's own answer to a request of the remote's (C<ping>,
 C<roots/list>), or of a notification, has no request to fail: it is only logged
 at debug level. A start whose request is not taken fails as any failed start
 does, and counts as a connect failure.
@@ -916,10 +922,13 @@ Where the manifest cache lives.
 =attr req_ua
 
 The L<Mojo::UserAgent> used for POSTs, with L<MCP::Hub::Upstream/request_timeout>
-applied. That is all that bounds a request, over both transports: it has no
+applied. That is all that bounds a POST, on either transport: it has no
 L<Mojo::UserAgent/inactivity_timeout>, so a remote that stays silent longer
 than Mojo's default -- a long tool call answered with one JSON body, an event
-stream without keep-alives -- is waited for until the request timeout.
+stream without keep-alives -- is waited for until the request timeout. Over
+Streamable HTTP the POST is the whole request. Over HTTP+SSE its answer comes
+on the stream, and a timer of the request's own, as long, bounds the wait for
+it.
 
 The long-lived C<GET> stream of HTTP+SSE runs on no user agent: it is a plain
 L<Mojo::IOLoop> connection without a timeout, which the upstream reads the
