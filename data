@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-07T02:45:37Z
+id: 161
+priority: low
+status: backlog
+tags:
+- config
+- drift
+title: 'Decide: should integer config keys accept a JSON string such as "30"?'
+updated: 2026-11-07T02:45:37Z
+---
+
+Found by mcp-hub-worker during k152 (2026-11-07). _int and _positive_int test the value with /^-?\d+$/ and /^\d+$/, so a JSON string "30" (and "30\n", since $ allows a trailing newline) loads as 30 for idle_timeout, port and request_timeout. Maybe intended (env-expanded values arrive as strings?) -- check whether ${VAR} expansion can feed these keys before deciding. Question for the maintainer: accept numeric strings, or require a JSON number? Either way use \z instead of $.
