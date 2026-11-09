@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-09T22:45:59Z
+created: 2026-11-09T21:10:59Z
+id: 176
+priority: low
+started: 2026-11-09T21:35:50Z
+status: done
+tags:
+- native
+- bug
+title: since/until compare ISO strings, so the first second of a day and offset timestamps
+  are filtered wrongly
+updated: 2026-11-09T22:45:59Z
+---
+
+From k171 (mcp-hub-worker, 2026-11-09), checked by the main session against _norm/_in_range in ClaudeHistory.pm. _norm makes since=YYYY-MM-DD into "YYYY-MM-DDT00:00:00Z" and _in_range compares with lt/gt. Session and prompt times carry milliseconds ("...T00:00:00.123Z"), and "." sorts before "Z", so every time within the first second of the since day is lt the bound: it is dropped. The same happens to a full since timestamp without fraction. A since/until with an offset (+02:00) is not converted to UTC either. This affects list_sessions, search_conversations and list_prompts. Done when times are compared as instants (or the bound is padded to .000Z, and offsets are converted), with a test for a time at 00:00:00.500Z and for an offset bound. Lane: mcp-hub-worker.
+
+k176 (mcp-hub-worker, 2026-11-09): since/until compare instants (epoch ms) in list_sessions, search_conversations and list_prompts. _iso_ms (core Time::Local::timegm, already loaded through Mojo::Date) handles a date alone (whole UTC day, until through 23:59:59.999) and full times with T or a space, any fraction, and Z, ±hh[:mm] or none (UTC). Mojo::Date was rejected: no date-only, no -0530, reads 20261109 as an epoch. A session/prompt time that doesn't parse passes, like no time. A bad since/until (including '' and numbers) is an error result (claude-history: since "X" is not a date (YYYY-MM-DD) or an ISO 8601 time); the plain methods return undef. On HEAD, since=yesterday silently gave [] and until=yesterday everything. New t/native/claude-history-range.t (5 subtests): 78 assertions fail on HEAD, all pass now. Existing tests unchanged, claims kept. wire-k170 byte-identical; tools/list unchanged. prove -lr t/ green under EV and Poll (52 files / 644 tests, 3 opt-in skips, load 6-11). POD, the design spec sentence and the cpanfile core-module comment are updated. Main session: diff reviewed, tree matches.
+
+Committed as 8dc1dce (Compare since and until in ClaudeHistory as instants, so a session or prompt in the first second of a since day is no longer dropped and a bound that is no date or time is an error (k176))
