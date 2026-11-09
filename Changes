@@ -357,3 +357,9 @@ Revision history for MCP-Hub
     is), and its cache keeps only that; get_conversation still returns the
     whole prompt. Listing all 870 sessions of a real history sends 0.6 MB
     instead of 4.9 MB, and the cache holds 3.2 MB instead of 11.3 MB.
+  - ClaudeHistory has a sixth tool, list_prompts: the prompts typed into
+    Claude Code, newest first, from its prompt history (history.jsonl),
+    which keeps the prompts of sessions whose transcript Claude Code has
+    deleted. It takes query, project, since, until and limit (50); each
+    prompt comes with its time, project, session_id, text and
+    has_transcript. Pasted contents are never sent.

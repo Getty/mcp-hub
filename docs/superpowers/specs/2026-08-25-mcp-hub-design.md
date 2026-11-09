@@ -283,7 +283,7 @@ All are `MCP::Server` subclasses registering their tools in `new`, so they work 
 
 ### `MCP::Hub::Native::ClaudeHistory`
 
-Reads `$CLAUDE_CONFIG_DIR` or `~/.claude`, subdirectory `projects/`. The project path is taken from the `cwd` of the first line of any session file, falling back to the directory name. Per session file a small metadata record (`session_id, project, started_at, last_activity, messages, first_prompt, title, git_branch`) is cached in memory keyed by `(path, mtime, size)` so repeated listings do not re-read unchanged files.
+Reads `$CLAUDE_CONFIG_DIR` or `~/.claude`: the subdirectory `projects/`, and the prompt history `history.jsonl` beside it. The project path is taken from the `cwd` of the first line of any session file, falling back to the directory name. Per session file a small metadata record (`session_id, project, started_at, last_activity, messages, first_prompt, title, git_branch`) is cached in memory keyed by `(path, mtime, size)` so repeated listings do not re-read unchanged files.
 
 | Tool | Arguments | Result |
 |---|---|---|
@@ -292,10 +292,13 @@ Reads `$CLAUDE_CONFIG_DIR` or `~/.claude`, subdirectory `projects/`. The project
 | `search_conversations` | `query` (required), `project?`, `since?`, `until?`, `roles` (`["user"]`), `limit` (30), `include_subagents` (false) | `[{session_id, project, timestamp, role, snippet}]` — case-insensitive substring match over the text content, snippet ±120 characters; with `include_subagents` the session's subagent runs are searched too, after its own messages, and their matches also carry `agent_id` |
 | `get_conversation` | `session_id` (required), `offset` (0), `limit` (50), `roles` (`["user","assistant"]`), `agent_id?` | `{entries: [{uuid, timestamp, role, text}], total, has_more}` — text blocks joined, `tool_use` blocks rendered as `[tool_use <name>]`, `tool_result` as `[tool_result]`; with `agent_id` the messages of that subagent run, an `agent_id` naming no run of the session being an error result |
 | `list_subagents` | `session_id` (required) | `[{agent_id, agent_type, description, started_at, last_activity, messages}]`, the session's subagent runs in the order they started; `[]` for a session without runs or an unknown one |
+| `list_prompts` | `query?`, `project?`, `since?`, `until?` (filter on the prompt's time), `limit` (50) | `[{timestamp, project, session_id, text, has_transcript}]`, newest first — the prompts of the prompt history; `query` is a case-insensitive substring match on `text`, which is the prompt whole, pasted text only as its `[Pasted text #N +M lines]` placeholder; `has_transcript` says whether a session file `<session_id>.jsonl` is there; `[]` without the file |
 
 Claude Code keeps a session's subagent runs beside its file, in `<session_id>/subagents/agent-<agent_id>.jsonl` with an `agent-<agent_id>.meta.json` (type, description) each. A run is no session: `list_sessions` and `list_projects` do not count it. Run files are cached like session files; `agent_id` is only matched against those file names, never made into a path.
 
-Dates are ISO 8601; `since`/`until` accept `YYYY-MM-DD` or a full timestamp, interpreted in the hub's local time zone. Text content is `message.content` when a string, else the `text` fields of the block array.
+`history.jsonl` is Claude Code's prompt history, what the up arrow recalls: a line `{display, pastedContents, project, sessionId, timestamp}` per prompt typed, the time in epoch milliseconds. It keeps the prompts of sessions whose file Claude Code has deleted after 30 days, so for those it is the only record. Claude Code appends to it and writes it anew when it prunes it; `list_prompts` reads it whole on every call, a line at a time, keeping only the newest `limit` matches, and caches nothing of it. The pasted contents (inline text or a hash) are never sent. `has_transcript` comes from the names of the session files alone, none of them read; `session_id` is only matched against them, never made into a path.
+
+Dates are ISO 8601; `since`/`until` accept `YYYY-MM-DD` or a full timestamp. A date alone is that whole day in UTC; a full timestamp is compared as written, as a string, with the times of the history, which are in UTC. Text content is `message.content` when a string, else the `text` fields of the block array.
 
 ### `MCP::Hub::Native::ClaudeSessions`
 

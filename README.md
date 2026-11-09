@@ -452,9 +452,11 @@ node process per session:
 
 - **`MCP::Hub::Native::ClaudeHistory`** — browse the local Claude Code history:
   `list_projects`, `list_sessions`, `search_conversations`, `get_conversation`,
-  `list_subagents`. A session's subagent runs are listed by `list_subagents`,
-  read by `get_conversation` with an `agent_id`, and searched by
-  `search_conversations` with `include_subagents`.
+  `list_subagents`, `list_prompts`. A session's subagent runs are listed by
+  `list_subagents`, read by `get_conversation` with an `agent_id`, and
+  searched by `search_conversations` with `include_subagents`.
+  `list_prompts` reads Claude Code's prompt history (`history.jsonl`), which
+  keeps the prompts of sessions whose transcript Claude Code has deleted.
 - **`MCP::Hub::Native::ClaudeSessions`** — `list_running_sessions`, the live
   `claude` processes on the machine and what each is working on (Linux).
 - **`MCP::Hub::Native::Status`** — `hub_status` and `hub_refresh` as tools.

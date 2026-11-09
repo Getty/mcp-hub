@@ -303,8 +303,9 @@ subtest 'the cache keeps no first prompt of a run' => sub {
 
 subtest 'registration' => sub {
   my %tool = map { $_->name => $_ } @{$h->tools};
-  is_deeply [map { $_->name } @{$h->tools}],
-    [qw(list_projects list_sessions search_conversations get_conversation list_subagents)], 'list_subagents comes last';
+  is_deeply [map { $_->name } @{$h->tools}[0 .. 4]],
+    [qw(list_projects list_sessions search_conversations get_conversation list_subagents)],
+    'list_subagents comes after the four tools before it';
   is_deeply $tool{list_subagents}->input_schema,
     {type => 'object', properties => {session_id => {type => 'string'}}, required => ['session_id']}, 'its schema';
   is $tool{get_conversation}->input_schema->{properties}{agent_id}{type}, 'string', 'get_conversation takes agent_id';

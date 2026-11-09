@@ -31,11 +31,14 @@ sub decode_json ($bytes) { $JSON->decode($bytes) }
 # Null _text makes into no text; these tests let it through all the same. An
 # object, as any of the three, and an array as text or name, _text makes into
 # no text too, and these tests do not let them through; nor an array as
-# content, whose blocks' text and names they test.
+# content, whose blocks' text and names they test. A display value, the text
+# of a line of the prompt history, _string makes into a string as _text does a
+# text value, and its test is that of one.
 my $ESCAPE        = qr/\\u(?:00[2-7][0-9a-fA-F]|0130|212[aA])/;
 my $TEXT_VALUE    = qr/"text"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
 my $NAME_VALUE    = qr/"name"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
 my $CONTENT_VALUE = qr/"content"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
+my $DISPLAY_VALUE = qr/"display"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
 
 sub new ($class, %args) {
   my $self = $class->SUPER::new(name => 'claude-history', version => $VERSION, %args);
@@ -142,6 +145,26 @@ sub _register ($self) {
     },
   );
 
+  $self->tool(
+    name         => 'list_prompts',
+    description  => 'List the prompts typed into Claude Code, newest first, from its prompt history,'
+      . ' which also keeps the prompts of sessions whose transcript is gone',
+    input_schema => {
+      type       => 'object',
+      properties => {
+        query   => {type => 'string', description => 'Only prompts holding this substring (case-insensitive)'},
+        project => {type => 'string', description => 'Restrict to this project path'},
+        since   => {type => 'string', description => 'Only prompts on or after this date (YYYY-MM-DD or ISO)'},
+        until   => {type => 'string', description => 'Only prompts on or before this date'},
+        limit   => {type => 'integer', description => 'Maximum prompts to return (default 50)'},
+      },
+    },
+    code => sub ($tool, $args) {
+      return $tool->text_result($gone, 1) unless $self;
+      return _json($tool, $self->list_prompts($args));
+    },
+  );
+
   return $self;
 }
 
@@ -178,8 +201,7 @@ sub _sessions ($self, $args) {
   for my $dir ($self->_project_dirs) {
     push @sessions, $self->_sessions_in($dir);
   }
-  @sessions = grep { !defined $args->{project} || $_->{project} eq $args->{project} } @sessions;
-  @sessions = grep { _in_range($_->{last_activity}, $args->{since}, $args->{until}) } @sessions;
+  @sessions = grep { _filtered($args, $_->{project}, $_->{last_activity}) } @sessions;
   @sessions = sort { ($b->{last_activity} // '') cmp($a->{last_activity} // '') } @sessions;
   @sessions = @sessions[0 .. $limit - 1] if @sessions > $limit;
   return [@sessions];
@@ -287,6 +309,66 @@ sub list_subagents ($self, $args) {
     $run->{description} = _string($meta->{description});
   }
   return \@runs;
+}
+
+# Claude Code's prompt history, history.jsonl in the root: a line per prompt
+# typed, kept after the session's own file is deleted. Claude Code appends to
+# it, and writes it anew when it prunes it; so it is read whole on every call,
+# a line at a time, and nothing of it is cached. Of the matches, only the
+# newest $limit are kept, oldest first; a later line of the same time counts as
+# the newer one. Of a line, its display goes out as the text, which holds
+# pasted text only as Claude Code's placeholders; its pasted contents never
+# do. A session has its transcript where a session file is named after it,
+# which is found from the names of the files, none of them read.
+sub list_prompts ($self, $args = {}) {
+  my $file = path($self->root, 'history.jsonl');
+  return [] unless -f $file;
+
+  my $limit  = $args->{limit} // 50;
+  my $needle = defined $args->{query} ? lc $args->{query} : undef;
+  my $skip   = defined $needle ? _raw_skip($needle, $DISPLAY_VALUE) : undef;
+
+  # A line's time is made into its ISO form only to compare it with since or
+  # until, and for the prompts sent; without both, _filtered needs no time.
+  my $range = defined $args->{since} || defined $args->{until};
+  my @kept;
+  _each_record($file, $skip, sub ($rec) {
+    my $text = _string($rec->{display}) // return;
+    return if defined $needle && index(lc $text, $needle) < 0;
+    my $ms      = _ms($rec->{timestamp});
+    my $project = _string($rec->{project});
+    return unless _filtered($args, $project, $range && defined $ms ? _iso($ms) : undef);
+
+    my $key = $ms // -1;
+    return if @kept >= $limit && @kept && $key < $kept[0][0];
+    my ($lo, $hi) = (0, scalar @kept);
+    while ($lo < $hi) {
+      my $mid = ($lo + $hi) >> 1;
+      if   ($kept[$mid][0] > $key) { $hi = $mid }
+      else                         { $lo = $mid + 1 }
+    }
+    splice @kept, $lo, 0, [$key, $ms, $text, $project, $rec->{sessionId}];
+    shift @kept while @kept > $limit;
+  });
+  return [] unless @kept;
+
+  # The names of the session files, as _session_files finds them.
+  my %transcript;
+  for my $dir ($self->_project_dirs) {
+    opendir my $dh, "$dir" or next;
+    $transcript{$_} = 1 for grep { !/^\./ && /\.jsonl$/ && !-d "$dir/$_" } readdir $dh;
+  }
+  return [reverse map {
+    my (undef, $ms, $text, $project, $id) = @$_;
+    $id = _string($id);
+    +{
+      timestamp      => defined $ms ? _iso($ms) : undef,
+      project        => $project,
+      session_id     => $id,
+      text           => $text,
+      has_transcript => defined $id && $transcript{"$id.jsonl"} ? \1 : \0,
+    };
+  } @kept];
 }
 
 # --- reading and caching ---------------------------------------------------
@@ -524,11 +606,15 @@ sub _file_for_session ($self, $session_id, $entries = 1) {
 # (lowercase "k") or U+0130 (lowercase "i\x{307}") when it holds that letter,
 # or a non-string text, name or content value when the needle could be part of
 # a number or boolean stringified (1e5 is "100000", 1e20 "1e+20", 1e999 "Inf",
-# true "1"); an object or array becomes no text.
-sub _raw_skip ($needle) {
+# true "1"); an object or array becomes no text. A caller that reads its text
+# from other values names their tests in @values, as list_prompts does the
+# prompt history's display. That text holds none of the markers, so a needle
+# kept from the raw test for their sake only has every line decoded there.
+sub _raw_skip ($needle, @values) {
   return undef unless $needle =~ /\A[\x20-\x7e]+\z/ && $needle !~ /["\\\[\]]/;
   return undef if grep { index($needle, substr('[tool_use ', $_)) == 0 } 1 .. 9;
 
+  @values = ($TEXT_VALUE, $NAME_VALUE, $CONTENT_VALUE) unless @values;
   my $slash  = index($needle, '/') >= 0;
   my $kelvin = index($needle, 'k') >= 0;
   my $dot_i  = index($needle, 'i') >= 0;
@@ -539,7 +625,7 @@ sub _raw_skip ($needle) {
       || ($slash  && index($line, '\\/') >= 0)
       || ($kelvin && index($line, "\xE2\x84\xAA") >= 0)
       || ($dot_i  && index($line, "\xC4\xB0") >= 0)
-      || ($scalar && ($line =~ $TEXT_VALUE || $line =~ $NAME_VALUE || $line =~ $CONTENT_VALUE)));
+      || ($scalar && grep { $line =~ $_ } @values));
   };
 }
 
@@ -581,6 +667,28 @@ sub _snippet ($text, $pos, $len) {
   my $slice = substr $text, $start, $len + 240;
   $slice =~ s/\s+/ /g;
   return $slice;
+}
+
+# Whether a session or prompt of $project, of the time $time, passes the
+# project, since and until filters of $args. Without a project, it passes no
+# project filter.
+sub _filtered ($args, $project, $time) {
+  return 0 if defined $args->{project} && !(defined $project && $project eq $args->{project});
+  return _in_range($time, $args->{since}, $args->{until});
+}
+
+# An epoch time in milliseconds, as the prompt history holds it, as a whole
+# number; undef for a value that is no such number, or one past the year 9999.
+sub _ms ($value) {
+  $value = _string($value) // return undef;
+  return $value =~ /\A[0-9]+(?:\.[0-9]+)?\z/ && $value <= 253402300799999 ? int $value : undef;
+}
+
+# Such a time in the form Claude Code writes the times of a session file in
+# (2026-11-09T19:20:54.499Z, UTC), which sorts as the time does.
+sub _iso ($ms) {
+  my @t = gmtime int($ms / 1000);
+  return sprintf '%04d-%02d-%02dT%02d:%02d:%02d.%03dZ', $t[5] + 1900, $t[4] + 1, @t[3, 2, 1, 0], $ms % 1000;
 }
 
 sub _in_range ($value, $since, $until) {
@@ -625,7 +733,8 @@ Code history MCP server, which today costs a ~120 MB node process per session.
 It reads the JSONL session files under C<$CLAUDE_CONFIG_DIR/projects> (or
 C<~/.claude/projects>), and the subagent runs Claude Code keeps beside each
 session file (C<< <session_id>/subagents/agent-<agent_id>.jsonl >>, each with an
-C<< agent-<agent_id>.meta.json >>), and offers five tools. A run is no session
+C<< agent-<agent_id>.meta.json >>), and Claude Code's prompt history,
+C<history.jsonl> beside C<projects/>; it offers six tools. A run is no session
 of its own: C<list_sessions> and C<list_projects> do not count it.
 
 Session files are read a line at a time. Per-session metadata is cached in
@@ -639,7 +748,10 @@ names it) first, and the others only if that one does not hold the session;
 it too reads that file only once where its metadata is out of date. Run files
 are read and cached as session files are, but for a run's first prompt, which
 no tool sends and the cache does not keep; a search reads them only when
-asked to.
+asked to. The prompt history is not cached: Claude Code appends to it, and
+writes it anew when it prunes it, so C<list_prompts> reads it whole, a line at
+a time, on every call, and holds no more than C<limit> of its prompts while it
+does.
 
 =head2 Tools
 
@@ -691,6 +803,25 @@ C<description> come from the run's meta file, null where it is missing or
 unreadable; the times and the message count from the run's lines. A session
 without runs, and an unknown session, give an empty list.
 
+=item C<list_prompts>
+
+Arguments C<query?>, C<project?>, C<since?>, C<until?>, C<limit> (50). Returns
+C<[{timestamp, project, session_id, text, has_transcript}]>, newest first: the
+prompts typed into Claude Code, from its prompt history (what the up arrow
+recalls), which keeps them after Claude Code has deleted the session's file.
+C<text> is the prompt as Claude Code keeps it, whole: text pasted into it is
+the placeholder C<[Pasted text #N +M lines]> there, and the pasted contents
+themselves are never sent. C<timestamp> is in the form of the other tools'
+times (C<2026-11-09T19:20:54.499Z>, UTC), null for a line without a time in
+milliseconds, which sorts last; of two prompts of the same time, the later line
+comes first. C<query> is a case-insensitive substring match on C<text>, as for
+C<search_conversations>; C<project>, C<since> and C<until> filter as for
+C<list_sessions>, on the prompt's time. C<has_transcript> is true where a
+session file named C<< <session_id>.jsonl >>, as Claude Code names it, is in
+a project directory under C<projects/>; it is found from the names of the
+files alone, none of them read. A line that is not a JSON object, or holds no
+C<display>, is skipped; without the file, the list is empty.
+
 =back
 
 =head1 ATTRIBUTES
@@ -705,9 +836,9 @@ C<~/.claude>.
 
 =head1 METHODS
 
-The five tools are also plain methods (C<list_projects>, C<list_sessions>,
-C<search_conversations>, C<get_conversation>, C<list_subagents>) taking an
-arguments hash reference, so they can be tested without going through the MCP
+The six tools are also plain methods (C<list_projects>, C<list_sessions>,
+C<search_conversations>, C<get_conversation>, C<list_subagents>,
+C<list_prompts>) taking an arguments hash reference, so they can be tested without going through the MCP
 layer. C<get_conversation> returns undef where its tool answers with the error
 for an C<agent_id> that names no run.
 
