@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-09T21:34:50Z
+created: 2026-11-09T18:53:45Z
+id: 171
+priority: medium
+started: 2026-11-09T21:34:50Z
+status: done
+tags:
+- native
+- feature
+title: 'ClaudeHistory: make Claude Code''s prompt history (~/.claude/history.jsonl)
+  available'
+updated: 2026-11-09T21:34:50Z
+---
+
+Maintainer (2026-11-09): "history ist wichtig ja abrufbar". ~/.claude/history.jsonl is the prompt history of Claude Code (what the up arrow recalls). Each line is {display, pastedContents, project, sessionId, timestamp (epoch ms)}. On this machine: 7000 lines, 7 MB, 1971 sessions, 204 projects, 2026-08-12 .. today. Claude Code deletes session files after 30 days (the oldest left is 2026-10-11), so 1139 of those sessions (5010 prompts) have no transcript any more: history.jsonl is the only record of them. No native reads it today.
+
+Proposed design (main session, maintainer may veto): a new ClaudeHistory tool list_prompts(query?, project?, since?, until?, limit 50). It returns [{timestamp, project, session_id, text, has_transcript}], newest first. query is a case-insensitive substring as in search_conversations; since/until as there; text is display; has_transcript says whether the session file still exists, so get_conversation can be used. Pasted contents are not sent (display keeps the [Pasted text #N] placeholders); 77 pastes are inline and 114 are only a contentHash. The file is cached by stat and read incrementally like session files; it is under $CLAUDE_CONFIG_DIR or ~/.claude. Existing tools are unchanged.
+
+Runs after k170 (same file). Lane: mcp-hub-worker.
+
+k171 (mcp-hub-worker, 2026-11-09): list_prompts added to ClaudeHistory as its 6th tool. It lists prompts from history.jsonl, newest first, with args query/project/since/until/limit (50). Each row is {timestamp, project, session_id, text (whole), has_transcript (by session file name only)}. Pastes are never sent. The file is streamed on every call with no cache: about 250 ms per default call on the 7000-line real file, RSS +1 MB. The real file is appended to; rewrites on prune are inferred from the Claude Code code. Text length: median 106, p90 1766, max 49668 characters, 1022 over 500, so not cut. New t/native/claude-history-prompts.t has 11 subtests, all failing on HEAD's lib. hub.t count 5->6. subagents.t order claim relaxed to the first five, since list_prompts now comes last. _filtered is shared by list_sessions and list_prompts. _raw_skip takes the display test. The wire capture (35 calls x6) is byte-identical; tools/list differs only by the new tool. prove -lr: EV 51/639 FAIL only on refresh.t#1 (k165, PASS when run alone); Poll 51/639 PASS. The spec's time-zone sentence was corrected to what _norm does (a date is a UTC day). Main session: diff reviewed, tree matches tree.sha1. The card asked for an incremental stat cache; the brief preferred streaming if fast enough, and it is.
+
+Committed as 214eefe (Add list_prompts to ClaudeHistory, so the prompts of sessions whose transcript Claude Code deleted can be listed and searched from its prompt history)
