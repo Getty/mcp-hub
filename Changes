@@ -363,3 +363,10 @@ Revision history for MCP-Hub
     deleted. It takes query, project, since, until and limit (50); each
     prompt comes with its time, project, session_id, text and
     has_transcript. Pasted contents are never sent.
+  - since and until of ClaudeHistory (list_sessions, search_conversations,
+    list_prompts) compare times as instants: a session or prompt in the
+    first second of a since day is no longer dropped, a full time without
+    milliseconds or with an offset (+02:00) is the instant it names, and
+    until of a day keeps all of it. A since or until that is not a date or
+    an ISO 8601 time is an error result naming it, where it used to filter
+    silently.

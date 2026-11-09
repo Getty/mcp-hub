@@ -4,8 +4,9 @@ use Mojo::Base 'MCP::Server', -signatures;
 
 use JSON::MaybeXS ();
 use Mojo::File qw(path);
-use Mojo::JSON qw(encode_json);
+use Mojo::JSON qw(encode_json to_json);
 use Scalar::Util qw(weaken);
+use Time::Local qw(timegm);
 
 # ABSTRACT: Native MCP server for browsing the local Claude Code history
 
@@ -39,6 +40,14 @@ my $TEXT_VALUE    = qr/"text"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
 my $NAME_VALUE    = qr/"name"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
 my $CONTENT_VALUE = qr/"content"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
 my $DISPLAY_VALUE = qr/"display"[\x20\t\r\n]*:[\x20\t\r\n]*[^"\[{\x20\t\r\n]/;
+
+# An ISO 8601 date, alone or with a time (see _iso_ms): the date; the hours,
+# minutes, seconds and fraction; the sign, hours and minutes of an offset.
+my $ISO_TIME = qr/
+  \A([0-9]{4})-([0-9]{2})-([0-9]{2})
+  (?:[Tt\x20]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]+))?)?
+    (?:[Zz]|([+-])([01][0-9]|2[0-3])(?::?([0-5][0-9]))?)?)?\z
+/x;
 
 sub new ($class, %args) {
   my $self = $class->SUPER::new(name => 'claude-history', version => $VERSION, %args);
@@ -79,7 +88,8 @@ sub _register ($self) {
     },
     code => sub ($tool, $args) {
       return $tool->text_result($gone, 1) unless $self;
-      return _json($tool, $self->list_sessions($args));
+      my $sessions = $self->list_sessions($args) // return $self->_no_time($tool, $args);
+      return _json($tool, $sessions);
     },
   );
 
@@ -104,7 +114,8 @@ sub _register ($self) {
     },
     code => sub ($tool, $args) {
       return $tool->text_result($gone, 1) unless $self;
-      return _json($tool, $self->search_conversations($args));
+      my $hits = $self->search_conversations($args) // return $self->_no_time($tool, $args);
+      return _json($tool, $hits);
     },
   );
 
@@ -161,7 +172,8 @@ sub _register ($self) {
     },
     code => sub ($tool, $args) {
       return $tool->text_result($gone, 1) unless $self;
-      return _json($tool, $self->list_prompts($args));
+      my $prompts = $self->list_prompts($args) // return $self->_no_time($tool, $args);
+      return _json($tool, $prompts);
     },
   );
 
@@ -187,27 +199,32 @@ sub list_projects ($self) {
 }
 
 sub list_sessions ($self, $args = {}) {
-  my $sessions = $self->_sessions($args);
+  my $sessions = $self->_sessions($args) // return undef;
   delete $_->{_file} for @$sessions;
   return $sessions;
 }
 
 # The sessions list_sessions returns, each a copy of the cached metadata that
 # also holds, as _file, the path of its session file; search_conversations
-# reads that file, list_sessions sends no path of this host.
+# reads that file, list_sessions sends no path of this host. Undef for a since
+# or until that is no time. A session's time is read only to compare it with
+# one of them.
 sub _sessions ($self, $args) {
+  my $range = _range($args) // return undef;
+  my $timed = grep {defined} @$range;
   my $limit = $args->{limit} // 50;
   my @sessions;
   for my $dir ($self->_project_dirs) {
     push @sessions, $self->_sessions_in($dir);
   }
-  @sessions = grep { _filtered($args, $_->{project}, $_->{last_activity}) } @sessions;
+  @sessions = grep { _filtered($args, $range, $_->{project}, $timed ? _iso_ms($_->{last_activity}) : undef) } @sessions;
   @sessions = sort { ($b->{last_activity} // '') cmp($a->{last_activity} // '') } @sessions;
   @sessions = @sessions[0 .. $limit - 1] if @sessions > $limit;
   return [@sessions];
 }
 
 sub search_conversations ($self, $args) {
+  return undef unless _range($args);
   my $query = $args->{query} // '';
   my $limit = $args->{limit} // 30;
   my %roles = map { $_ => 1 } @{$args->{roles} // ['user']};
@@ -321,23 +338,21 @@ sub list_subagents ($self, $args) {
 # do. A session has its transcript where a session file is named after it,
 # which is found from the names of the files, none of them read.
 sub list_prompts ($self, $args = {}) {
-  my $file = path($self->root, 'history.jsonl');
+  my $range = _range($args) // return undef;
+  my $file  = path($self->root, 'history.jsonl');
   return [] unless -f $file;
 
   my $limit  = $args->{limit} // 50;
   my $needle = defined $args->{query} ? lc $args->{query} : undef;
   my $skip   = defined $needle ? _raw_skip($needle, $DISPLAY_VALUE) : undef;
 
-  # A line's time is made into its ISO form only to compare it with since or
-  # until, and for the prompts sent; without both, _filtered needs no time.
-  my $range = defined $args->{since} || defined $args->{until};
   my @kept;
   _each_record($file, $skip, sub ($rec) {
     my $text = _string($rec->{display}) // return;
     return if defined $needle && index(lc $text, $needle) < 0;
     my $ms      = _ms($rec->{timestamp});
     my $project = _string($rec->{project});
-    return unless _filtered($args, $project, $range && defined $ms ? _iso($ms) : undef);
+    return unless _filtered($args, $range, $project, $ms);
 
     my $key = $ms // -1;
     return if @kept >= $limit && @kept && $key < $kept[0][0];
@@ -669,12 +684,33 @@ sub _snippet ($text, $pos, $len) {
   return $slice;
 }
 
-# Whether a session or prompt of $project, of the time $time, passes the
-# project, since and until filters of $args. Without a project, it passes no
-# project filter.
-sub _filtered ($args, $project, $time) {
+# Whether a session or prompt of $project, of the time $ms (epoch
+# milliseconds), passes the project filter of $args and the since and until of
+# $range (see _range), both ends included. Without a project, it passes no
+# project filter; without a time, it passes since and until.
+sub _filtered ($args, $range, $project, $ms) {
   return 0 if defined $args->{project} && !(defined $project && $project eq $args->{project});
-  return _in_range($time, $args->{since}, $args->{until});
+  return 1 unless defined $ms;
+  my ($since, $until) = @$range;
+  return 0 if defined $since && $ms < $since;
+  return 0 if defined $until && $ms > $until;
+  return 1;
+}
+
+# The since and until of $args as epoch milliseconds (see _iso_ms), each undef
+# where it is not given; undef where one is given that is no date or time.
+sub _range ($args) {
+  my ($since, $until) = @$args{qw(since until)};
+  $since = _iso_ms($since)    // return undef if defined $since;
+  $until = _iso_ms($until, 1) // return undef if defined $until;
+  return [$since, $until];
+}
+
+# The error result of a tool given a since or until that is no date or time.
+sub _no_time ($self, $tool, $args) {
+  my ($name) = grep { defined $args->{$_} && !defined _iso_ms($args->{$_}) } qw(since until);
+  return $tool->text_result(
+    $self->name . ": $name " . to_json($args->{$name}) . ' is not a date (YYYY-MM-DD) or an ISO 8601 time', 1);
 }
 
 # An epoch time in milliseconds, as the prompt history holds it, as a whole
@@ -691,16 +727,25 @@ sub _iso ($ms) {
   return sprintf '%04d-%02d-%02dT%02d:%02d:%02d.%03dZ', $t[5] + 1900, $t[4] + 1, @t[3, 2, 1, 0], $ms % 1000;
 }
 
-sub _in_range ($value, $since, $until) {
-  return 1 unless defined $value;
-  if (defined $since) { return 0 if $value lt _norm($since, 0) }
-  if (defined $until) { return 0 if $value gt _norm($until, 1) }
-  return 1;
-}
-
-sub _norm ($date, $end) {
-  return $date unless $date =~ /^\d{4}-\d{2}-\d{2}$/;
-  return $end ? "${date}T23:59:59Z" : "${date}T00:00:00Z";
+# An ISO 8601 date or time -- a since or until, or a session's time -- in epoch
+# milliseconds; undef for anything else, or for a year before 1000. A time is a
+# date (YYYY-MM-DD) and, after a T or a space, hours and minutes, with seconds
+# or without, with a fraction of any length or without, cut to the millisecond;
+# then Z, an offset (+02:00, -0530, +02) or nothing, which is UTC. A date alone
+# is the start of that day in UTC, or with $end its last millisecond, so that an
+# until of a day takes in all of it. So times written in different forms
+# compare as the instants they are, which their strings do not: of
+# 2026-11-09T00:00:00.500Z and 2026-11-09T00:00:00Z, the earlier string is the
+# later time.
+sub _iso_ms ($value, $end = 0) {
+  $value = _string($value) // return undef;
+  (my ($year, $month, $day, $hour, $min, $sec, $frac, $sign, $off_hour, $off_min) = $value =~ $ISO_TIME)
+    or return undef;
+  return undef if $year < 1000;    # timegm would read it as an offset from 1900
+  my $epoch = eval { timegm($sec // 0, $min // 0, $hour // 0, $day, $month - 1, $year) } // return undef;
+  return ($epoch + 86400) * 1000 - 1 if $end && !defined $hour;
+  $epoch -= ($sign eq '+' ? 1 : -1) * ($off_hour * 60 + ($off_min // 0)) * 60 if defined $sign;
+  return $epoch * 1000 + substr(($frac // '') . '000', 0, 3);
 }
 
 sub _dir_to_path ($self, $dir) {
@@ -771,15 +816,28 @@ the prompt is longer; a prompt of 500 characters or fewer is sent as it is.
 The cache keeps no more of it than that. C<get_conversation> returns the whole
 prompt, as the session's first user message.
 
+C<since> and C<until> keep the sessions whose C<last_activity> is on or after,
+and on or before, an ISO 8601 date or time, compared as instants to the
+millisecond. A date (C<2026-11-09>) is that whole day in UTC: from its first
+millisecond as C<since>, to its last (C<23:59:59.999>) as C<until>. A time
+(C<2026-11-09T10:00:00Z>) has a C<T> or a space after the date, seconds and a
+fraction of any length or not, and C<Z>, an offset (C<+02:00>, C<-0530>) or
+none, which is UTC; it is the instant it names, included at either end. A
+session without a time, or with one that is not such a time, passes both. A
+C<since> or C<until> that is not a date or a time is an error result
+(C<claude-history: since "VALUE" is not a date (YYYY-MM-DD) or an ISO 8601
+time>).
+
 =item C<search_conversations>
 
 Arguments C<query> (required), C<project?>, C<since?>, C<until?>, C<roles>
 (C<["user"]>), C<limit> (30), C<include_subagents> (false). Case-insensitive
-substring match, snippet ±120 characters. With C<include_subagents>, the
-subagent runs of each session the filters keep are searched too: a session's
-own matches come first, then those of its runs in the order they started, each
-carrying the run's C<agent_id> besides the session's C<session_id> and
-C<project>. The limit counts them all.
+substring match, snippet ±120 characters. C<project>, C<since> and C<until>
+pick the sessions searched, as for C<list_sessions>. With
+C<include_subagents>, the subagent runs of each session the filters keep are
+searched too: a session's own matches come first, then those of its runs in
+the order they started, each carrying the run's C<agent_id> besides the
+session's C<session_id> and C<project>. The limit counts them all.
 
 =item C<get_conversation>
 
@@ -840,7 +898,9 @@ The six tools are also plain methods (C<list_projects>, C<list_sessions>,
 C<search_conversations>, C<get_conversation>, C<list_subagents>,
 C<list_prompts>) taking an arguments hash reference, so they can be tested without going through the MCP
 layer. C<get_conversation> returns undef where its tool answers with the error
-for an C<agent_id> that names no run.
+for an C<agent_id> that names no run; C<list_sessions>,
+C<search_conversations> and C<list_prompts> where theirs answer with the error
+for a C<since> or C<until> that is not a date or a time.
 
 =head1 SEE ALSO
 
