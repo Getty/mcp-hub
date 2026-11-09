@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-09T22:47:33Z
+created: 2026-11-09T19:30:08Z
+id: 174
+priority: low
+started: 2026-11-09T22:46:50Z
+status: done
+tags:
+- docs
+- spec
+- drift
+title: 'Design spec: ClaudeHistory''s cache is not keyed by (path, mtime, size)'
+updated: 2026-11-09T22:47:33Z
+---
+
+From k170 (2026-11-09). docs/superpowers/specs/2026-08-25-mcp-hub-design.md, ClaudeHistory section (line ~286), says the per-session metadata is cached "keyed by (path, mtime, size)". The code keeps device, inode, size, mtime and the read offset, and reads a grown file incrementally; run files are cached too, without first prompt (k167); first_prompt is cut (k170). Prose fix, main session lane.
+
+k174 (main session, 2026-11-09, prose): the spec's ClaudeHistory section now says the metadata is cached with device, inode, size, mtime and the scan offset (unchanged: not read; grown: from the offset; shrunk, replaced or rewritten: from the start), as the POD says, instead of 'keyed by (path, mtime, size)'. It adds that first_prompt is kept cut (k170), and that run files are cached without their first prompt (k167). One file: docs/superpowers/specs/2026-08-25-mcp-hub-design.md.
+
+Committed as 1ff42b7 (Say in the design spec how ClaudeHistory's cache checks a session file, instead of keying it by (path, mtime, size))
