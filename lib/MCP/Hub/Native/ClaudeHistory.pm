@@ -399,7 +399,7 @@ sub _refresh ($self, $file, $skip = undef, $visit = undef, $run = 0) {
 # A record's sessionId, cwd and timestamp are made into strings by _string, so
 # one that is an object or array counts as absent and a later record's fills
 # it; the lookups, filters and sorts compare strings only. Of a run ($run), the
-# first prompt is not kept.
+# first prompt is not kept; of a session, only what _first_prompt keeps of it.
 sub _absorb ($state, $rec, $run = 0) {
   my $timestamp = _string($rec->{timestamp});
   $state->{session_id} //= _string($rec->{sessionId});
@@ -413,8 +413,19 @@ sub _absorb ($state, $rec, $run = 0) {
 
   if ($type eq 'user' || $type eq 'assistant') {
     $state->{count}++;
-    $state->{first_prompt} //= _text($rec->{message}) if $type eq 'user' && !$run;
+    $state->{first_prompt} //= _first_prompt(_text($rec->{message})) if $type eq 'user' && !$run;
   }
+}
+
+# A session's first prompt as the cache keeps it and list_sessions sends it:
+# its first 500 characters, followed by an ellipsis (U+2026) where it is
+# longer. A first prompt is often a briefing of many KB, and kept whole it
+# would be a large part of what the cache holds; the whole of it is the
+# session's first user message, which get_conversation returns. The text is
+# decoded, so the cut counts characters and never splits one.
+sub _first_prompt ($text) {
+  return $text if !defined $text || length $text <= 500;
+  return substr($text, 0, 500) . "\x{2026}";
 }
 
 sub _summary ($self, $file, $state) {
@@ -642,7 +653,11 @@ C<[{project, dir, sessions, last_activity}]>, newest activity first.
 
 Arguments C<project?>, C<since?>, C<until?>, C<limit> (50). Returns
 C<[{session_id, project, started_at, last_activity, messages, first_prompt,
-title, git_branch}]>, newest first.
+title, git_branch}]>, newest first. C<first_prompt> is cut: it holds the first
+500 characters of the session's first prompt, followed by C<…> (U+2026) where
+the prompt is longer; a prompt of 500 characters or fewer is sent as it is.
+The cache keeps no more of it than that. C<get_conversation> returns the whole
+prompt, as the session's first user message.
 
 =item C<search_conversations>
 

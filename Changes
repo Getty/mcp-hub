@@ -351,3 +351,9 @@ Revision history for MCP-Hub
     every subagent run in memory, which no tool sends and which is often a
     whole briefing: a cold search over 3,371 runs peaks at 74 MB instead of
     183 MB.
+  - list_sessions of MCP::Hub::Native::ClaudeHistory now sends only the
+    first 500 characters of each session's first prompt, followed by `…`
+    when it is longer (a prompt of 500 characters or fewer is sent as it
+    is), and its cache keeps only that; get_conversation still returns the
+    whole prompt. Listing all 870 sessions of a real history sends 0.6 MB
+    instead of 4.9 MB, and the cache holds 3.2 MB instead of 11.3 MB.
