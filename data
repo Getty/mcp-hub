@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-09T19:54:18Z
+created: 2026-11-07T06:46:18Z
+id: 170
+priority: low
+started: 2026-11-09T18:53:00Z
+status: done
+tags:
+- native
+- decision
+- wire
+title: 'Decide: should list_sessions send a truncated first_prompt instead of the
+  whole one?'
+updated: 2026-11-09T19:54:18Z
+---
+
+Proposed by mcp-hub-worker during k167 (2026-11-07). On the real history, list_sessions sends the whole first prompt of every session row: median 6.2 KB, max 49.7 KB per row, and the cache keeps 4.6 MB of them for sessions. A truncated first_prompt (for example the first N characters plus a marker) would shrink the reply and the cache. It changes the wire output of an existing tool, so it is the maintainer's call. Done when decided; if yes, a worker card with the length and the marker, and a test.
+
+Maintainer decided yes (2026-11-09). Shape (main session's choice, maintainer may veto): list_sessions sends first_prompt cut to its first 500 characters, followed by '…' (U+2026) when it was cut; a prompt of 500 characters or fewer goes out unchanged. The cache keeps only the cut text. The whole first prompt stays readable through get_conversation (offset 0). Search snippets and get_conversation are unaffected.
+
+k170 (mcp-hub-worker, 2026-11-09): list_sessions first_prompt is now cut in _absorb to the prompt's first 500 characters (code points), plus '…' (U+2026) when longer. Prompts of 500 or fewer are unchanged; the cache keeps only the cut text. get_conversation, search snippets, list_subagents and list_projects are unchanged; k167's run behaviour is kept. New test t/native/claude-history-first-prompt.t (14 subtests) fails 9 of 14 on HEAD and passes on the tree; a byte cut, an output-only cut and a UTF-16 cut each fail it. No existing test changed: all their prompts are 30 characters or fewer. Wire: the 32-call capture is byte-identical; the extended 35-call capture differs only in 32 list_sessions first_prompt values, and equals HEAD after a 500+'…' cut. Real history, 870 sessions: full listing 4.93 MB -> 0.61 MB of text, default 50 rows 345 KB -> 34.5 KB, cache 11.28 MB -> 3.17 MB (load ~6). prove -lr t/ under EV and Poll: 50 files, 628 tests, PASS; only the opt-in skips (docker-live, npx, wiki-live). POD and the spec row are updated; README not touched. Main session: diff reviewed, tree matches tree.sha1, POD has =encoding utf8 for the ellipsis.
+
+Committed as 6e052c6 (Cut a session's first prompt to 500 characters in ClaudeHistory's list_sessions and cache, so listing every session sends 0.6 MB instead of 4.9 MB (k170))
