@@ -107,8 +107,8 @@ sub _register ($self) {
       properties => {
         query   => {type => 'string', description => 'Substring to search for'},
         project => {type => 'string'},
-        since   => {type => 'string'},
-        until   => {type => 'string'},
+        since   => {type => 'string', description => 'Only matches on or after this date (YYYY-MM-DD or ISO)'},
+        until   => {type => 'string', description => 'Only matches on or before this date'},
         roles   => {type => 'array', items => {type => 'string'}, description => 'Roles to search (default ["user"])'},
         limit   => {type => 'integer', description => 'Maximum matches (default 30)'},
         include_subagents => {
@@ -230,20 +230,23 @@ sub _sessions ($self, $args) {
 }
 
 sub search_conversations ($self, $args) {
-  return undef unless _range($args);
+  my $range = _range($args) // return undef;
   my $query = $args->{query} // '';
   my $limit = $args->{limit} // 30;
   my %roles = map { $_ => 1 } @{$args->{roles} // ['user']};
   my $needle = lc $query;
   my $skip   = _raw_skip($needle);
 
-  # Up to $want matches of one file, in file order.
+  # Up to $want matches of one file, in file order. The since and until keep a
+  # match by its own time, as _filtered does a session (see _iso_ms): one
+  # without a time, or with one that is no time, passes.
   my $match = sub ($rec, $found, $want) {
     return if @$found >= $want;
     my $role = $rec->{type} // '';
     return unless ($role eq 'user' || $role eq 'assistant') && $roles{$role};
     my $text = _text($rec->{message}) // '';
     return unless (my $pos = index(lc $text, $needle)) >= 0;
+    return unless _filtered({}, $range, undef, _iso_ms($rec->{timestamp}));
     push @$found, {timestamp => $rec->{timestamp}, role => $role, snippet => _snippet($text, $pos, length $query)};
   };
 
@@ -274,8 +277,12 @@ sub search_conversations ($self, $args) {
   };
 
   # A session's own matches come first, then those of its subagent runs, run
-  # by run in the order they started. The runs are read only if asked for.
-  my $sessions = $self->_sessions({project => $args->{project}, since => $args->{since}, until => $args->{until}, limit => 1e9});
+  # by run in the order they started. The runs are read only if asked for. No
+  # session is passed over for its last_activity: that is the time of its last
+  # line that has one, not the newest of its times, so a session or run whose
+  # last_activity is before since can still hold a match after it, and one
+  # whose last_activity is after until can hold matches before it.
+  my $sessions = $self->_sessions({project => $args->{project}, limit => 1e9});
   for my $session (@$sessions) {
     last if @hits >= $limit;
     my %of = (session_id => $session->{session_id}, project => $session->{project});
@@ -695,7 +702,7 @@ sub _snippet ($text, $pos, $len) {
   return $slice;
 }
 
-# Whether a session or prompt of $project, of the time $ms (epoch
+# Whether a session, prompt or match of $project, of the time $ms (epoch
 # milliseconds), passes the project filter of $args and the since and until of
 # $range (see _range), both ends included. Without a project, it passes no
 # project filter; without a time, it passes since and until.
@@ -871,12 +878,18 @@ time>).
 
 Arguments C<query> (required), C<project?>, C<since?>, C<until?>, C<roles>
 (C<["user"]>), C<limit> (30), C<include_subagents> (false). Case-insensitive
-substring match, snippet ±120 characters. C<project>, C<since> and C<until>
-pick the sessions searched, as for C<list_sessions>. With
-C<include_subagents>, the subagent runs of each session the filters keep are
-searched too: a session's own matches come first, then those of its runs in
-the order they started, each carrying the run's C<agent_id> besides the
-session's C<session_id> and C<project>. The limit counts them all.
+substring match, snippet ±120 characters. C<project> picks the sessions
+searched, as for C<list_sessions>. C<since> and C<until> keep the matches whose
+own C<timestamp> is in their range, given and compared as for
+C<list_sessions>; a match without a time, or with one that is not such a time,
+passes. They pass over no session for its C<last_activity>: a session active
+after C<since> can hold matches before it, which are not sent, and one active
+after C<until> matches before it, which are. With C<include_subagents>, the
+subagent runs of each session C<project> keeps are searched too, their matches
+kept by their own times as well: a session's own matches come first, then
+those of its runs in the order they started, each carrying the run's
+C<agent_id> besides the session's C<session_id> and C<project>. The limit
+counts them all.
 
 =item C<get_conversation>
 

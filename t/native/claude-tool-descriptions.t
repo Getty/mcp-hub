@@ -42,4 +42,11 @@ subtest 'list_running_sessions says that last_prompt is cut' => sub {
   like $description, qr/the history server's get_conversation has the whole text/, 'where the whole text is';
 };
 
+# search_conversations keeps a match by its own time, not by its session's.
+subtest "search_conversations' since and until are of the matches" => sub {
+  my $input = tools('/history')->{search_conversations}{inputSchema}{properties};
+  is $input->{since}{description}, 'Only matches on or after this date (YYYY-MM-DD or ISO)', 'since';
+  is $input->{until}{description}, 'Only matches on or before this date',                    'until';
+};
+
 done_testing;

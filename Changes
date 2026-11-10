@@ -386,3 +386,5 @@ Revision history for MCP-Hub
     followed by `…` when longer, as list_sessions cuts first_prompt.
   - The list_sessions and list_running_sessions descriptions say their prompts
     are cut and that get_conversation returns the whole text.
+  - search_conversations' since and until keep a match by its own time, not by
+    the last activity of its session.
