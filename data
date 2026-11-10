@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T07:11:28Z
+created: 2026-11-06T10:06:33Z
+id: 124
+priority: low
+started: 2026-11-10T06:07:09Z
+status: done
+tags:
+- stdio
+- lifecycle
+title: During a stop's EOF grace the leaving child still takes refreshes and shows
+  as ready
+updated: 2026-11-10T07:11:28Z
+---
+
+Found during k39 (drift). Since k39 a stop gives the child up to 2 s (EOF_GRACE) plus 5 s (KILL_GRACE) to exit. In that window: refresh_p, or a refresh after list_changed, goes to the leaving child and its requests fail only at its exit; the state stays ready, so status shows ready for up to 7 s. Decide whether a stopping child gets its own state (stopping) and whether refreshes wait for the next child, as calls already do.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes. During a stop's grace the leaving child is 'stopping' in the status, and refresh_p (and a list_changed refresh) waits for the next child, as calls already do.
+
+Worker (2026-11-10) deviated from the decision, accepted by the main session: a notifications/tools/list_changed from a child in its stop's grace is logged at debug and starts nothing -- waiting for the next child there would spawn one nobody called after every idle stop, breaking the lazy-start promise. An explicit refresh_p in the grace waits for the next child, as decided. The card's 'requests fail only at its exit' is outdated since then.
+
+Committed as d5afe37 (Show a stdio child in its stop's grace as stopping, and have a refresh then wait for the next child).
