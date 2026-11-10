@@ -399,3 +399,5 @@ Revision history for MCP-Hub
     without waiting for the upstreams it started.
   - /all shows no tools, prompts or instructions in clients mode to a request
     without a profile; open mode still shows everything.
+  - `mcp-hub status` exits 1, saying "hub is not running" on stderr, when no
+    hub answers.

@@ -4,6 +4,7 @@
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use Mojo::File qw(curfile tempdir);
+use Mojo::IOLoop::Server;
 use Mojo::JSON qw(decode_json encode_json);
 
 my $BIN = curfile->dirname->sibling('bin', 'mcp-hub')->to_string;
@@ -177,6 +178,16 @@ subtest "after the command, -c is the command's own option" => sub {
   isnt $r->{exit}, 0,               'mcp-hub config --config FILE fails';
   like $r->{err}, qr/Unknown option: config/, '...on an unknown option';
   is_deeply servers($r), [],        '...and prints no configuration';
+};
+
+subtest 'status exits 1 when no hub answers' => sub {
+  # So that a script or a health check can tell a running hub from a dead one:
+  # it said "not running" and exited 0, as if all were well.
+  my $url = 'http://127.0.0.1:' . Mojo::IOLoop::Server->generate_port;
+  my $r   = mcp_hub('--config', $config{alpha}, 'status', '--url', $url);
+  is $r->{exit}, 1, 'mcp-hub status --url (nothing there) exits 1';
+  like $r->{err}, qr/\Ahub is not running at \Q$url\E \(.+\)\n\z/, '...saying the hub is not running there';
+  is $r->{out}, '', '...and prints no table';
 };
 
 done_testing;

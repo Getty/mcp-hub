@@ -105,13 +105,11 @@ subtest 'the status table names a failure and when a client was last seen' => su
 subtest 'status and refresh talk to --url' => sub {
   my $url = 'http://127.0.0.1:' . Mojo::IOLoop::Server->generate_port;
 
+  # status dies with it, and so exits 1 (t/cli.t); refresh prints it.
   for my $command (qw(status refresh)) {
-    my $out = '';
-    open my $fh, '>', \$out or die;
-    my $old = select $fh;
-    $app->start($command, '--url', $url);
-    select $old;
-    like $out, qr/\Qnot running at $url\E/, "$command --url overrides the configured listen address";
+    my ($out, $err) = run_command($app, $command, '--url', $url);
+    like $command eq 'status' ? $err : $out, qr/\Qnot running at $url\E/,
+      "$command --url overrides the configured listen address";
   }
 };
 
@@ -126,12 +124,8 @@ subtest 'a broken config file is remembered (cli), not thrown, so --url + token 
 
   my $url = 'http://127.0.0.1:' . Mojo::IOLoop::Server->generate_port;
   for my $command (qw(status refresh reload)) {
-    my $out = '';
-    open my $fh, '>', \$out or die;
-    my $old = select $fh;
-    $app->start($command, '--url', $url, '--token', 'sekret');
-    select $old;
-    like $out, qr/\Qnot running at $url\E/,
+    my ($out, $err) = run_command($app, $command, '--url', $url, '--token', 'sekret');
+    like $command eq 'status' ? $err : $out, qr/\Qnot running at $url\E/,
       "$command --url + --token talks to the daemon without reading the broken config";
   }
 };
@@ -143,12 +137,8 @@ subtest 'the token override also comes from $MCP_HUB_TOKEN' => sub {
   my $app  = MCP::Hub->new(cli => 1, hub_config_input => broken_config($dir));
 
   my $url = 'http://127.0.0.1:' . Mojo::IOLoop::Server->generate_port;
-  my $out = '';
-  open my $fh, '>', \$out or die;
-  my $old = select $fh;
-  $app->start('status', '--url', $url);       # no --token: the env supplies it
-  select $old;
-  like $out, qr/\Qnot running at $url\E/, '$MCP_HUB_TOKEN plus --url bypasses the config too';
+  my (undef, $err) = run_command($app, 'status', '--url', $url);    # no --token: the env supplies it
+  like $err, qr/\Qnot running at $url\E/, '$MCP_HUB_TOKEN plus --url bypasses the config too';
 };
 
 subtest 'without a token a broken config is still fatal, cleanly, where it is needed' => sub {

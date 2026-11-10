@@ -341,7 +341,7 @@ tool list:
 |---|---|
 | `mcp-hub daemon` | Run the hub in the foreground (single process). |
 | `mcp-hub config [--client NAME] [--all] [--url BASE]` | Print `mcpServers` JSON. |
-| `mcp-hub status [--client NAME] [--url BASE] [--token TOKEN]` | Table of the running hub's upstreams and clients. |
+| `mcp-hub status [--client NAME] [--url BASE] [--token TOKEN]` | Table of the running hub's upstreams and clients. Exits 1, saying "hub is not running" on stderr, when no hub answers. |
 | `mcp-hub refresh [NAME] [--client NAME] [--url BASE] [--token TOKEN]` | Re-fetch manifests; also the way to retry a `failed` server. |
 | `mcp-hub reload [--client NAME] [--url BASE] [--token TOKEN]` | Re-read the config and apply only what changed. |
 | `mcp-hub token` | Print a fresh random bearer token. |

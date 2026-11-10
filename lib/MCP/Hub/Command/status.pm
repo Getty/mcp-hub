@@ -16,6 +16,8 @@ Options:
   --url BASE      Base URL of the running hub (default derived from the listen address)
   --token TOKEN   Bearer token to authenticate with, instead of a configured client
                   (or $MCP_HUB_TOKEN); with --url the config file is never read
+
+Exits 1, saying so, when no hub answers at the base URL.
 USAGE
 
 sub run ($self, @args) {
@@ -26,7 +28,13 @@ sub run ($self, @args) {
 
   my $tx = Mojo::UserAgent->new->get("$base/_hub/status" => $headers);
   if (my $err = $tx->error) {
-    return print "hub is not running at $base ($err->{message})\n" unless $err->{code};
+    # A hub that does not answer is a failed status, so that a script or a
+    # health check can tell it from a running one. An uncaught die exits with
+    # $!, and only this one exit code is promised.
+    unless ($err->{code}) {
+      local $! = 1;
+      die "hub is not running at $base ($err->{message})\n";
+    }
     die "status request failed: $err->{code} $err->{message}\n";
   }
 
@@ -113,8 +121,11 @@ failed one, why it failed -- plus the known clients and when each was last seen.
 C<PSS_KB> is filled for a forked class worker only
 (L<MCP::Hub::Upstream::Fork/pss_kb>): its C<RSS_KB> counts every page it shares
 with the hub.
-It reports "not running" on a refused connection. In clients mode it uses the
-token of the first admin client, or the one named with C<--client>.
+When no hub answers -- the connection is refused, or no HTTP response comes
+back -- it says "hub is not running at" that base URL on standard error and
+exits 1, so that a script or a health check can tell a running hub from a dead
+one. In clients mode it uses the token of the first admin client, or the one
+named with C<--client>.
 
 The daemon is looked for at the configured C<listen> address, with a wildcard
 (C<*>, C<0.0.0.0> or C<[::]>) rewritten to loopback and the listen options in
