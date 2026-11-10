@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-11-10T05:58:26Z
+id: 190
+priority: low
+started: 2026-11-10T16:02:03Z
+status: todo
+tags:
+- reload
+- perl
+title: Upstream::Perl::let_go empties a server another entry shares
+updated: 2026-11-10T16:02:03Z
+---
+
+From k104 (2026-11-10). let_go empties the tools, prompts and resources of the in-process class's server when a reload replaces or removes its entry. A class whose server method hands back a shared or singleton MCP::Server would have its successor's (or another entry's) server emptied too; k104 added no guard, by the worker's choice. Decide whether to guard (skip when another upstream holds the same server, by refaddr) or document that a class entry must own its server.
+
+Maintainer-Entscheidung 2026-11-10: Guard: let_go leert den Server nicht, solange ein anderes Upstream denselben Server hält (refaddr). Mit Test.
