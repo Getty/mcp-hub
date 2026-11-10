@@ -155,31 +155,60 @@ systemctl --user enable --now mcp-hub
 
 No Perl and no container on the machine? Each GitHub release also carries
 `mcp-hub` as one executable per platform — `linux-x86_64`, `linux-arm64` and
-`macos-arm64` — with Perl, OpenSSL and every module packed inside:
+`macos-arm64` — with Perl, OpenSSL and every module packed inside. The install
+script of the latest release fetches the one for your machine:
 
 ```bash
 curl -fsSL https://github.com/Getty/mcp-hub/releases/latest/download/install.sh | sh
 ```
 
-The install script picks the binary for your OS and architecture, checks it
-against the release's `SHA256SUMS` and installs it as `mcp-hub`. Or download
-`mcp-hub-<version>-<os>-<arch>` from the release page yourself, `chmod +x` it and
-put it on your `PATH` (on macOS, after a browser download:
-`xattr -d com.apple.quarantine mcp-hub`). The Linux binaries need glibc 2.28 or
-newer; on Alpine (musl) use the [Docker image](#docker-image).
+It takes the platform from `uname -s` and `uname -m`, downloads the release's
+`SHA256SUMS` and `mcp-hub-<version>-<platform>`, and installs the binary as
+`~/.local/bin/mcp-hub` only when its SHA-256 matches the one listed there. Then it
+starts `mcp-hub --help` once, so the first start's unpacking (below) happens during
+the install, and tells you when that directory is not on your `PATH`. It needs
+`curl`, and `sha256sum` or `shasum`. Environment variables change what it does;
+set them for `sh`, after the pipe:
+
+- `MCP_HUB_INSTALL_DIR` — the directory to install into, instead of `~/.local/bin`;
+- `MCP_HUB_VERSION` — install that release instead, such as `0.002`;
+- `MCP_HUB_PLATFORM` — install the binary of that platform instead of the detected one;
+- `MCP_HUB_BASE_URL` — where the releases are, instead of
+  `https://github.com/Getty/mcp-hub/releases` (a mirror with the same layout).
+
+```bash
+curl -fsSL https://github.com/Getty/mcp-hub/releases/latest/download/install.sh \
+  | MCP_HUB_INSTALL_DIR=/usr/local/bin sh
+```
+
+By hand: download `mcp-hub-<version>-<platform>` and `SHA256SUMS` from the
+release page into one directory and check the binary there with
+`grep ' mcp-hub-<version>-<platform>$' SHA256SUMS | sha256sum -c` (macOS:
+`shasum -a 256 -c` instead of `sha256sum -c`). Then install it with
+`mkdir -p ~/.local/bin && install -m 755 mcp-hub-<version>-<platform> ~/.local/bin/mcp-hub`.
+The macOS binary is not signed. After a browser download, macOS quarantines it;
+`xattr -d com.apple.quarantine ~/.local/bin/mcp-hub` lifts that.
+
+The Linux binaries need glibc 2.28 or newer: RHEL, Alma and Rocky 8, Debian 10,
+Ubuntu 20.04 and later. On Alpine (musl), use the [Docker image](#docker-image). There
+is no build for Windows or for Intel Macs; the install script, and the release's
+`install.ps1` on Windows, stop there with "No build for platform …".
 
 It is the same `mcp-hub` as the CPAN install — every command, JSON and YAML
 configs, stdio, `url`, `docker` and `compose` entries, both modes, the setup
 page — with these differences:
 
 - **No Perl modules from outside.** The binary loads only what is packed into
-  it; `PERL5LIB`, `PERL5OPT` and an installed `local::lib` are ignored. A `class`
-  entry can name the bundled natives — `MCP::Hub::Native::ClaudeHistory`,
+  it; `PERL5LIB`, `PERL5OPT` and an installed `local::lib` are ignored, and
+  `PERL5LIB` and `PERL5OPT` are not passed on to its stdio upstreams either. A
+  `class` entry can name the bundled natives — `MCP::Hub::Native::ClaudeHistory`,
   `MCP::Hub::Native::ClaudeSessions`, `MCP::Hub::Native::Status` — and nothing
   else: `MCP::Run`, `MCP::K8s` or [your own server](#writing-your-own-native-server)
   shows up as `failed` with `cannot load class …`. Use the CPAN install for those,
-  or, with a Perl on the machine, mount them as a stdio upstream instead:
-  `{"command": "perl", "args": ["-MMy::Weather", "-e", "My::Weather->new->to_stdio"]}`.
+  or, with a Perl on the machine, mount them as a stdio upstream instead, naming
+  their library directory in the entry's `env`:
+  `{"command": "perl", "args": ["-MMy::Weather", "-e", "My::Weather->new->to_stdio"],
+  "env": {"PERL5LIB": "/home/you/perl5/lib/perl5"}}`.
   `"hub": {"fork": true}` works on the natives as in the CPAN install: on Linux,
   `ClaudeHistory` and `ClaudeSessions` run their calls in a
   [forked worker](#forked-class-workers) of the binary; `Status` needs the live hub
@@ -211,12 +240,14 @@ page — with these differences:
   - A minimal container image without `ca-certificates`: the packed bundle.
 - It runs on Mojolicious' own event loop, never on `EV`, like the Docker image.
 
-The first start after installing or upgrading unpacks about 35 MB into
-`$TMPDIR/par-<user>/cache-<hash>` (set `PAR_GLOBAL_TMPDIR` to move it) and takes
-a few seconds; later starts reuse it. Let that first start finish before starting
-several `mcp-hub` at once, and remove the cache of an old version after an
-upgrade — nothing cleans it up. For the systemd unit above, point `ExecStart` at
-the binary, e.g. `%h/.local/bin/mcp-hub daemon`.
+The first start of a new binary unpacks about 35 MB into
+`$TMPDIR/par-<hex>/cache-<hash>` — `/tmp` when `TMPDIR` is not set, `<hex>` your
+user name in hexadecimal (`par-616c696365` for `alice`); set `PAR_GLOBAL_TMPDIR`
+to use another directory — and takes a few seconds; later starts reuse it. The
+install script makes that first start for you. After installing by hand, let it
+finish before starting several `mcp-hub` at once. Remove the cache of an old
+version after an upgrade — nothing cleans it up. For the systemd unit above,
+point `ExecStart` at the binary, e.g. `%h/.local/bin/mcp-hub daemon`.
 
 ## Web setup page
 

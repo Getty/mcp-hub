@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Verify a packed mcp-hub against `perl -Ilib bin/mcp-hub` from this checkout.
-#   scripts/verify-binary.sh <binary>
-# Run it where the binary was built (same perl, same installed modules): the module set
-# it requires inside the archive is computed by scripts/loaded-modules.pl on this host.
-# scripts/smoke-binary.sh is the other half: the daemon, on a machine without Perl.
+# Verify a packed mcp-hub against `perl -Ilib bin/mcp-hub` from this dist.
+#   scripts/binary-verify.sh <binary>
+# binary_verify of the [@Author::GETTY] bundle (dist.ini): run from the dist root right
+# after packing, by dzil build's local check and by each platform leg of the bundle's
+# dzil-binary workflow. Prints "verify: OK" and exits 0, or "FAIL: <reason>" on STDERR
+# and exits 1. Run it where the binary was built (the perl that packed it, with the
+# dist's dependencies): the module set it requires inside the archive is computed by
+# scripts/loaded-modules.pl on this host. scripts/binary-smoke.sh is the other half:
+# the daemon, on a machine without Perl.
 set -euo pipefail
 
-[ -n "${1:-}" ] || { echo "usage: verify-binary.sh <binary>" >&2; exit 1; }
+[ -n "${1:-}" ] || { echo "usage: binary-verify.sh <binary>" >&2; exit 1; }
 BIN=$(perl -MCwd=abs_path -e 'print abs_path(shift) // ""' "$1")
 [ -n "$BIN" ] || { echo "FAIL: cannot resolve path: $1" >&2; exit 1; }
 [ -x "$BIN" ] || { echo "FAIL: not an executable: $BIN" >&2; exit 1; }
@@ -20,14 +24,22 @@ tmo=${MCP_HUB_VERIFY_TIMEOUT:-120}
 if command -v timeout >/dev/null 2>&1; then TMO=(timeout "$tmo")
 else TMO=(perl -e 'alarm shift; exec @ARGV' "$tmo"); fi
 
+# The perl that loads the dist's dependencies, for the reference CLI and
+# scripts/loaded-modules.pl. The bundle runs this script with no PERL5LIB of its own and
+# names where the dependencies are in DZIL_BINARY_PERL5LIB; unset or empty, this
+# shell's environment is used as it is. The binary never sees either (env -i below).
+with_deps() {
+  if [ -n "${DZIL_BINARY_PERL5LIB:-}" ]; then PERL5LIB=$DZIL_BINARY_PERL5LIB "$@"; else "$@"; fi
+}
+
 # The binary under a wiped environment (no PERL5LIB, no config) and its own extraction
 # cache: PAR_GLOBAL_TMPDIR is where PAR unpacks, so a fresh directory is a first start.
 bin() { env -i PATH=/usr/bin:/bin HOME="$work/home" PAR_GLOBAL_TMPDIR="$work/par" "${TMO[@]}" "$BIN" "$@" </dev/null; }
 # The reference: the same CLI from the checkout, same HOME, no configuration of the
-# maintainer's, no reactor choice, no trust store or proxy of this shell's. PERL5LIB
-# stays: that is where the deps are.
+# maintainer's, no reactor choice, no trust store or proxy of this shell's; the deps
+# through with_deps.
 ref() {
-  env -u MCP_HUB_CONFIG -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u CLAUDE_CONFIG_DIR \
+  with_deps env -u MCP_HUB_CONFIG -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u CLAUDE_CONFIG_DIR \
       -u MOJO_MODE -u MOJO_REACTOR -u MOJO_HOME -u MOJO_CA_FILE -u MOJO_INSECURE \
       -u SSL_CERT_FILE -u SSL_CERT_DIR -u HTTPS_PROXY -u https_proxy -u ALL_PROXY -u all_proxy \
       HOME="$work/home" \
@@ -59,6 +71,12 @@ same_as_perl() {
   fi
 }
 
+# The reference needs the dist's dependencies, and so does the module set below:
+# without them every comparison fails on the perl side, so say it once, here.
+with_deps perl -I"$root/lib" -MMCP::Hub -MYAML::PP -e1 2>"$work/deps.err" \
+  || fail "the reference perl ($(command -v perl)) cannot load MCP::Hub and its dependencies" \
+       "(DZIL_BINARY_PERL5LIB=${DZIL_BINARY_PERL5LIB:-<unset>}, PERL5LIB=${PERL5LIB:-<unset>}): $(head -n 1 "$work/deps.err")"
+
 want_version=$(sed -n "s/^our \$VERSION = '\(.*\)';/\1/p" "$root/lib/MCP/Hub.pm")
 [ -n "$want_version" ] || fail "cannot read \$VERSION from lib/MCP/Hub.pm"
 
@@ -83,7 +101,7 @@ printf '%s\n' "$t1" | grep -Eqx '[A-Za-z0-9_-]{43}' || fail "token prints '$t1',
 echo "token: OK"
 
 # The command layer: Mojolicious finds every command by namespace, the usage text comes
-# from each module's POD (pp strips POD unless PAR_VERBATIM=1 -- build-binary.sh).
+# from each module's POD (pp strips POD unless PAR_VERBATIM=1, which the bundle sets).
 same_as_perl "no command (the command list)"
 same_as_perl "help" help
 same_as_perl "--help" --help
@@ -179,11 +197,11 @@ echo "TLS round trip: OK (verified with the test CA, refused without it)"
 
 # Packed module set. Inside the binary @INC is the archive only -- no PERL5LIB, no
 # compiled-in path -- so a module the build missed dies at run time. The loaded set
-# (scripts/loaded-modules.pl, the same list build-binary.sh packs) must be in the archive.
+# (scripts/loaded-modules.pl, the same list binary-pp-args.sh hands pp) must be in the archive.
 command -v unzip >/dev/null 2>&1 || fail "unzip is not installed (needed to inspect the PAR archive)"
 rc=0; unzip -qq -o "$BIN" -d "$work/archive" >/dev/null 2>&1 || rc=$?   # 1 = bytes before the zip
 [ "$rc" -le 1 ] && [ -d "$work/archive/lib" ] || fail "cannot unpack the PAR archive (unzip exit $rc)"
-perl -I"$root/lib" "$root/scripts/loaded-modules.pl" >"$work/loaded" 2>"$work/loaded.err" \
+with_deps perl -I"$root/lib" "$root/scripts/loaded-modules.pl" >"$work/loaded" 2>"$work/loaded.err" \
   || fail "scripts/loaded-modules.pl failed: $(cat "$work/loaded.err")"
 nloaded=$(wc -l <"$work/loaded" | tr -d ' ')
 [ "$nloaded" -gt 150 ] || fail "loaded set suspiciously small ($nloaded modules)"
@@ -206,7 +224,7 @@ for spec in $(perl "$root/scripts/loaded-modules.pl" --left-out); do
   esac
   [ -z "$hit" ] || leaked="$leaked $hit"
 done
-[ -z "$leaked" ] || fail "left-out modules packed:$leaked (build-binary.sh must -X them)"
+[ -z "$leaked" ] || fail "left-out modules packed:$leaked (binary-pp-args.sh must -X them)"
 echo "left-out families absent: OK"
 
 # Files read from a path next to a module: Mojolicious' templates (next to

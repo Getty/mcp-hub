@@ -1,6 +1,6 @@
 #!/bin/sh
 # A stdio MCP server in POSIX sh with one tool, echo. It lets the packed mcp-hub
-# be smoke-tested on a machine without Perl (scripts/smoke-binary.sh mounts it
+# be smoke-tested on a machine without Perl (scripts/binary-smoke.sh mounts it
 # as a stdio upstream); t/binary.t keeps it working against the Perl hub.
 #
 #   sh t/upstream/echo.sh [MARKER]

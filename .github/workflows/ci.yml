@@ -14,6 +14,8 @@ jobs:
     env:
       # The image build needs a container engine; CI tests the distribution.
       DZIL_DOCKER_API_SKIP: 1
+      # The binary check needs pp and the packing perl; the binaries workflow builds it.
+      DZIL_BINARY_SKIP: 1
     strategy:
       fail-fast: false
       matrix:

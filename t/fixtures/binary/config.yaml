@@ -1,5 +1,5 @@
 # config.json, spelled as YAML: `mcp-hub config` prints the same for both
-# (t/binary.t, scripts/smoke-binary.sh).
+# (t/binary.t, scripts/binary-smoke.sh).
 mcpServers:
   echo:     {command: sh, args: [t/upstream/echo.sh]}
   history:  {class: MCP::Hub::Native::ClaudeHistory, args: {root: t/fixtures/claude}}

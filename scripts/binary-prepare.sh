@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # TLS for a portable mcp-hub binary: build OpenSSL as static libraries and install
 # Net::SSLeay (linked against them), IO::Socket::SSL and Mozilla::CA into the perl on
-# PATH. Run it once per packing perl, before the dist's dependencies are installed --
-# a Net::SSLeay that cpanm builds first links the host's libssl instead.
-#   scripts/build-binary-openssl.sh PREFIX
+# PATH. binary_prepare of the [@Author::GETTY] bundle (dist.ini): its dzil-binary
+# workflow runs it from the dist root once per platform, after the packing perl and
+# before the dist's dependencies are installed -- a Net::SSLeay that cpanm builds first
+# links the host's libssl instead -- with the deps local lib active and the cache dir
+# it keeps per platform (keyed by this file's checksum) as PREFIX.
+#   scripts/binary-prepare.sh PREFIX
 # PREFIX receives OpenSSL (bin/openssl, lib/libssl.a, lib/libcrypto.a, include/) and
 # is reused when it already holds this version. cpanm installs where it always does
 # for this perl (PERL_CPANM_OPT, -L, local::lib). Needs curl, a C compiler and make.
+# Exit 0 when the perl on PATH has Net::SSLeay on this OpenSSL, non-zero otherwise.
 #
 # Why static: the binary must not depend on the target's OpenSSL. Linux distributions
 # ship different sonames (libssl.so.1.1, libssl.so.3) or none in a minimal image,
-# macOS ships no OpenSSL at all, and check-binary-libs.sh admits system libraries only.
+# macOS ships no OpenSSL at all, and the bundle's library gate admits system libraries only.
 #
 # The trust store: IO::Socket::SSL looks for the host's CA certificates in
 # $SSL_CERT_DIR or OPENSSLDIR/certs (a hashed directory) and in $SSL_CERT_FILE or
@@ -28,7 +32,7 @@ OPENSSL_VERSION=3.5.9
 OPENSSL_SHA256=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
 OPENSSL_URL="https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
 
-PREFIX=${1:?usage: build-binary-openssl.sh PREFIX}
+PREFIX=${1:?usage: binary-prepare.sh PREFIX}
 mkdir -p "$PREFIX"; PREFIX=$(cd "$PREFIX" && pwd)
 command -v cpanm >/dev/null 2>&1 || { echo "ERROR: cpanm is not installed" >&2; exit 1; }
 want="OpenSSL $OPENSSL_VERSION "

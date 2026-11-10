@@ -66,16 +66,19 @@ Revision history for MCP-Hub
     servers, forked workers and containers it started are gone.
   - A JSON `true` is no longer accepted where an integer is expected, such as
     `idle_timeout` or `port`.
-  - Build tooling for a standalone `mcp-hub` binary (PAR::Packer) for
-    machines without Perl: `scripts/build-binary.sh` packs every module the
-    hub loads by name, `scripts/verify-binary.sh` checks it against the Perl
-    CLI, `scripts/smoke-binary.sh` runs a real daemon without Perl. The
-    binary speaks TLS with its own OpenSSL 3.5, linked statically by
-    `scripts/build-binary-openssl.sh`, and trusts the system's CA
-    certificates below /etc/ssl, else a packed Mozilla CA bundle
-    (`SSL_CERT_FILE`/`SSL_CERT_DIR` override). It has no EV, and `class`
-    entries are limited to the bundled native servers (README, "Standalone
-    binary"). No prebuilt binaries are published yet.
+  - Standalone `mcp-hub` binaries for machines without Perl: every GitHub
+    release carries one for linux-x86_64, linux-arm64 and macos-arm64, with
+    `SHA256SUMS` and an `install.sh` that checks the download and installs
+    it as `~/.local/bin/mcp-hub`. The [@Author::GETTY] bundle packs them
+    with PAR::Packer, with every module the hub loads by name
+    (`scripts/binary-pp-args.sh`), and checks each against the Perl CLI
+    (`scripts/binary-verify.sh`) and with a real daemon on a machine
+    without Perl (`scripts/binary-smoke.sh`). The binary speaks TLS with
+    its own OpenSSL 3.5, linked statically by `scripts/binary-prepare.sh`,
+    and trusts the system's CA certificates below /etc/ssl, else a packed
+    Mozilla CA bundle (`SSL_CERT_FILE`/`SSL_CERT_DIR` override). It has no
+    EV, and `class` entries are limited to the bundled native servers
+    (README, "Standalone binary").
   - Forked class workers: `"hub": {"fork": true}` on a `class` entry lists
     the class's tools from the hub with no process running and runs its
     calls in a worker forked from the hub (Linux), with lazy start, idle
@@ -345,7 +348,7 @@ Revision history for MCP-Hub
     Without the new arguments, every tool answers as before.
   - Standalone binary: Cpanel::JSON::XS is packed, so the binary decodes
     JSON in C like the Docker image instead of in pure Perl (4 MB of
-    session lines: 8.7 s CPU -> 0.07 s); scripts/build-binary.sh refuses a
+    session lines: 8.7 s CPU -> 0.07 s); scripts/binary-pp-args.sh refuses a
     perl without it, and the binary smoke checks it.
   - A search with `include_subagents` no longer keeps the first prompt of
     every subagent run in memory, which no tool sends and which is often a

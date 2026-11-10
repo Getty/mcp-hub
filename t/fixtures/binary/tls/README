@@ -11,9 +11,9 @@ TLS fixtures for the binary checks -- test material, never trust them.
 
 ca.crt and server.crt are EC P-256 / SHA-256 and valid from 2026-01-01 to 2126-01-01,
 so no clock and no expiry breaks the checks. scripts/loaded-modules.pl and
-scripts/smoke-binary.sh run a hub that listens on https with server.crt/server.key
+scripts/binary-smoke.sh run a hub that listens on https with server.crt/server.key
 and trust ca.crt through SSL_CERT_FILE; t/binary.t keeps the pair working.
-scripts/smoke-binary.sh verifies le-r11.crt against the trust store the binary finds
+scripts/binary-smoke.sh verifies le-r11.crt against the trust store the binary finds
 on the host, at 2025-01-01: a real chain checked without network.
 
 ca.crt, server.crt and server.key were made with OpenSSL 3.5:

@@ -1,12 +1,12 @@
 #!/usr/bin/env perl
 # Print the modules the mcp-hub binary loads, one per line (Foo::Bar), by running
-# the real commands and a real daemon round trip. Run it from the checkout root:
+# the real commands and a real daemon round trip. Run it from the dist root:
 #
 #   perl -Ilib scripts/loaded-modules.pl              # the loaded set
 #   perl -Ilib scripts/loaded-modules.pl --left-out   # the families left out
 #
-# build-binary.sh turns the loaded set into pp -M options and the left-out families
-# into -X options; verify-binary.sh requires every loaded module inside the packed
+# binary-pp-args.sh turns the loaded set into pp -M options and the left-out families
+# into -X options; binary-verify.sh requires every loaded module inside the packed
 # archive and no file of a left-out family. One source, so the three cannot drift.
 # The list goes to STDOUT, problems to STDERR.
 #

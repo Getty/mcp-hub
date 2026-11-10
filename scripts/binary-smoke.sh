@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Smoke-test a packed mcp-hub where no Perl is needed: bash, sh, coreutils, grep and
-# sed are all it uses (HTTP goes through bash's /dev/tcp), so it runs as-is in a bare
-# distribution container.
-#   scripts/smoke-binary.sh <binary>
+# Smoke-test a packed mcp-hub where no Perl is needed: bash, sh, coreutils, grep, sed
+# and awk are all it uses (HTTP goes through bash's /dev/tcp, every Perl check runs
+# inside the binary), so it runs as-is in a bare distribution container.
+#   scripts/binary-smoke.sh <binary>
+# binary_smoke of the [@Author::GETTY] bundle (dist.ini): its dzil-binary workflow runs
+# it from the unpacked dist on clean machines without perl (AlmaLinux 8 and 9, Debian
+# bookworm slim, the macOS runner as it is), dzil build's local check right after
+# packing. Prints "smoke: OK" and exits 0, or "FAIL: <reason>" on STDERR and exits 1.
 # SMOKE_NO_PERL=1 additionally fails when a perl is on PATH, to prove the point.
 #
 # Covered: a cold and a warm start, token, JSON decoded in C (Cpanel::JSON::XS under
@@ -20,11 +24,11 @@
 # certificate (t/fixtures/binary/tls), verified through SSL_CERT_FILE and refused
 # without it, which trust store the binary finds on this host and that it verifies
 # a real chain there (Let's Encrypt's R11, a fixture, at a fixed time, offline), and
-# a second https hub whose `url` upstream is the first. scripts/verify-binary.sh is
+# a second https hub whose `url` upstream is the first. scripts/binary-verify.sh is
 # the other half: the same CLI against `perl -Ilib`, and the packed module set.
 set -euo pipefail
 
-[ -n "${1:-}" ] || { echo "usage: smoke-binary.sh <binary>" >&2; exit 1; }
+[ -n "${1:-}" ] || { echo "usage: binary-smoke.sh <binary>" >&2; exit 1; }
 BIN=$1; case "$BIN" in /*) ;; *) BIN="$PWD/$BIN" ;; esac
 [ -x "$BIN" ] || { echo "FAIL: not an executable: $BIN" >&2; exit 1; }
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -55,6 +59,28 @@ else
   echo "no perl on this host"
 fi
 cd "$root"
+
+# tmo SECS CMD...: CMD, ended with TERM after SECS seconds -- timeout(1) where it
+# exists, else (macOS ships none) a watchdog in the background that looks once a second.
+# CMD keeps the caller's stdin (<&0): an asynchronous command would get /dev/null.
+if command -v timeout >/dev/null 2>&1; then
+  tmo() { timeout "$@"; }
+else
+  tmo() {
+    local secs=$1 pid dog rc=0
+    shift
+    "$@" <&0 &
+    pid=$!
+    ( i=0
+      while [ "$i" -lt "$secs" ] && kill -0 "$pid" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+      kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    dog=$!
+    wait "$pid" || rc=$?
+    kill "$dog" 2>/dev/null || true
+    wait "$dog" 2>/dev/null || true
+    return "$rc"
+  }
+fi
 
 now() { if [ -n "${EPOCHREALTIME:-}" ]; then echo "${EPOCHREALTIME/,/.}"; else date +%s; fi; }
 secs() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.2f", b - a }'; }
@@ -140,7 +166,7 @@ http() {
   exec 3<>"/dev/tcp/127.0.0.1/$port" || return 1
   printf '%s %s HTTP/1.1\r\nHost: 127.0.0.1:%s\r\nAccept: application/json, text/event-stream, text/html\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' \
     "$1" "$2" "$port" "${#body}" "$body" >&3
-  timeout 30 cat <&3
+  tmo 30 cat <&3
   exec 3<&-
 }
 id=0
@@ -321,7 +347,7 @@ echo "daemon run 2: OK (SIGTERM stopped the hub, its stdio child${fork_pid:+ and
 # fork: perl flushes every handle before a fork, PAR's bootstrap handle still holds
 # read-ahead, so the hub's own first fork (any fork) moves that offset once.
 if [ -d /proc/self/fd ]; then
-  timeout 60 "$BIN" eval '
+  tmo 60 "$BIN" eval '
     use Mojo::Base -strict, -signatures;
     use Mojo::File qw(path);
     use Mojo::JSON qw(decode_json encode_json);
@@ -380,9 +406,12 @@ if [ -d /proc/self/fd ]; then
     die "tools/call probe: $res->{error}\n" if $res->{error};
     my $r = decode_json($res->{content}[0]{text});
     (my $moved = $r->{mine}) =~ s/:\d+/:4/g;
-    say !$r->{preloaded} && ($r->{yaml} // "") eq "v" && index($r->{from} // "", "$ENV{PAR_TEMP}/") == 0
+    # An unset or empty PAR_TEMP would make the prefix "/", which any absolute path passes.
+    my $par = $ENV{PAR_TEMP} // "";
+    say !$r->{preloaded} && ($r->{yaml} // "") eq "v" && length($par) && index($r->{from} // "", "$par/") == 0
       ? "lazy require in the worker: YAML::PP, not loaded in the hub, read from the unpacked archive"
-      : "FAIL lazy require: preloaded=$r->{preloaded} yaml=" . ($r->{yaml} // "undef") . " from=" . ($r->{from} // "undef");
+      : "FAIL lazy require: preloaded=$r->{preloaded} yaml=" . ($r->{yaml} // "undef") . " from=" . ($r->{from} // "undef")
+        . " PAR_TEMP=" . (length($par) ? $par : "unset");
     say length $r->{mine} && $r->{mine} eq $r->{hub}
       ? "archive fds in the worker: the hub fd numbers, at the hub offsets"
       : "FAIL archive fds: worker [$r->{mine}], hub [$r->{hub}]";
@@ -423,7 +452,7 @@ cat >"$work/front.json" <<JSON
  "hub": {"cache_dir": "$work/cache-front"}}
 JSON
 # get ARGS...: the binary's own HTTP client; the body on STDOUT, errors on STDERR.
-get() { timeout 30 "$BIN" get "$@" </dev/null; }
+get() { tmo 30 "$BIN" get "$@" </dev/null; }
 # wait_tls NAME PID GET-ARGS...: until the daemon answers /_hub/status over https.
 wait_tls() {
   local name=$1 pid=$2 i; shift 2

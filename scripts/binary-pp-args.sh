@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Pack bin/mcp-hub into one standalone executable with PAR::Packer, with the perl
-# on PATH. Run from the checkout root. Output: $MCP_HUB_BIN_OUT (default ./mcp-hub).
+# The pp arguments of the mcp-hub binary, one per line on STDOUT: binary_pp_args of
+# the [@Author::GETTY] bundle (dist.ini). Run from the dist root with the perl that
+# packs; problems go to STDERR and end the run with exit 1, which fails the build.
+#   scripts/binary-pp-args.sh
 #
-# This is the local build. Release binaries come from the [@Author::GETTY] bundle's
-# binary release form (dzil-binary), which packs with its own portable perl and needs
-# what this script passes to pp: the -M set, the -X set, the Mojolicious resources
-# and PAR_VERBATIM=1 -- and, in that perl, what the guards below require.
+# The bundle runs pp itself -- locally after `dzil build`, and per platform in its
+# dzil-binary workflow -- as  PAR_VERBATIM=1 pp -o OUT -I lib <these lines> bin/mcp-hub.
+# PAR_VERBATIM=1 matters here: pp's POD-stripping filter corrupts files whose POD sits
+# between code (=attr/=method under [@Author::GETTY]) until a module "did not return a
+# true value". This script adds what pp cannot know: the -M set, the -X set and the
+# Mojolicious resources.
 #
-# pp exits 0 on a binary that only dies at run time; scripts/verify-binary.sh and
-# scripts/smoke-binary.sh are what prove a build.
+# pp exits 0 on a binary that only dies at run time; scripts/binary-verify.sh and
+# scripts/binary-smoke.sh are what prove a build.
 set -euo pipefail
 
-OUT="${MCP_HUB_BIN_OUT:-./mcp-hub}"
-[ -f bin/mcp-hub ] && [ -f lib/MCP/Hub.pm ] || { echo "ERROR: run from the checkout root" >&2; exit 1; }
-command -v pp >/dev/null 2>&1 || { echo "ERROR: pp (PAR::Packer) is not installed" >&2; exit 1; }
+[ -f bin/mcp-hub ] && [ -f lib/MCP/Hub.pm ] || { echo "ERROR: run from the dist root" >&2; exit 1; }
 
 # Every module needed at run time must be installed, or the loaded set below is short.
 # YAML::PP is loaded on demand only, so a missing one would not show anywhere else.
@@ -21,10 +23,10 @@ perl -Ilib -MMCP::Hub -MYAML::PP -e1 \
   || { echo "ERROR: runtime dependencies missing (cpanm --installdeps .)" >&2; exit 1; }
 # TLS: IO::Socket::SSL on Net::SSLeay, and Mozilla::CA as the trust store of last
 # resort. Net::SSLeay carries whatever OpenSSL it was built against into the binary:
-# a portable build links OpenSSL statically (scripts/build-binary-openssl.sh), a
-# dev-box build links the host's libssl, which check-binary-libs.sh then rejects.
+# a portable build links OpenSSL statically (scripts/binary-prepare.sh, binary_prepare),
+# a dev-box build links the host's libssl, which the bundle's library gate rejects.
 perl -MIO::Socket::SSL=2.009 -MMozilla::CA -e1 \
-  || { echo "ERROR: TLS modules missing (scripts/build-binary-openssl.sh, or cpanm IO::Socket::SSL Mozilla::CA)" >&2; exit 1; }
+  || { echo "ERROR: TLS modules missing (scripts/binary-prepare.sh, or cpanm IO::Socket::SSL Mozilla::CA)" >&2; exit 1; }
 # JSON in C: Mojo::JSON (4.20+) and JSON::MaybeXS, the natives' decoder, each load
 # Cpanel::JSON::XS by name and fall back to pure Perl without it -- dozens of times
 # slower on a large Claude Code history. JSON::MaybeXS installs it wherever its own
@@ -41,12 +43,11 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 # Mojolicious::Command::*), the natives Upstream::Perl mounts by `class`, YAML::PP and
 # the schema it loads by name, Mojolicious' plugins and reactor, and Cpanel::JSON::XS
 # (pp packs its shared object with it). It dies when the round trip fails or JSON
-# would decode in pure Perl. verify-binary.sh requires the same list inside the archive.
+# would decode in pure Perl. binary-verify.sh requires the same list inside the archive.
 perl -Ilib scripts/loaded-modules.pl >"$work/loaded" \
   || { echo "ERROR: scripts/loaded-modules.pl failed" >&2; exit 1; }
 loaded=(); while IFS= read -r m; do loaded+=("$m"); done <"$work/loaded"
 [ "${#loaded[@]}" -gt 150 ] || { echo "ERROR: loaded set suspiciously small (${#loaded[@]})" >&2; exit 1; }
-mods=(); for m in "${loaded[@]}"; do mods+=(-M "$m"); done
 
 # Left out of every build (the list and the reasons: scripts/loaded-modules.pl
 # --left-out): EV, the optional Mojolicious extras, JSON.pm, and what IO::Socket::SSL
@@ -54,10 +55,10 @@ mods=(); for m in "${loaded[@]}"; do mods+=(-M "$m"); done
 # has no wildcard, and the scanner still follows `require Name` into the module's own
 # dependencies. So a "Name::" entry takes one -X per module of that namespace found in
 # @INC on this host. Every binary then has the same features on every platform;
-# verify-binary.sh rejects any of them in the archive.
+# binary-verify.sh rejects any of them in the archive.
 perl scripts/loaded-modules.pl --left-out >"$work/left-out"
 noopt=()
-while IFS= read -r m; do noopt+=(-X "$m"); done < <(perl -MFile::Find -e '
+while IFS= read -r m; do noopt+=("$m"); done < <(perl -MFile::Find -e '
   my %m;
   for my $spec (@ARGV) {
     if ($spec !~ /::\z/) { $m{$spec} = 1; next }
@@ -85,16 +86,10 @@ mojo_lib=$(perl -MMojolicious -e 'print $INC{"Mojolicious.pm"} =~ s{/Mojolicious
 [ -d "$mojo_lib/Mojolicious/resources/templates" ] \
   || { echo "ERROR: no Mojolicious/resources below $mojo_lib" >&2; exit 1; }
 
-# PAR_VERBATIM=1: pp's POD-stripping filter corrupts files whose POD sits between code
-#   (=attr/=method under [@Author::GETTY]) until a module "did not return a true value".
-# -I lib: the checkout's lib/ wins over any installed copy.
-PAR_VERBATIM=1 pp -o "$OUT" \
-  -I lib \
-  "${mods[@]}" \
-  "${noopt[@]}" \
-  -a "$mojo_lib/Mojolicious/resources;lib/Mojolicious/resources" \
-  bin/mcp-hub
+# One argument per line, never word-split (the bundle's rule for binary_pp_args).
+for m in "${loaded[@]}"; do printf -- '-M\n%s\n' "$m"; done
+for m in ${noopt[@]+"${noopt[@]}"}; do printf -- '-X\n%s\n' "$m"; done
+printf -- '-a\n%s\n' "$mojo_lib/Mojolicious/resources;lib/Mojolicious/resources"
 
-chmod +x "$OUT"
-echo "Built $OUT ($(du -h "$OUT" | cut -f1), ${#loaded[@]} modules, ${#noopt[@]} left out," \
-  "$(perl -MNet::SSLeay -e 'print Net::SSLeay::SSLeay_version(0)'))"
+echo "binary-pp-args: ${#loaded[@]} modules (-M), ${#noopt[@]} left out (-X), Mojolicious resources (-a);" \
+  "$(perl -MNet::SSLeay -e 'print Net::SSLeay::SSLeay_version(0)')" >&2

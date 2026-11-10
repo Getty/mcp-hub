@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 # Keeps the fixtures of the binary checks true against the Perl code:
-# scripts/verify-binary.sh and scripts/smoke-binary.sh compare `mcp-hub config`
+# scripts/binary-verify.sh and scripts/binary-smoke.sh compare `mcp-hub config`
 # with t/fixtures/binary/config.expected, the smoke mounts t/upstream/echo.sh
 # -- a stdio MCP server in POSIX sh, for hosts without Perl -- as the upstream it
 # starts on tools/call, the TLS checks of both (and scripts/loaded-modules.pl)
