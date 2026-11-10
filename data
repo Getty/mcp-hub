@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-10T02:04:23Z
+created: 2026-11-09T21:11:03Z
+id: 177
+priority: low
+started: 2026-11-10T01:17:48Z
+status: done
+tags:
+- test
+- native
+title: 'claude-internal-keys.t: call list_subagents and list_prompts too, as its header
+  comment promises'
+updated: 2026-11-10T02:04:23Z
+---
+
+From k171 (2026-11-09). t/native/claude-internal-keys.t line 11 says "Every tool of both natives is called over the fixtures" to show that no _-prefixed internal key goes out on the wire. Since k159 (list_subagents) and k171 (list_prompts) that is no longer true: those two tools are not called there. Their own test files check for leaks, but the claim of this test is broken. Done when both tools are called there with fixtures that hold runs and a history.jsonl, or the comment says which tools it covers. Lane: mcp-hub-test-writer.
+
+Committed as dcedd74
