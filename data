@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-10T05:05:46Z
+created: 2026-11-06T05:14:01Z
+id: 89
+priority: low
+started: 2026-11-06T10:08:16Z
+status: done
+tags:
+- warming
+- logging
+title: _warm_upstream logs a stop mid-warm as an error and marks the discarded upstream
+  failed
+updated: 2026-11-10T05:05:46Z
+---
+
+Found by mcp-hub-worker during k74 (2026-11-06). Since k74 a reload or shutdown that stops an upstream mid-warm rejects its start at once with 'upstream X: stopped'. Hub::_warm_upstream's catch still logs that at error level and calls _fetch_failed, marking the discarded (replaced/removed) object failed. Harmless, but noise. Done: a start rejected because of a stop is neither logged as an error nor recorded as a failed fetch; test with a reload during warming.
+
+2026-11-06 11:35: the worker for k104/k89/k75 was stopped by an API safeguard error (request req_011CgmWnQmdqQskD15HPfsSg), not by a problem in the work. No change in the repo; its partial scratch work is in scratchpad/w-hub7. Back to backlog for the maintainer.
+
+2026-11-06 (from k148): since k148 the start that a stop calls off rejects as 'upstream NAME: stopped' also when the stdio child ends on its EOF first (before: 'exited (code 0)'); _warm_upstream still logs it at error and _fetch_failed marks the upstream failed with 'stopped' -- the same for stdio and HTTP. Still open as described.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green under EV and Poll with t/hub.t; combined run of t/reload.t t/shutdown.t t/reload-free.t t/command.t t/cli.t t/aggregate-auth.t t/hub.t passed under both. Apply order k89 patch, then incr.patch of k125, k75, k76, k79, k33 (scratchpad w-kNN/). k89: _warm_upstream leaves an upstream whose start was rejected with exactly 'upstream NAME: stopped' as stopped, no error log, no _fetch_failed; test in t/reload.t (removed and changed server during warming).
+
+Committed as 782c5e2 (Leave an upstream whose warming start a stop called off stopped, not failed, and log no error for it).
