@@ -23,6 +23,14 @@ sub user ($text) { rec(type => 'user', message => {role => 'user', content => $t
 sub assistant ($text) { rec(type => 'assistant', message => {role => 'assistant', content => [{type => 'text', text => $text}]}) }
 sub append ($bytes) { open my $fh, '>>:raw', "$file" or die $!; print {$fh} $bytes; close $fh }
 
+# What list_sessions sends of a first prompt: at most its first 500 characters,
+# and an ellipsis (U+2026) after them where the text was longer. Written out
+# here on purpose -- the code under test is not asked what it should do.
+sub _cut ($text) {
+  return $text if !defined $text || length($text) <= 500;
+  return substr($text, 0, 500) . "\x{2026}";
+}
+
 # The metadata of one file as the scan before line-by-line reading made it.
 sub every_line ($f) {
   my ($session_id, $project, $started, $last, $count, $first_prompt, $title, $branch);
@@ -38,7 +46,7 @@ sub every_line ($f) {
     $title = $rec->{aiTitle} if $type eq 'ai-title';
     if ($type eq 'user' || $type eq 'assistant') {
       $count++;
-      $first_prompt //= MCP::Hub::Native::ClaudeHistory::_text($rec->{message}) if $type eq 'user';
+      $first_prompt //= _cut(MCP::Hub::Native::ClaudeHistory::_text($rec->{message})) if $type eq 'user';
     }
   }
   return [{session_id => $session_id // 'inc', project => $project // '/home/tester/inc', started_at => $started,
@@ -143,6 +151,20 @@ subtest 'a file replaced between its stat and its open' => sub {
   }
   is $h->list_sessions->[0]{session_id}, 'swapped', 'the file opened is read from the start';
   same 'the replacement';
+};
+
+subtest 'a first prompt over 500 characters is cut' => sub {
+  for my $case (['500 characters' => 'a' x 500, 0], ['501 characters' => 'b' x 501, 1], ['600 characters' => 'c' x 600, 1],
+    ['501 wide characters' => "\x{f6}" x 501, 1], ['499 characters' => 'd' x 499, 0]) {
+    my ($name, $prompt, $cut) = @$case;
+    my $new = $dir->child('inc.jsonl.new');
+    $new->spew(join '', map {"$_\n"} user($prompt), assistant('answer'));
+    rename "$new", "$file" or die $!;
+    my $got = $h->list_sessions->[0]{first_prompt};
+    is length($got), $cut ? 501 : length($prompt), "$name: length";
+    is $got, $cut ? substr($prompt, 0, 500) . "\x{2026}" : $prompt, "$name: " . ($cut ? 'cut with an ellipsis' : 'kept as it is');
+    same "first prompt of $name";
+  }
 };
 
 subtest 'a cold search reads each file once' => sub {
