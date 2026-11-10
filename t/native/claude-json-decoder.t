@@ -12,9 +12,14 @@ use MCP::Hub::Native::ClaudeSessions;
 # The natives decode the lines of a session file with JSON::MaybeXS, which
 # picks Cpanel::JSON::XS where it is installed -- on a history of many
 # megabytes the difference between seconds and a fraction of one. Every decode
-# of the backend JSON::MaybeXS picked is counted here.
+# of the backend JSON::MaybeXS picked is counted here. Where that is another
+# backend, the natives leave it to Mojo::JSON (see claude-json-fallback.t).
 my $backend = JSON::MaybeXS::JSON();
 my $decodes = 0;
+sub by_backend ($what) {
+  return ok $decodes, "$what decodes with JSON::MaybeXS" if $backend eq 'Cpanel::JSON::XS';
+  return is $decodes, 0, "$what leaves $backend to Mojo::JSON";
+}
 {
   no strict 'refs';
   no warnings 'redefine';
@@ -42,13 +47,13 @@ $root->child('projects', '-home-tester-dup')->make_path->child('dup.jsonl')->spe
 subtest 'claude-history' => sub {
   $decodes = 0;
   my $sessions = MCP::Hub::Native::ClaudeHistory->new(root => "$root")->list_sessions;
-  ok $decodes, 'list_sessions decodes with JSON::MaybeXS';
+  by_backend('list_sessions');
   is $sessions->[0]{messages},     3,                  'every line counts';
   is $sessions->[0]{first_prompt}, 'the first prompt', 'the last of a key held twice';
 
   $decodes = 0;
   my $conv = MCP::Hub::Native::ClaudeHistory->new(root => "$root")->get_conversation({session_id => 'dup'});
-  ok $decodes, 'get_conversation decodes with JSON::MaybeXS';
+  by_backend('get_conversation');
   is_deeply [map { $_->{text} } @{$conv->{entries}}], ['the first prompt', 'an answer', 'the last prompt'],
     'every message, the last of a key held twice';
 };
@@ -64,7 +69,7 @@ subtest 'claude-sessions' => sub {
   $decodes = 0;
   my $sessions
     = MCP::Hub::Native::ClaudeSessions->new(root => "$root", proc_root => "$proc")->list_running_sessions;
-  ok $decodes, 'list_running_sessions decodes with JSON::MaybeXS';
+  by_backend('list_running_sessions');
   is $sessions->[0]{session_id},  'dup',             'the session id from the head';
   is $sessions->[0]{last_prompt}, 'the last prompt', 'the last of a key held twice';
 };

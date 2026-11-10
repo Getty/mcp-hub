@@ -18,13 +18,17 @@ has meta_cache => sub { {} };
 # Cpanel::JSON::XS where it is installed: on a history of many megabytes, a
 # fraction of a second where pure Perl takes many. A line that holds a key
 # twice is read as Mojo::JSON reads it, the last value winning, where
-# Cpanel::JSON::XS would refuse the line.
+# Cpanel::JSON::XS would refuse the line. Where JSON::MaybeXS would pick
+# another backend -- JSON::PP, on a host without a C compiler --, the lines are
+# decoded by Mojo::JSON, which reads some malformed or extreme lines otherwise
+# than JSON::PP; so a line reads the same on every install.
 my $JSON = JSON::MaybeXS->new(utf8 => 1);
 $JSON->allow_dupkeys if $JSON->can('allow_dupkeys');
+my $XS = JSON::MaybeXS::JSON() eq 'Cpanel::JSON::XS';
 
 # A line's bytes, decoded; dies on a line that is not JSON. Every line read,
 # and every subagent run's meta file, is decoded here, and only here.
-sub decode_json ($bytes) { $JSON->decode($bytes) }
+sub decode_json ($bytes) { $XS ? $JSON->decode($bytes) : Mojo::JSON::decode_json($bytes) }
 
 # Escapes that decode to a character a raw search needle can match: printable
 # ASCII, U+0130 and U+212A (see _raw_skip); and text, name and content values

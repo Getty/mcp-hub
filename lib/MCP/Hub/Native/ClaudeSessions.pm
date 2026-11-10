@@ -15,13 +15,15 @@ has proc_root => '/proc';
 use constant TAIL_CHUNK => 65536;
 
 # Lines are decoded as MCP::Hub::Native::ClaudeHistory decodes them: by
-# JSON::MaybeXS, a key held twice read with its last value.
+# JSON::MaybeXS where it picks Cpanel::JSON::XS, a key held twice read with
+# its last value; by Mojo::JSON where it would pick another backend.
 my $JSON = JSON::MaybeXS->new(utf8 => 1);
 $JSON->allow_dupkeys if $JSON->can('allow_dupkeys');
+my $XS = JSON::MaybeXS::JSON() eq 'Cpanel::JSON::XS';
 
 # A line's bytes, decoded; dies on a line that is not JSON. Every line read
 # is decoded here, and only here.
-sub decode_json ($bytes) { $JSON->decode($bytes) }
+sub decode_json ($bytes) { $XS ? $JSON->decode($bytes) : Mojo::JSON::decode_json($bytes) }
 
 sub new ($class, %args) {
   my $self = $class->SUPER::new(name => 'claude-sessions', version => $VERSION, %args);

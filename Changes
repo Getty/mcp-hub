@@ -380,3 +380,5 @@ Revision history for MCP-Hub
     rewritten in place within one second without changing size.
   - list_running_sessions' last_prompt skips user lines that hold only tool
     results.
+  - On hosts without Cpanel::JSON::XS, the natives decode with Mojo::JSON
+    rather than JSON::PP, so a session line reads the same on every install.

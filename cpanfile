@@ -10,7 +10,8 @@ requires 'YAML::PP';         # .yml/.yaml configuration files
 # JSON::MaybeXS is here for Cpanel::JSON::XS: wherever its install finds a C
 # compiler, it requires Cpanel::JSON::XS (4.38 or later on perl 5.36+, since
 # 1.004006), and it falls back to JSON::PP on a host without one. The natives
-# decode session files through it, and Mojo::JSON goes XS by itself once
+# decode session files through it where it picks Cpanel::JSON::XS, and through
+# Mojo::JSON where it would not; Mojo::JSON goes XS by itself once
 # Cpanel::JSON::XS 4.20+ is installed. In pure Perl, a cold read of a large
 # Claude Code history takes seconds of CPU instead of a fraction of one.
 #
