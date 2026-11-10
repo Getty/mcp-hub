@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-10T08:29:58Z
+created: 2026-11-10T07:03:11Z
+id: 191
+priority: medium
+started: 2026-11-10T07:13:31Z
+status: done
+tags:
+- stdio
+- reload
+- lifecycle
+title: A stdio call waiting on _gone_p of an upstream a reload dropped starts an orphan
+  child
+updated: 2026-11-10T08:29:58Z
+---
+
+Found by mcp-hub-worker during wave B2 (k146/k124/k149/k112, 2026-11-10). A call that waits on _gone_p (the leaving child of a stop) on an upstream a reload has since let go of goes on to start_p, which has no _dropped guard, so it spawns a child of an upstream nobody holds any more. Done when such a call fails as stopped and starts nothing, as k112 does for HTTP calls and k124 for refreshes; test in t/stdio-stop.t or t/reload.t.
+
+Committed as 635a04f (Start no child for a stdio upstream a reload has let go of, whatever was waiting for its old child).
