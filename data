@@ -1,0 +1,48 @@
+---
+claimed_at: 2026-11-10T17:44:42Z
+claimed_by: mcp-hub-worker
+class: standard
+completed: 2026-11-10T17:44:42Z
+created: 2026-11-10T17:19:56Z
+id: 208
+priority: medium
+started: 2026-11-10T17:44:42Z
+status: done
+tags:
+- skills
+- briefing
+title: 'Bring the briefing of worker and test-writer under 64 kB: shrink mcp-hub-core
+  and mcp-hub-runtime'
+updated: 2026-11-10T17:44:42Z
+---
+
+briefing loads every skill an agent declares into its first turn. For two agents that is now over briefing's 64 kB budget, and it warns on every spawn:
+
+    briefing: agent 'mcp-hub-worker' is briefed with 89 kB of skill text (over 64 kB)
+    briefing: agent 'mcp-hub-test-writer' is briefed with 80 kB of skill text (over 64 kB)
+
+The two project skills carry most of it: `mcp-hub-runtime` 528 lines / 37 kB, `mcp-hub-core` 292 lines / 22 kB (`fleet-housecheck`: house format is 100–180 lines). binary-worker (48 kB) and release-manager (51 kB) are fine.
+
+## Done when
+
+- `mcp-hub-core` and `mcp-hub-runtime` keep in SKILL.md what an implementer needs on every task, in 100–180 lines each; material needed only for one area moves into `references/*.md` next to it, named from SKILL.md with when to read it (briefing preloads SKILL.md only). Nothing an implementer relies on is lost — every invariant, hazard and mechanism stays reachable.
+- The worker agent's body names the invariants by pointer instead of restating them; they live in `mcp-hub-core` and the rules file's hazards.
+- Measured with the briefing hook (recipe below): worker and test-writer under 64 kB, no `unknown skill`.
+- `bin/fleet-housecheck p5-mcp-hub` (in ~/dev/perl-developer) clean of the size note.
+
+Measure:
+
+    HOOK=$(ls -d ~/.claude/plugins/cache/getty/briefing/*/hooks/briefing-preload | tail -1)
+    printf '%s' '{"session_id":"t","cwd":"'"$PWD"'","tool_name":"Agent","tool_input":{"subagent_type":"mcp-hub-worker","description":"x","prompt":"M"}}' | "$HOOK" | head -c 300
+
+Drift for the coordinator to file (p5-mcp-hub board): (1) .claude/agents/mcp-hub-test-writer.md says the only upstream the suite may spawn is t/upstream/echo.pl with echo/sleep/fail/die/exit/notify — stale: t/binary.t spawns t/upstream/echo.sh, t/docker.t drives t/upstream/fake-docker.pl, echo.pl also has slow_lists (mcp-hub-runtime Test-Hooks has it right). Out of k208's scope, not edited. (2) Both skills' frontmatter descriptions summarize content instead of trigger conditions (skill-authoring), and mcp-hub-core's 'The mechanics behind them are in mcp-hub-runtime' is now only half true (invariant/config/reload mechanics live in mcp-hub-core/references/). Left unchanged per card; a description card if wanted.
+
+Done in worktree k208-shrink-skills, uncommitted (new files git-added). mcp-hub-core SKILL.md 292→177 lines / 22.2→13.1 kB; mcp-hub-runtime 528→153 lines / 37.5→10.2 kB (together 23.3 kB). Moved nearly verbatim into references/: core invariants.md, config-cli.md, reload.md; runtime stdio.md, http.md, perl-fork.md, docker.md, facade.md, aggregate.md, natives.md, routing.md — each named in a 'when to read' table in its SKILL.md, none points to another. hub key list moved from runtime into core SKILL.md (Config). Worker body: invariants list → pointer to mcp-hub-core + rules Hazards; Verification trimmed to the body-only lines. briefing hook: worker 89→54 kB, test-writer 80→45, binary-worker 47→39, release-manager 50→41, no warnings, no unknown skill. fleet-housecheck clean. Token check: 793 items from the old files, 9 misses, all deliberate (brace-notation module paths; vocabulary row 'native' merged into the module map).
+
+Committed as 3cd5c7d on branch k208-shrink-skills (worktree .claude/worktrees/k208-shrink-skills, from main 0c1ad8f; merge to main is the hub's).
+Briefing hook, kB of skill text, before → after: mcp-hub-worker 89 → 54, mcp-hub-test-writer 80 → 45, mcp-hub-binary-worker 47 → 39, mcp-hub-release-manager 50 → 41; no unknown skill.
+SKILL.md lines (bytes): mcp-hub-core 292 → 177 (22.2 → 13.1 kB), mcp-hub-runtime 528 → 153 (37.5 → 10.2 kB).
+references/: core invariants.md 109, config-cli.md 51, reload.md 41 lines; runtime stdio.md 75, http.md 86, perl-fork.md 48, docker.md 53, facade.md 62, aggregate.md 47, natives.md 56, routing.md 26 lines.
+fleet-housecheck: 0 Fehler, size note gone.
+Coverage: all 612 backticked items and 83 bold rules of the old texts are present in the new files, except 8 module paths now written in brace notation and Native::ClaudeHistory/ClaudeSessions/Status merged into the module map; each moved section differs from its original by ≤10 words (headings and cross-reference fixes).
+Drift filed: k209 (test-writer's stale fixture claim), k210 (skill descriptions).
