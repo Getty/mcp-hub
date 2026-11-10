@@ -1,0 +1,18 @@
+---
+class: standard
+created: 2026-11-10T08:11:52Z
+id: 201
+priority: low
+started: 2026-11-10T16:02:55Z
+status: todo
+tags:
+- reload
+- docker
+- http
+title: The predecessor wait after a reload covers stdio and fork only
+updated: 2026-11-10T16:02:55Z
+---
+
+Found by mcp-hub-worker during wave C (k185/k191/k187, 2026-11-10). Since k187 a changed server's new stdio child or forked worker starts only once the old one has exited (Hub::predecessors). A server that changes type over a reload (stdio/fork to docker, compose or http, or back) still overlaps for up to ~7 s; containers wait only on containers (%SETTLING). Decide whether every start_p waits on Hub::predecessors.
+
+Maintainer-Entscheidung 2026-11-10: ja, jeder start_p wartet auf Hub::predecessors, auch bei einem Typwechsel über einen Reload (stdio/fork <-> docker/compose/http). Mit Test.
