@@ -38,6 +38,7 @@ sub _build_server ($self) {
 
   my $manifest = $self->_class_manifest($class);
   $self->{class_instructions}  = $manifest->{instructions};
+  $self->{class_lists}         = {map { $_ => $manifest->{$_} } qw(prompts resources)};
   $self->{manifest_fetched_at} = $manifest->{fetched_at};
   MCP::Hub::Facade->apply($server, $self, $manifest);
   return $server;
@@ -122,6 +123,11 @@ sub _handle_list ($self, $server, $method, $key, $lenient = 0) {
 # Nothing is cached for a forked class, so there is nothing to hash. Returned
 # as an explicit undef: _manifest_from puts it in a hash.
 sub _hash ($self) { return undef }
+
+# There is no cache: what a worker's start keeps of a list it got no answer for
+# (MCP::Hub::Upstream::_kept_list) is what the class listed at build. Every
+# worker is an instance of that class.
+sub _cached_manifest ($self) { return $self->{class_lists} }
 
 # A worker's handshake refreshes the facade in memory only, never on disk. Its
 # instructions are always empty (see _class_manifest), so the class's stay. An
@@ -340,9 +346,11 @@ process. That fills the facade; the C<instructions> are read off the server
 object. A C<prompts/list> or C<resources/list> the class answers with an error
 is an empty list, as it is for the worker and any other upstream (see
 L<MCP::Hub::Upstream/refresh_p>); an error on its C<tools/list> fails the
-entry. The instance is then let go of: its server's tool, prompt and resource
-lists are emptied first, so a tool closure that captures the instance does not
-keep it alive through a cycle. Nothing is cached on disk and nothing is hashed,
+entry. A worker's start that gets no answer to its C<prompts/list> or
+C<resources/list> keeps what the class listed here, as another upstream's
+start keeps what is in its cache. The instance is then let go of: its
+server's tool, prompt and resource lists are emptied first, so a tool closure
+that captures the instance does not keep it alive through a cycle. Nothing is cached on disk and nothing is hashed,
 so C<args> -- which may hold secrets -- is never written anywhere.
 
 =item B<Calls run in a worker.> The first C<tools/call>, C<prompts/get> or

@@ -22,7 +22,8 @@
 # stdio (and, detached, exits at once on its empty stdin; `echo_args` are
 # options handed to echo.pl, `--ignore-eof` for a container that stays on after
 # its stdin is closed), `http` serves
-# echo.pl over HTTP (`delay` seconds late, if set), `crash` complains on stderr
+# echo.pl over HTTP (`delay` seconds late, if set; `echo_args` as for stdio),
+# `crash` complains on stderr
 # and exits 3, `idle` just sleeps, `oneshot` exits after `runtime` seconds with
 # `exit`, and `nostart` is created but fails to start, as a container whose
 # port is taken does. A compose project is the file fake-compose.json in the
@@ -606,7 +607,8 @@ sub _server_argv {
   return ($^X, '-e', sprintf('select undef, undef, undef, %s; exit %d', $def->{runtime} // 0, $def->{exit} // 0))
     if $kind eq 'oneshot';
   return ($^X, "-I$LIB", $ECHO, @{$def->{echo_args} // []}) if $kind eq 'stdio' || !$host;
-  return ($^X, "-I$LIB", $ECHO, "--http=$host", ($def->{delay} ? "--http-delay=$def->{delay}" : ()));
+  return ($^X, "-I$LIB", $ECHO, "--http=$host", ($def->{delay} ? "--http-delay=$def->{delay}" : ()),
+    @{$def->{echo_args} // []});
 }
 
 sub _stop_container {

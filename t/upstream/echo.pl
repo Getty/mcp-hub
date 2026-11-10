@@ -25,6 +25,13 @@ if (defined $BAD_ERROR) { _bad_error_peer($BAD_ERROR); exit 0 }
 # The server itself is t/lib/EchoServer.pm, which `class` entries mount too.
 my $server = EchoServer->new;
 
+# --no-answer=METHOD leaves every request for METHOD unanswered -- a
+# prompts/list, say -- and answers the rest: the hub's request timeout ends it
+# (over HTTP the request is taken, 202, and nothing comes back). Given more
+# than once, for more than one method.
+my %NO_ANSWER = map { /^--no-answer=(.+)$/ ? ($1 => 1) : () } @ARGV;
+$server->unanswered(\%NO_ANSWER) if %NO_ANSWER;
+
 # --die-mid-line adds a tool `cut` that writes the first half of its answer
 # and is killed before the rest: what a child that crashes in the middle of a
 # line leaves the hub with.

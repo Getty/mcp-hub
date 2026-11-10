@@ -426,3 +426,5 @@ Revision history for MCP-Hub
     list_changed more often than idle_timeout is stopped when idle, last_used
     stays the last call's, and a reloaded idle_timeout counts from the last
     call.
+  - A start whose prompts/list or resources/list times out keeps the cached
+    list instead of storing an empty one and telling listeners it changed.

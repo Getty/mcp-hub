@@ -25,6 +25,15 @@ sub _list_pause ($self) {
   return;
 }
 
+# The methods it leaves every request for unanswered (--no-answer in echo.pl):
+# a server whose prompts/list never comes back, say, while it answers the rest.
+has unanswered => sub { {} };
+
+sub handle ($self, $request, $context) {
+  return undef if ref $request eq 'HASH' && defined $request->{id} && $self->unanswered->{$request->{method} // ''};
+  return $self->SUPER::handle($request, $context);
+}
+
 sub new ($class, @args) {
   my $self = $class->SUPER::new(name => 'echo-server', version => '9.9.9', @args);
   $self->instructions('Echo things back.');

@@ -207,7 +207,7 @@ An upstream whose manifest is not available yet (still fetching at startup, or n
 **Handshake and manifest.**
 1. `initialize` with `protocolVersion: "2025-06-18"`, `capabilities: {}`, `clientInfo: {name: "mcp-hub", version: $VERSION}`. Accept whatever version the server answers; remember it.
 2. `notifications/initialized`.
-3. `tools/list`, following `nextCursor` until exhausted. `prompts/list` and `resources/list` only if `capabilities` from the `initialize` result declare them; a `-32601` from either is tolerated and yields an empty list.
+3. `tools/list`, following `nextCursor` until exhausted. `prompts/list` and `resources/list` only if `capabilities` from the `initialize` result declare them; an error answer from either (`-32601` or any other) yields an empty list. No answer (a timeout, a stop, the child gone) keeps the cached list at a start and fails a refresh.
 4. Assemble the manifest, write the cache, build the façade (or swap the tools of the existing one), state `ready`.
 
 **Requests.** One integer id counter per upstream; `pending{id} = {promise, timer}`. `request_timeout` rejects the promise, sends `notifications/cancelled` for the id, and leaves the process running. A response with an unknown id is logged and dropped.

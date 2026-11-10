@@ -113,8 +113,9 @@ sub _launch ($self, $done) {
   }
 
   # A child that is gone by the end of the handshake fails the start, with the
-  # reason of its exit: a list it no longer answered was taken for an empty
-  # one (_list_all_p), and the upstream would be ready with no child to call.
+  # reason of its exit: a list it no longer answered was taken from the cache,
+  # or for an empty one (_list_all_p), and the upstream would be ready with no
+  # child to call.
   # One that has only closed its stdout so far is waited for, as a request it
   # leaves unanswered is (_on_close, _on_exit). One that a stop has sent EOF
   # fails it as stopped.
@@ -763,8 +764,9 @@ background refresh -- not one from a child being stopped (see L</Lifecycle>).
 
 A C<prompts/list> or C<resources/list> the child answers with an error is an
 empty list. One it does not answer -- it times out, a stop cuts it off, the
-child exits -- fails a refresh, and the manifest stays as it was; a start takes
-it for an empty list (L<MCP::Hub::Upstream/refresh_p>). But a child that is gone
+child exits -- fails a refresh, and the manifest stays as it was; a start keeps
+the list in the cache, or takes it for an empty one when there is none
+(L<MCP::Hub::Upstream/refresh_p>). But a child that is gone
 by the end of the handshake fails the start all the same, with the reason of its
 exit -- one that has only closed its stdout is waited for -- and the exit counts
 toward the crash loop like any other: the upstream never comes up C<ready>

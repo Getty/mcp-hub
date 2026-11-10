@@ -38,9 +38,9 @@ failure -- an error result, a log line, a C<503> -- need not tell them apart.
 
 The hub's reading of an upstream's lists does. A C<prompts/list> or
 C<resources/list> answered with an error says that the upstream has none to
-list; one that got no answer says nothing about them, and a refresh cut short
-there keeps the manifest it was to replace (see
-L<MCP::Hub::Upstream/refresh_p>).
+list; one that got no answer says nothing about them: a refresh cut short
+there keeps the manifest it was to replace, and a start keeps that list as it
+is in the cache (see L<MCP::Hub::Upstream/refresh_p>).
 
 =head1 ATTRIBUTES
 

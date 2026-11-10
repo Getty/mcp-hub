@@ -109,8 +109,8 @@ sub start_p ($self) {
   my $prep = $self->{transport} eq 'sse' ? $self->_open_sse_p : Mojo::Promise->resolve;
   $prep->then(sub { $self->_handshake_p })->then(sub ($manifest) {
     # A stop after the last request, or during a prompts/list or
-    # resources/list -- whose failure the handshake takes for an empty list --
-    # calls the start off all the same.
+    # resources/list -- whose failure the handshake goes on from, with the list
+    # in the cache -- calls the start off all the same.
     die "stopped\n" if $self->{stop_requested};
     $self->_apply_manifest($manifest);
     delete $self->{failed};    # a live connection is never failed

@@ -13,6 +13,7 @@ use IO::Socket::INET;
 use Scalar::Util qw(blessed weaken);
 use MCP::Server;
 use MCP::Hub;
+use MCP::Hub::Manifest;
 use MCP::Hub::Upstream::Http;
 use MCP::Client;
 
@@ -1980,6 +1981,63 @@ subtest 'streamable http upstream: a refresh that finds the upstream stopped sen
   undef $up;
   is $gone, undef, 'nothing holds the upstream';
   $fake->{daemon}->stop;
+};
+
+subtest 'a start whose prompts/list goes unanswered keeps the prompts in the cache' => sub {
+  # A start took a prompts/list that got no answer for an empty list: it went
+  # into the cache over the prompts the last start found, and the listeners
+  # were told the prompts had changed. It keeps them as they are in the cache
+  # instead. Over both transports.
+  for my $transport (qw(http sse)) {
+    my $phase  = 'first';
+    my $answer = sub ($req) {
+      my ($id, $method) = ($req->{id}, $req->{method} // '');
+      return undef unless defined $id;
+      return $transport eq 'http' ? Mojo::Promise->new : undef    # held, or never sent
+        if $method eq 'prompts/list' && $phase eq 'again';
+      my $result
+        = $method eq 'initialize'
+        ? {protocolVersion => '2025-06-18', capabilities => {prompts => {}}, serverInfo => {name => 'fake', version => '0.0.1'}}
+        : $method eq 'tools/list'   ? {tools   => [{name => 'ping', inputSchema => {type => 'object'}}]}
+        : $method eq 'prompts/list' ? {prompts => [{name => 'hello'}]}
+        :                             {content => [{type => 'text', text => 'pong'}]};
+      return {jsonrpc => '2.0', id => $id, result => $result};
+    };
+    my $fake  = $transport eq 'http' ? fake_http(answer => $answer) : fake_sse(answer => $answer);
+    my $cache = tempdir;
+    my $up    = MCP::Hub::Upstream::Http->new(
+      name      => 'fake',
+      config    => {type => $transport, url => $fake->{url}, request_timeout => 1},
+      cache_dir => "$cache",
+    );
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+    $up->log($log);
+    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$transport: started";
+    is_deeply [map { $_->name } @{$up->server->prompts}], ['hello'], "$transport: the prompts are listed";
+    _stop($up);
+
+    # The next start, with the prompts in the cache, and a remote that does not
+    # answer its prompts/list this time.
+    $phase = 'again';
+    my @notified;
+    no warnings 'redefine';
+    my $notify = \&MCP::Server::notify_list_changed;
+    local *MCP::Server::notify_list_changed = sub ($server, $kind) { push @notified, $kind; $server->$notify($kind) };
+    is _await_bounded($up->start_p->then(sub { 'started' }), 10), 'started', "$transport: started again";
+    is $up->state, 'ready', "$transport: the upstream is ready";
+    is scalar(grep {/^info: \[fake\] no answer to prompts\/list while starting .*, keeping the cached prompts$/} @logged), 1,
+      "$transport: the prompts/list got no answer" or diag explain \@logged;
+    is_deeply [map { $_->name } @{$up->server->prompts}], ['hello'], "$transport: the prompts are still listed";
+    is_deeply \@notified, [], "$transport: nobody is told anything changed";
+    my $cached = MCP::Hub::Manifest->new(cache_dir => "$cache")->load('fake', $up->_hash) // {};
+    is_deeply [map { $_->{name} } @{$cached->{prompts} // []}], ['hello'], "$transport: the cache keeps them";
+    is _error_text(_await_bounded($up->call_tool('ping', {}))), 'pong', "$transport: the tools work";
+
+    _stop($up);
+    $fake->{daemon}->stop;
+  }
 };
 
 subtest 'streamable http upstream: a start that fails, or that a stop calls off, ends the session it was given' => sub {

@@ -12,7 +12,8 @@ use MCP::Hub::Upstream::Stdio;
 # another: the tools, then the prompts and the resources. What it does when it
 # is cut short between two of them -- and what it does when the child answers
 # one of them with an error, which is an answer. And when the child it began on
-# is gone between two of them, and another child may run in its place.
+# is gone between two of them, and another child may run in its place. A
+# start asks for the same lists: what it does when one of them gets no answer.
 
 my $ECHO = curfile->sibling('upstream', 'echo.pl');
 
@@ -85,6 +86,9 @@ sub await_bounded ($promise, $seconds = 10) {
 }
 
 sub names ($list) { return [map { $_->name } @$list] }
+
+# The prompts (by name) or the resources (by uri) the facade of $up lists.
+sub listed ($up, $kind) { return [map { $kind eq 'prompts' ? $_->name : $_->uri } @{$up->server->$kind}] }
 
 # What the cache holds for the upstream now.
 sub cached ($up) { return MCP::Hub::Manifest->new(cache_dir => $up->cache_dir)->load($up->name, $up->_hash) // {} }
@@ -201,6 +205,73 @@ subtest 'a refresh is bound to the child it began on' => sub {
     $up->stop;
     await_bounded($up->stopped_p);
   }
+};
+
+subtest 'a start whose prompts/list or resources/list gets no answer keeps that list as it is in the cache' => sub {
+  # A start took a list that got no answer for an empty one, as though the
+  # child had none: it went into the cache over the good one, and the
+  # listeners were told the list had changed -- only to be told again at the
+  # next start that found it. It keeps the list in the cache instead.
+  my %expect = (prompts => ['greet'], resources => ['echo://readme']);
+  for my $kind (qw(prompts resources)) {
+    my $dir   = tempdir;
+    my $plain = upstream(cache_dir => "$dir");
+    is await_bounded($plain->start_p), $plain, "$kind: a start of the child as it is";
+    $plain->stop;
+    await_bounded($plain->stopped_p);
+
+    # The same server, its child leaving every $kind/list unanswered -- with
+    # the cache the start above stored, under the hash its args give it.
+    my $args  = ['-Ilib', "$ECHO", "--no-answer=$kind/list"];
+    # The request timeout ends the list that gets no answer -- and the child's
+    # initialize as well, if the child is slower to come up than that: a few
+    # seconds, not one, on a busy machine.
+    my $store = MCP::Hub::Manifest->new(cache_dir => "$dir");
+    $store->store({%{cached($plain)}, hash => $store->hash($^X, $args)});
+    my @lines;
+    my $up = upstream(
+      cache_dir       => "$dir",
+      config          => {type => 'stdio', command => $^X, args => $args},
+      request_timeout => 3,
+      log             => log_to(\@lines),
+    );
+    is_deeply listed($up, $kind), $expect{$kind}, "$kind: the cache lists them before the start";
+
+    @NOTIFIED = ();
+    is await_bounded($up->start_p), $up, "$kind: the start is through";
+    is $up->state, 'ready', "$kind: the upstream is ready";
+    is scalar(grep {/^info \[echo\] no answer to \Q$kind\E\/list while starting .*, keeping the cached \Q$kind\E$/} @lines), 1,
+      "$kind: the list got no answer" or diag explain \@lines;
+    is_deeply listed($up, $kind), $expect{$kind}, "$kind: they are still listed";
+    is_deeply [sort @NOTIFIED], [], "$kind: nobody is told anything changed";
+    is_deeply [map { $kind eq 'prompts' ? $_->{name} : $_->{uri} } @{cached($up)->{$kind} // []}], $expect{$kind},
+      "$kind: the cache keeps them";
+    my $other = $kind eq 'prompts' ? 'resources' : 'prompts';
+    is_deeply listed($up, $other), $expect{$other}, "$kind: the $other the child answered with are listed";
+    my $r = await_bounded($up->call_tool('echo', {msg => 'still here'}));
+    is $r->{content}[0]{text}, 'still here', "$kind: the tools work";
+
+    $up->stop;
+    await_bounded($up->stopped_p);
+  }
+
+  # With nothing in the cache, there is nothing to keep: the list is empty, as
+  # before, and the start is through all the same.
+  my @lines;
+  my $up = upstream(
+    config          => {type => 'stdio', command => $^X, args => ['-Ilib', "$ECHO", '--no-answer=prompts/list']},
+    request_timeout => 3,
+    log             => log_to(\@lines),
+  );
+  is await_bounded($up->start_p), $up, 'no cache: the start is through';
+  is_deeply listed($up, 'prompts'), [], 'no cache: with no prompts';
+  is_deeply listed($up, 'resources'), ['echo://readme'], 'no cache: and the resources';
+  ok +(grep {/no answer to prompts\/list while starting .*, taking it for an empty list$/} @lines),
+    'no cache: the prompts/list got no answer' or diag explain \@lines;
+  my $r = await_bounded($up->call_tool('echo', {msg => 'x'}));
+  is $r->{content}[0]{text}, 'x', 'no cache: the tools work';
+  $up->stop;
+  await_bounded($up->stopped_p);
 };
 
 done_testing;

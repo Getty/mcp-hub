@@ -43,6 +43,17 @@ package ListsFail {
   }
 }
 
+# A class whose worker never answers a prompts/list. In the hub, where its
+# lists are read when the entry is built, it does.
+package PromptsUnansweredInWorker {
+  use Mojo::Base 'EchoServer', -signatures;
+  sub new ($class, @args) {
+    my $self = $class->SUPER::new(@args);
+    $self->unanswered({'prompts/list' => 1}) if $0 =~ /^mcp-hub-worker/;
+    return $self;
+  }
+}
+
 my @LOG;
 sub hub ($servers) {
   my $log = Mojo::Log->new(level => 'debug');
@@ -313,6 +324,31 @@ subtest 'a list the class answers with an error is empty, as an upstream one is'
   ok $refreshed, 'and so does a refresh';
   is_deeply $c->list_prompts->{prompts}, [], 'still with no prompts';
 
+  $hub->shutdown_p->wait;
+};
+
+subtest 'a worker whose prompts/list gets no answer keeps what the class listed' => sub {
+  # The handshake of a worker took a prompts/list that got no answer for an
+  # empty list: the prompts the class listed at build were gone from the
+  # facade, and its listeners were told so. A forked class has no cache; what
+  # it listed at build is what the start keeps.
+  my $hub = hub({mute => forked('PromptsUnansweredInWorker', request_timeout => 1)});
+  my $t   = Test::Mojo->new($hub);
+  my $up  = $hub->upstreams_by_name->{mute};
+  my $c   = client($t, '/mute');
+  is_deeply [map { $_->{name} } @{$c->list_prompts->{prompts}}], ['greet'], 'the class lists its prompts';
+
+  my @notified;
+  no warnings 'redefine';
+  my $notify = \&MCP::Server::notify_list_changed;
+  local *MCP::Server::notify_list_changed = sub ($server, $kind) { push @notified, $kind; $server->$notify($kind) };
+  my $since = @LOG;
+  is text($c->call_tool('echo', {msg => 'in a worker'})), 'in a worker', 'a call forks a worker that answers';
+  is $up->state, 'ready', 'which is ready';
+  ok +(grep {/^info: \[mute\] no answer to prompts\/list while starting .*, keeping the cached prompts$/} @LOG[$since .. $#LOG]),
+    'though its prompts/list got no answer' or diag explain [@LOG[$since .. $#LOG]];
+  is_deeply [map { $_->{name} } @{$c->list_prompts->{prompts}}], ['greet'], 'the prompts are still listed';
+  is_deeply \@notified, [], 'nobody is told anything changed';
   $hub->shutdown_p->wait;
 };
 

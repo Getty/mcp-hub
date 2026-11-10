@@ -19,6 +19,7 @@ use MCP::Client;
 use MCP::Hub;
 use MCP::Hub::Config;
 use MCP::Hub::Docker;
+use MCP::Hub::Manifest;
 use MCP::Hub::Upstream;
 use MCP::Hub::Upstream::Stdio;
 use MCP::Server;
@@ -184,6 +185,8 @@ my %IMAGES = (
   't/silent'       => {kind => 'http', ports => ['8080/tcp'], delay => 60},
   't/crash'        => {kind => 'crash'},
   't/stays'        => {kind => 'stdio', echo_args => ['--ignore-eof']},
+  't/stdio-mute'   => {kind => 'stdio', echo_args => ['--no-answer=prompts/list']},
+  't/http-mute'    => {kind => 'http', echo_args => ['--no-answer=prompts/list']},
 );
 
 # --- docker: stdio ---------------------------------------------------------
@@ -410,6 +413,50 @@ subtest 'a refresh longer than idle_timeout is not stopped under it, over stdio 
     my ($stop) = grep { $after[$_] =~ /idle for/ } 0 .. $#after;
     my ($half) = grep { $after[$_] eq $mark } 0 .. $#after;
     ok defined $stop && (!defined $half || $stop < $half), "$mode: at once, the last call being over idle_timeout ago";
+    ok wait_until(sub { !@{records($fake)} }), "$mode: and the container is gone";
+  }
+};
+
+subtest 'a start whose prompts/list gets no answer keeps the prompts in the cache, over stdio or HTTP' => sub {
+  # The engine of the start asks for the lists, and the cache is its owner's:
+  # a prompts/list that got no answer was taken for an empty list, stored over
+  # the prompts in the cache, and the listeners were told they had changed.
+  for my $mode (qw(stdio http)) {
+    my %port  = $mode eq 'http' ? (port => 8080) : ();
+    my $fake  = fake_docker(images => \%IMAGES);
+    my $cache = tempdir;
+    my $plain = upstream($fake, {docker => "t/$mode", %port}, cache => $cache);
+    my ($ok, $err) = await($plain->start_p);
+    ok $ok, "$mode: a start of the server as it is" or diag $err;
+    stop_and_settle($plain);
+
+    # The same server, from an image whose server leaves its prompts/list
+    # unanswered -- with the cache the start above stored, under its hash.
+    my $entry = {docker => "t/$mode-mute", %port};
+    my $store = MCP::Hub::Manifest->new(cache_dir => "$cache");
+    my $from  = $store->load('srv', $plain->_hash);
+    $store->store({%$from, hash => upstream($fake, $entry, cache => $cache)->_hash});
+    # The request timeout ends the prompts/list -- and the initialize too, if
+    # the container is slower to come up than that: some seconds, not one.
+    my $up = upstream($fake, $entry, cache => $cache, request_timeout => 5);
+    is_deeply [map { $_->name } @{$up->server->prompts}], ['greet'], "$mode: the cache lists the prompts";
+
+    my @notified;
+    no warnings 'redefine';
+    my $notify = \&MCP::Server::notify_list_changed;
+    local *MCP::Server::notify_list_changed = sub ($server, $kind) { push @notified, $kind; $server->$notify($kind) };
+    my $since = @LOG;
+    ($ok, $err) = await($up->start_p);
+    ok $ok, "$mode: the start is through" or diag $err;
+    is $up->mode, $mode, "$mode: over $mode";
+    ok +(grep {/^info: \[srv\] no answer to prompts\/list while starting .*, keeping the cached prompts$/} @LOG[$since .. $#LOG]),
+      "$mode: though its prompts/list got no answer" or diag explain [@LOG[$since .. $#LOG]];
+    is_deeply [map { $_->name } @{$up->server->prompts}], ['greet'], "$mode: the prompts are still listed";
+    is_deeply \@notified, [], "$mode: nobody is told anything changed";
+    is_deeply [map { $_->{name} } @{($store->load('srv', $up->_hash) // {})->{prompts} // []}], ['greet'],
+      "$mode: the cache keeps them";
+    ok echo_ok($up), "$mode: the tools work";
+    stop_and_settle($up);
     ok wait_until(sub { !@{records($fake)} }), "$mode: and the container is gone";
   }
 };

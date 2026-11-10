@@ -322,24 +322,55 @@ sub _handshake_p ($self) {
 # list: it declares the capability and has nothing to list. One that gets no
 # answer -- it timed out, a stop cut it off, the child or the connection went --
 # says nothing about the list. A refresh fails there, and the manifest it was to
-# replace stays (refresh_p). A start takes either for an empty list, as it
-# always has: it has no manifest of its own to keep -- though a stdio start
-# whose child is gone by then fails (MCP::Hub::Upstream::Stdio::start_p). Each
+# replace stays (refresh_p). A start goes on with the list it has in the cache
+# (_kept_list), or an empty one when it has none -- though a stdio start whose
+# child is gone by then fails (MCP::Hub::Upstream::Stdio::start_p). Each
 # request is handed $on, what the refresh is bound to (_request_p).
 sub _list_all_p ($self, $of_start = 0, $on = undef) {
-  my $caps  = $self->{capabilities} // {};
-  my $empty = sub ($err, @) { return $of_start || $self->_answered($err) ? [] : Mojo::Promise->reject($err) };
+  my $caps = $self->{capabilities} // {};
+  my $none = sub ($key) {
+    return sub ($err, @) {
+      return [] if $self->_answered($err);
+      return $of_start ? $self->_kept_list($key, $err) : Mojo::Promise->reject($err);
+    };
+  };
   my %out;
   return $self->_paginate_p('tools/list', 'tools', $of_start, $on)->then(sub ($tools) {
     $out{tools} = $tools;
-    return exists $caps->{prompts} ? $self->_paginate_p('prompts/list', 'prompts', $of_start, $on)->catch($empty) : [];
+    return exists $caps->{prompts}
+      ? $self->_paginate_p('prompts/list', 'prompts', $of_start, $on)->catch($none->('prompts'))
+      : [];
   })->then(sub ($prompts) {
     $out{prompts} = $prompts;
-    return exists $caps->{resources} ? $self->_paginate_p('resources/list', 'resources', $of_start, $on)->catch($empty) : [];
+    return exists $caps->{resources}
+      ? $self->_paginate_p('resources/list', 'resources', $of_start, $on)->catch($none->('resources'))
+      : [];
   })->then(sub ($resources) {
     $out{resources} = $resources;
     return \%out;
   });
+}
+
+# The list of $key a start goes on with when its request for it got no answer
+# ($err): the one in the cache. Taken for an empty one, it went into the cache
+# over a good one, and the listeners were told the list had changed -- when
+# nothing said it had, and the next start or refresh lists it as it was. It may
+# be out of date; the next refresh asks again. Without a cache, there is no
+# list to keep: it is empty, as a start that finds nothing has always taken it.
+sub _kept_list ($self, $key, $err) {
+  my $name   = $self->name;
+  my $cached = $self->_cached_manifest;
+  my $list   = $cached && ref $cached->{$key} eq 'ARRAY' ? $cached->{$key} : undef;
+  ($err = "$err") =~ s/^upstream \Q$name\E: //;
+  $self->log->info("[$name] no answer to $key/list while starting ($err), "
+      . ($list ? "keeping the cached $key" : 'taking it for an empty list'));
+  return $list // [];
+}
+
+# The manifest in the cache, or undef.
+sub _cached_manifest ($self) {
+  my $store = $self->{manifest} or return undef;
+  return $store->load($self->name, $self->_hash);
 }
 
 sub _paginate_p ($self, $method, $key, $of_start = 0, $on = undef, $cursor = undef, $acc = undef) {
@@ -636,8 +667,12 @@ A C<prompts/list> or C<resources/list> the upstream answers with a JSON-RPC
 error is taken for an empty list: it declares the capability and has nothing to
 list. One that gets no answer -- it times out, a stop cuts it off, the child or
 the connection goes -- fails the refresh of a running upstream, which keeps the
-manifest it had and notifies nobody. A start takes either for an empty list,
-unless the stdio child it started is gone by the end of its handshake (see
+manifest it had and notifies nobody. A start goes on without it: it keeps that
+list as it is in the manifest cache -- a forked class's, as the class listed it
+when the entry was built -- so the cache stays as good as it was, and nobody is
+told the list changed; the next refresh asks again. With no manifest in the
+cache the list is empty. A stdio start whose child is gone by the end of its
+handshake fails all the same (see
 L<MCP::Hub::Upstream::Stdio/Handshake and manifest>).
 
 Agents listening on the upstream's endpoint are sent a
