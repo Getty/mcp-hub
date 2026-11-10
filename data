@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-10T10:11:42Z
+id: 203
+priority: low
+started: 2026-11-10T16:03:06Z
+status: todo
+tags:
+- tests
+- flake
+title: More fixed deadlines on child starts in t/docker.t and t/reload.t
+updated: 2026-11-10T16:03:06Z
+---
+
+Found by mcp-hub-test-writer during k199/k184/k181 (2026-11-10), same shape as those, not touched: t/docker.t 'a stdio container: the docker run, the secret, idle stop' (~line 201) sets idle_timeout => 1 before it reads the run args and containers, as subtest 7 did before k181 (a slow host could stop and remove the container under the reads); t/reload.t 'reload during warming' and 'reload during a refresh' (~lines 640-706) bound child starts with fixed 30 s deadlines, and the 'gated' fetch-failure wait (~line 597) with 10 s. Done when each waits on its event with a hang guard only (t/reload.t's wait_until from k184), claims unchanged.
