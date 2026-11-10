@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-10T17:43:21Z
+id: 209
+priority: low
+status: backlog
+tags:
+- agent
+- tests
+title: mcp-hub-test-writer says echo.pl is the only upstream the suite may spawn;
+  t/binary.t and t/docker.t spawn others
+updated: 2026-11-10T17:43:21Z
+---
+
+Found by mcp-hub-worker during k208. `.claude/agents/mcp-hub-test-writer.md` says the only upstream the suite may spawn is `t/upstream/echo.pl` with `echo`/`sleep`/`fail`/`die`/`exit`/`notify`. Stale: `t/binary.t` spawns `t/upstream/echo.sh`, `t/docker.t` drives `t/upstream/fake-docker.pl` (its "containers" are echo.pl processes), and echo.pl also has `slow_lists`. `mcp-hub-runtime` (Test-Hooks) has the accurate list — point the body at it or correct the sentence. k208 already dropped the same stale claim from the worker body.
