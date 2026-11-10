@@ -1,0 +1,40 @@
+---
+claimed_at: 2026-11-10T11:07:59Z
+claimed_by: p5-mcp-hub
+class: standard
+created: 2026-11-10T03:00:06Z
+id: 182
+priority: high
+status: review
+tags:
+- ci
+title: 'CI red on main: three stdio tests fail on what happens to grandchild processes
+  at stop'
+updated: 2026-11-10T11:07:59Z
+---
+
+The `ci` workflow on `main` is red since 2026-11-07 (commits b3106c7, 214eefe, 1ff42b7); the last green run is b4c3b0b on 2026-11-06. Latest run: `gh run view 42734009371 -R Getty/mcp-hub --log-failed`. It fails the same way on perl 5.36, 5.38 and 5.40.
+
+Failing assertions:
+
+- `t/stdio-stderr.t` line 125: 'a process that writes on to the pipe is not waited for' (subtests 'the writer ends once the pipe is gone', 'and is gone')
+- `t/stdio-stop.t` line 447: 'a stop ends even while a process the child started holds its socket' ('and the process that held it is gone')
+- `t/stdio.t` line 498: 'a child reaped before its grace is over gets no signal'
+
+All three are about what happens to a child's own child processes at stop. In the Actions container the test's processes run under a different init/reaper than on a workstation, which is a likely reason for a green local run; confirm before fixing.
+
+## Steps
+
+1. Reproduce in a container like CI's (`docker run --rm -v "$PWD":/w -w /w perl:5.40 ...`, without `--init`), running the three files.
+2. Find which of the three commits since b4c3b0b turned them red (`git log b4c3b0b..b3106c7 --oneline`).
+3. Fix the cause: in `lib/` when the hub really leaves the process behind there, in the test when it asserts on something only the workstation's process tree gives.
+
+## Proof
+
+The three files pass in the container, and the next `ci` run on `main` is green on all three perls.
+
+mcp-hub-worker (2026-11-10): reproduced in perl:5.40-bookworm with PID 1 = tail -f /dev/null (as CI's job container, per its log), on HEAD c3ba0e9 and on 1ff42b7; passes with --init and leaves no zombies there. Cause in the tests, not lib/: the three checks wait with kill 0 on a grandchild that is no child of the test's; handed to a PID 1 that never reaps, it stays a zombie, so 'is gone' never comes true. No single commit turned CI red -- the checks came with 46baacb (k25), c2bc96d (k39), 194e0a1 (k121), all after b4c3b0b. Fix: an ended($pid) helper per file (no such pid, or /proc state Z/X), labels 'is gone' -> 'has ended'. Card text pairs two subtest names with the wrong files: 'a child reaped before its grace…' is t/stdio-stop.t, '…holds its socket' is t/stdio.t. Container proof done (5.40; 5.36 skipped, no local image); the card's last proof, a green ci run on main, needs a push -- the maintainer's go-ahead.
+
+Committed as 95ecc12 (Take a process the child left behind for ended once it is a zombie in t/stdio.t, t/stdio-stop.t and t/stdio-stderr.t, so they pass where PID 1 reaps nothing, as in the CI job container). Full suite green under EV and Poll (57 files, 724 tests). In review until the ci run on main is green -- that needs the maintainer's push.
+
+Committed 95ecc12, local only; waits for the maintainer's push and the next ci run.
