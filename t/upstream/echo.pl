@@ -52,6 +52,8 @@ if (defined $HTTP) { _serve_http($server, $HTTP); exit 0 }
 # server; --eof-delay=SECONDS takes that long first (finishing a commit, say),
 # --ignore-eof does not, and goes on until a signal ends it -- or a minute is
 # over: the orphan of a test that failed half-way ends all the same.
+# --notify-on-eof writes a notifications/tools/list_changed first, as a server
+# that unloads its tools on the way out may.
 my ($SIGNALS)   = map { /^--signals=(.+)$/       ? $1 : () } @ARGV;
 my ($EOF_DELAY) = map { /^--eof-delay=([\d.]+)$/ ? $1 : () } @ARGV;
 if (defined $SIGNALS) {
@@ -66,6 +68,10 @@ if (defined $SIGNALS) {
 }
 
 $server->to_stdio;
+if (grep { $_ eq '--notify-on-eof' } @ARGV) {
+  STDOUT->autoflush(1);
+  print STDOUT encode_json({jsonrpc => '2.0', method => 'notifications/tools/list_changed'}), "\n";
+}
 select undef, undef, undef, $EOF_DELAY if $EOF_DELAY;
 if (grep { $_ eq '--ignore-eof' } @ARGV) { sleep 1 for 1 .. 60 }
 

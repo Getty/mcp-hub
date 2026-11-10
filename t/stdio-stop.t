@@ -15,6 +15,7 @@ BEGIN {
 
 use Test::More;
 use Mojo::File    qw(curfile tempdir);
+use Mojo::JSON    qw(encode_json);
 use Mojo::Log;
 use Mojo::IOLoop;
 use Mojo::Promise;
@@ -210,6 +211,72 @@ subtest 'a call during the grace goes to the next child' => sub {
   is scalar(terms($signals, $t0)), 1, 'on its SIGTERM';
   $up->stop;
   await_bounded($up->stopped_p, 20);
+};
+
+subtest 'a child being stopped is stopping until it is gone' => sub {
+  # Up to seven seconds: it stayed `ready` all that time, in the status, though
+  # nothing more could reach it.
+  my ($up, $signals) = upstream('--eof-delay=1');
+  await_bounded($up->start_p, 30);
+  my $pid = $up->stats->{pid};
+  $up->stop;
+  is $up->state, 'stopping', 'stopping once it is sent its EOF';
+  is $up->status_row->{state}, 'stopping', 'and in its status row';
+  is $up->status_row->{pid}, $pid, 'with its pid, which is still there';
+  await_bounded($up->stopped_p, 20);
+  is $up->state, 'stopped', 'stopped once it is gone';
+  is $up->status_row->{pid}, undef, 'with no pid';
+
+  # A start the stop called off: the child is still there after the start
+  # failed, and stopping until it is gone.
+  my $start = $up->start_p;
+  ok $up->stats->{pid}, 'the next child is there';
+  $up->stop;
+  my $r = await_bounded($start, 20);
+  is ref $r eq 'HASH' ? $r->{err} : 'ready', 'upstream echo: stopped', 'a start the stop called off fails as stopped';
+  is $up->state, 'stopping', 'and its child is stopping';
+  await_bounded($up->stopped_p, 20);
+  is $up->state, 'stopped', 'until it is gone';
+};
+
+subtest 'a refresh during the grace asks the next child' => sub {
+  # It went to the leaving child, and failed: "the child the refresh began on
+  # is gone". It waits for that child to be gone and starts the next, as a call
+  # does.
+  my ($up, $signals) = upstream('--eof-delay=1');
+  await_bounded($up->start_p, 30);
+  my $old = $up->stats->{pid};
+  $up->stop;
+  my $r = await_bounded($up->refresh_p, 30);
+  is ref $r eq 'HASH' ? $r->{err} : 'refreshed', 'refreshed', 'the refresh is through' or diag explain $r;
+  my $new = $up->stats->{pid};
+  ok $new && $new != $old, 'by a new child';
+  ok !kill(0, $old), 'once the old one was gone';
+  is exit_of($old), 'code 0', 'which ended on its EOF';
+  is $up->state, 'ready', 'ready';
+  ok +(grep { $_->name eq 'echo' } @{$up->server->tools}), 'with its tools';
+  $up->stop;
+  await_bounded($up->stopped_p, 20);
+};
+
+subtest 'a list_changed from a child being stopped starts nothing' => sub {
+  # A refresh for it would wait for the child to be gone and start the next
+  # one: after an idle stop, a child no call asked for -- and the next idle
+  # stop the same again.
+  my ($up, $signals) = upstream('--eof-delay=1', '--notify-on-eof');
+  my @logged;
+  $up->log(log_to(\@logged)->level('debug'));
+  await_bounded($up->start_p, 30);
+  my $pid = $up->stats->{pid};
+  $up->stop;
+  await_bounded($up->stopped_p, 20);
+  settle(0.5);    # time for a start that was kicked off to show
+  is scalar(grep {/started/} @logged), 1, 'no child started after the stop' or diag explain \@logged;
+  is $up->stats->{pid}, undef, 'none is running';
+  is $up->state, 'stopped', 'stopped';
+  is scalar(grep { $_ eq 'debug [echo] notifications/tools/list_changed from a child being stopped, not refreshing' }
+      @logged), 1, 'the notification is let go, at debug'
+    or diag explain \@logged;
 };
 
 subtest 'a call that comes upon a stop fails at once' => sub {
@@ -465,6 +532,37 @@ subtest 'a shutdown waits for a child that stays on after its EOF' => sub {
   ok !(ref $done eq 'HASH' && $done->{err}), 'the shutdown is done';
   ok !kill(0, $pid), sprintf 'and the child gone by then (%.2fs)', $took;
   is scalar(terms($signals, $t0)), 1, 'ended by its SIGTERM';
+};
+
+subtest 'a refresh waiting on the child of an upstream a reload lets go of starts nothing' => sub {
+  # The hub holds the upstream only until that child is gone
+  # (MCP::Hub::_let_go): a child the refresh started then would be stopped by
+  # no one -- not by the shutdown, which waits for the upstreams it holds.
+  my $dir  = tempdir;
+  my $file = $dir->child('config.json');
+  my $hub_settings = {cache_dir => $dir->child('cache')->to_string};
+  $file->spew(encode_json({
+    mcpServers => {goes => {command => $^X, args => ['-Ilib', "$ECHO", '--eof-delay=1']}},
+    hub        => $hub_settings,
+  }));
+  my @logged;
+  my $hub = MCP::Hub->new(log => log_to(\@logged)->level('debug'), hub_config_input => "$file");
+  my $up  = $hub->upstreams_by_name->{goes};
+  await_bounded($up->start_p, 30);
+  my $pid = $up->stats->{pid};
+  $up->stop;    # an idle stop, say
+  my $refresh = $up->refresh_p;
+
+  $file->spew(encode_json({mcpServers => {}, hub => $hub_settings}));
+  is_deeply $hub->reload->{removed}, ['goes'], 'a reload removes it meanwhile';
+  my $r = await_bounded($refresh, 20);
+  is ref $r eq 'HASH' ? $r->{err} : 'refreshed', 'upstream goes: stopped', 'the refresh fails as stopped';
+  ok !kill(0, $pid), 'once the child is gone';
+  settle(0.5);    # time for a start that was kicked off to show
+  is $up->stats->{pid}, undef, 'and no child is started for it';
+  is scalar(grep {/started/} @logged), 1, 'none at all' or diag explain [grep {/started/} @logged];
+  ok +(grep { $_ eq 'debug [goes] no longer mounted, the refresh starts no child' } @logged), 'it says why, at debug';
+  await_bounded($hub->shutdown_p, 20);
 };
 
 done_testing;

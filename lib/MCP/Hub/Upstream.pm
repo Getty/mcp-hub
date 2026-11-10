@@ -255,13 +255,13 @@ sub _show_manifest ($self, $manifest) {
 # is not applied: not written to the cache, which the new upstream may share
 # (the hash leaves env out), nor told to anybody. It came from a child being
 # stopped, too. An upstream no hub holds -- built on its own -- is let go of by
-# nobody.
-sub _dropped ($self) {
+# nobody. The debug line says what is not done for it ($what).
+sub _dropped ($self, $what = 'the manifest it found is not applied') {
   my $hub = $self->hub;
   return 0 unless $hub && $hub->can('upstreams_by_name');
   my $held = $hub->upstreams_by_name->{$self->name};
   return 0 if $held && refaddr $held == refaddr $self;
-  $self->log->debug("[@{[$self->name]}] no longer mounted, the manifest it found is not applied");
+  $self->log->debug("[@{[$self->name]}] no longer mounted, $what");
   return 1;
 }
 
@@ -523,7 +523,10 @@ The L<MCP::Server> agents talk to.
 
 =attr state
 
-One of C<stopped>, C<starting>, C<ready> or C<failed>.
+One of C<stopped>, C<starting>, C<ready>, C<stopping> or C<failed>. A stdio
+child or forked worker is C<stopping> from its stop until it is gone -- up to
+seven seconds (L<MCP::Hub::Upstream::Stdio/Lifecycle>); every other upstream
+is C<stopped> at once.
 
 =attr stats
 
@@ -601,8 +604,9 @@ Forward a C<resources/read>, starting the upstream if needed.
 =method refresh_p
 
 Re-fetch the manifest and rebuild L</server>. A promise. For a C<failed>
-upstream this is the explicit "try again": it clears the failure first. A no-op
-for Perl upstreams.
+upstream this is the explicit "try again": it clears the failure first. For a
+C<stopping> one it waits until the child is gone and asks the next one, as a
+call does. A no-op for Perl upstreams.
 
 A C<prompts/list> or C<resources/list> the upstream answers with a JSON-RPC
 error is taken for an empty list: it declares the capability and has nothing to

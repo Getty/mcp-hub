@@ -192,7 +192,7 @@ An upstream whose manifest is not available yet (still fetching at startup, or n
 ### Common interface (`MCP::Hub::Upstream`)
 
 - `name`, `config`, `hub`
-- `state`: `stopped | starting | ready | failed`
+- `state`: `stopped | starting | ready | stopping | failed` (`stopping`: a stdio child in its stop's grace)
 - `server`: the `MCP::Server` mounted at `/<name>`
 - `start_p` → promise resolving when `ready`; idempotent (returns the in-flight promise while `starting`)
 - `stop` → terminate, `stopped`
@@ -219,14 +219,14 @@ An upstream whose manifest is not available yet (still fetching at startup, or n
 | `ping` request | answer `{}` |
 | `roots/list` request | answer `{roots: []}` |
 | `sampling/createMessage`, `elicitation/create`, anything else with an `id` | answer error `-32601 Method not supported by mcp-hub` |
-| `notifications/tools/list_changed` (also prompts/resources) | mark manifest stale, run `refresh_p` in the background, log at `info` |
+| `notifications/tools/list_changed` (also prompts/resources) | mark manifest stale, run `refresh_p` in the background, log at `info`; from a child being stopped, log at `debug` and start nothing |
 | `notifications/message` | log at the given level as `[<name>] …` |
 | `notifications/progress` | dropped in v1 |
 
 **Lifecycle.**
 
 ```
-stopped ──start_p──▶ starting ──handshake ok──▶ ready ──idle timeout / stop──▶ stopped
+stopped ──start_p──▶ starting ──handshake ok──▶ ready ──idle timeout / stop──▶ stopping ──child gone──▶ stopped
                         │                          │
                         └── exec/handshake failed ──┴── child exited unexpectedly ──▶ stopped (pending requests rejected)
                                                         (3 exits within 5 s of start) ──▶ failed
@@ -234,7 +234,7 @@ stopped ──start_p──▶ starting ──handshake ok──▶ ready ──
 
 - **Lazy start.** At daemon start a stdio upstream with a fresh cached manifest is `stopped` with a façade built from the cache; nothing is spawned. Without a cached manifest (or with a stale one, see below) it is started once in the background to fetch it; the daemon does not wait for that.
 - **On demand.** The first `tools/call`, `prompts/get` or `resources/read` calls `start_p` and queues behind it; further calls during `starting` queue on the same promise.
-- **Idle.** Every request calls `touch`. When the timer fires: close stdin and give the child 2 s to exit on that EOF, then `SIGTERM`, and `SIGKILL` 5 s after that; reap with `waitpid`. `always_on` upstreams are started at daemon start and have no idle timer.
+- **Idle.** Every request calls `touch`. When the timer fires: close stdin and give the child 2 s to exit on that EOF, then `SIGTERM`, and `SIGKILL` 5 s after that; reap with `waitpid`. Until the child is gone the upstream is `stopping`, and a refresh in that time waits for the next child. `always_on` upstreams are started at daemon start and have no idle timer.
 - **Crash.** On unexpected exit all pending promises are rejected (the façade turns that into an error result for the agent), state becomes `stopped`, and the next call starts the process again. Three exits within 5 s of their start (a kill for a line over 16 MB counts as one) mark the upstream `failed`; its endpoint answers 503 until `refresh` succeeds. A first manifest fetch that fails (no cached manifest to fall back on) marks it `failed` at once, with the reason.
 - **Shutdown.** `SIGINT`/`SIGTERM` to the daemon stops every upstream the same way and waits, at most 20 s, for its stdio children and forked workers to exit and its containers to be removed before exiting.
 

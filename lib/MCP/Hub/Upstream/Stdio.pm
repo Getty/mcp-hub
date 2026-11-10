@@ -124,8 +124,10 @@ sub start_p ($self) {
     # exit recorded.
     $self->{stopping} = 1 if $self->{pid};
 
+    # A child the stop has sent EOF is on its way out, `stopping` until its
+    # exit is handled (stop).
     $self->_kill_now unless $stopped;
-    $self->state($self->{failed} ? 'failed' : 'stopped');
+    $self->state($self->{failed} ? 'failed' : $stopped && $self->{pid} ? 'stopping' : 'stopped');
     delete $self->{start_promise};
     $done->reject($stopped ? "upstream @{[$self->name]}: stopped" : "$err");
     return;    # never hand the rejected promise back into the chain
@@ -157,6 +159,10 @@ sub stop ($self) {
   elsif ($self->{socket})               { shutdown($self->{socket}, 1) }
   $child->{eof}  = 1;
   $child->{stop} = Mojo::IOLoop->timer(EOF_GRACE, sub { $self->_terminate($child) });
+
+  # Until its exit is handled (_on_exit) the child is `stopping`: it is still
+  # there, for up to EOF_GRACE and KILL_GRACE seconds, but takes no request.
+  $self->state('stopping') unless $self->state eq 'failed';
   return $self;
 }
 
@@ -177,6 +183,19 @@ sub refresh_p ($self) {
       $self->_apply_manifest($self->_manifest_from($lists));
       return $self;
     }));
+  }
+
+  # A child being stopped is asked nothing: the refresh waits for it to be
+  # gone and asks the next one, which it starts -- as a call does (start_p).
+  # Not for an upstream a reload has let go of meanwhile: the hub holds it
+  # only until that child is gone (MCP::Hub::_let_go), so a child started for
+  # it then would be stopped by no one.
+  if ($self->state eq 'stopping') {
+    return $self->_gone_p->then(sub {
+      return Mojo::Promise->reject("upstream @{[$self->name]}: stopped")
+        if $self->_dropped('the refresh starts no child');
+      return $self->refresh_p;
+    });
   }
   $self->_clear_failure if $self->state eq 'failed';
   return $self->start_p;
@@ -314,6 +333,14 @@ sub _on_notification ($self, $msg) {
   my $method = $msg->{method};
 
   if ($method =~ m{^notifications/(?:tools|prompts|resources)/list_changed$}) {
+    # From a child being stopped it starts nothing: a refresh would wait for
+    # the child to be gone and start the next one (refresh_p) -- after an idle
+    # stop, a child no call asked for. The next child, started by the next
+    # call, lists its own.
+    if ($self->{stopping}) {
+      $self->log->debug("[@{[$self->name]}] $method from a child being stopped, not refreshing");
+      return;
+    }
     $self->log->info("[@{[$self->name]}] $method received, refreshing manifest");
     $self->refresh_p->catch(sub ($err) { $self->log->debug("[@{[$self->name]}] refresh failed: $err") });
     return;
@@ -637,9 +664,15 @@ that a request written just before the stop still reaches it -- and gives it
 two seconds to exit on its own, as a stdio server does at the end of its
 input. A child that does is never sent a signal, so whatever it was in the
 middle of -- a git commit, say -- is finished. One that is still there gets
-C<SIGTERM>, and C<SIGKILL> five seconds after that.
+C<SIGTERM>, and C<SIGKILL> five seconds after that. Until it is gone the
+upstream is C<stopping> -- in C<GET /_hub/status>, C<mcp-hub status> and
+C<hub_status> -- and the child is sent nothing more.
 A call that comes in meanwhile waits for it to be gone and starts the next
-child: the hub runs one child at a time. L<MCP::Hub::Upstream/stopped_p>
+child: the hub runs one child at a time. So does a refresh
+(L<MCP::Hub::Upstream/refresh_p>) -- unless a reload has let go of the
+upstream meanwhile, then it fails as C<upstream NAME: stopped> and starts
+nothing. A C<list_changed> from the child being stopped starts nothing either:
+the next child lists its own. L<MCP::Hub::Upstream/stopped_p>
 resolves once it is gone, and the daemon waits for that on shutdown. A child
 that closes its stdout but goes on running can never answer again, and is
 killed after five seconds. Its exit status is collected without blocking the
@@ -676,7 +709,7 @@ C<notifications/initialized>, then C<tools/list> (following C<nextCursor>) and,
 when the capabilities declare them, C<prompts/list> and C<resources/list>. The
 result is written to the manifest cache and turned into the L<MCP::Server> via
 L<MCP::Hub::Facade>. A C<notifications/*/list_changed> from the child triggers a
-background refresh.
+background refresh -- not one from a child being stopped (see L</Lifecycle>).
 
 A C<prompts/list> or C<resources/list> the child answers with an error is an
 empty list. One it does not answer -- it times out, a stop cuts it off, the
