@@ -1,0 +1,18 @@
+---
+class: standard
+created: 2026-11-10T07:03:18Z
+id: 192
+priority: low
+started: 2026-11-10T16:02:08Z
+status: todo
+tags:
+- stdio
+- lifecycle
+title: A stdio call during a start that a stop called off shares the doomed start
+  promise
+updated: 2026-11-10T16:02:08Z
+---
+
+Found by mcp-hub-worker during wave B2 (k146/k124/k149/k112, 2026-11-10). A call that arrives while a start is under way queues on that start's promise; when a stop calls the start off, the call fails with it. Http keeps a next_start for that case (k106) and the call waits for the next start. Decide whether stdio follows Http; test it.
+
+Maintainer-Entscheidung 2026-11-10: stdio folgt Http: ein Call während eines Starts, den ein Stop abbricht, wartet auf den nächsten Start (next_start wie k106). Mit Test.
