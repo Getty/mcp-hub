@@ -54,6 +54,16 @@ sub startup ($self) {
   $self->_build_aggregate;
   $self->_setup_routes;
 
+  # The hub is one process, and only a plain Mojo::Server::Daemon serves it as
+  # that. Commands refuses the commands and hypnotoad that would serve it any
+  # other way, but a script that hands the hub to a server of its own never
+  # comes past it: every server says it is starting the app, before it listens
+  # or forks, and that is where any other one is refused.
+  $self->hook(before_server_start => sub ($server, $app) {
+    my $refusal = $app->commands->server_refusal($server);
+    die $refusal if $refusal;
+  });
+
   # Note: no upstream is started here. Background manifest fetches and
   # always_on servers are kicked off by the daemon command (see
   # start_background_fetches), so that config/status/token/refresh never spawn
@@ -833,7 +843,11 @@ stays fully in effect and the error, with its JSON path, is logged and returned.
 
 One process serves HTTP and owns all state -- a single L<Mojo::Server::Daemon>,
 never hypnotoad or a pre-forking server, whose every worker would spawn its own
-children and hold its own state. Its child processes are exec'd upstreams or
+children and hold its own state. Any other server is refused as it starts the
+application (C<before_server_start>), before it listens or forks -- whoever
+handed it the hub, C<mcp-hub> or a script of its own -- with the reason and a
+pointer to C<mcp-hub daemon> (L<MCP::Hub::Commands/server_refusal>).
+Its child processes are exec'd upstreams or
 forked class workers (L<MCP::Hub::Upstream::Fork>). An exec'd child -- a stdio
 upstream, a C<docker> CLI run -- starts with its stdin, stdout and stderr and no
 other fd of the hub's, the listening socket included, and with the hub's

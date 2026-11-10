@@ -55,6 +55,9 @@ my %DETECTED_BY = (cgi => [qw(PATH_INFO GATEWAY_INTERFACE)], psgi => ['PLACK_ENV
 # more than one process, and why each cannot.
 my %UNDER = (hypnotoad => 'hypnotoad serves it from pre-forked workers, and each would start its own upstreams and keep its own state');
 
+# Why any other server cannot: it is neither the one process nor one we know.
+my $NOT_PLAIN = 'only a plain Mojo::Server::Daemon serves it as that one process';
+
 sub run ($self, $name = undef, @args) {
   # Loaded by a server (Mojo::Server->load_app): Mojolicious hands it the app --
   # unless the server is hypnotoad, which sets HYPNOTOAD_APP before it loads
@@ -79,8 +82,23 @@ sub run ($self, $name = undef, @args) {
   return $self->SUPER::run($name, @args);
 }
 
+# Why $server cannot serve the hub, or undef when it can. MCP::Hub asks as any
+# server starts it (before_server_start), which catches what never comes past
+# run: a script of its own that hands the hub to a pre-forking server.
+sub server_refusal ($self, $server) {
+  my $class = ref $server;
+  return undef if $class eq 'Mojo::Server::Daemon';
+  my $name
+    = $server->isa('Mojo::Server::Prefork') ? ($INC{'Mojo/Server/Hypnotoad.pm'} ? 'hypnotoad' : 'prefork')
+    : $server->isa('Mojo::Server::CGI')     ? 'cgi'
+    : $server->isa('Mojo::Server::PSGI')    ? 'psgi'
+    :                                         $class;
+  return $self->_refusal($name, under => 1);
+}
+
 sub _refusal ($self, $name, %opt) {
-  my $why = 'the hub is one process that owns every upstream and all state; ' . ($REFUSED{$name} // $UNDER{$name});
+  my $why = 'the hub is one process that owns every upstream and all state; '
+    . ($REFUSED{$name} // $UNDER{$name} // $NOT_PLAIN);
   return qq{mcp-hub refuses to run under $name: $why. Run "mcp-hub daemon" instead.\n} if $opt{under};
   return qq{mcp-hub refuses "$name": $why. Run "mcp-hub daemon" instead.\n} unless $opt{detected};
 
@@ -162,6 +180,13 @@ L<Mojo::Server::Hypnotoad> is loaded, it dies instead of handing the app over.
 Any other loader -- L<Test::Mojo/new> with the script, morbo -- still gets the
 app, and a command line with C<HYPNOTOAD_APP> in its environment runs as ever.
 
+A script of its own that hands the hub to a server never comes past L</run>,
+so the hub asks again as any server starts it (C<before_server_start> in
+L<MCP::Hub>): anything but a plain L<Mojo::Server::Daemon> -- a
+L<Mojo::Server::Prefork>, built by hand or by hypnotoad, a L<Mojo::Server::CGI>
+or L<Mojo::Server::PSGI>, a subclass of the daemon -- is refused there, before it
+listens or forks, in the same words (L</server_refusal>).
+
 The author tools of L<Mojolicious::Command::Author> -- C<generate>, C<inflate>,
 C<cpanify> -- are not searched; C<get>, C<routes>, C<eval> and C<version> stay.
 
@@ -192,6 +217,14 @@ As L<Mojolicious::Commands/run>, but dies, with the reason and a pointer to
 C<mcp-hub daemon>, for a refused command -- named or picked by the environment
 -- and when loaded as an app by hypnotoad, and leaves the refused commands out
 of the command list.
+
+=method server_refusal
+
+  my $why = $commands->server_refusal($server);
+
+Why C<$server> cannot serve the hub -- the reason and the pointer to C<mcp-hub
+daemon> a refused command gets -- or C<undef> when it can, when it is a plain
+L<Mojo::Server::Daemon>. L<MCP::Hub> dies with it as that server starts it.
 
 =head1 SEE ALSO
 

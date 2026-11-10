@@ -294,6 +294,53 @@ subtest "the text around the list is mcp-hub's own, not Mojolicious's" => sub {
   }
 };
 
+subtest 'a server of its own is refused as it starts the hub, unless it is a plain daemon' => sub {
+  # A script that hands the hub to a server never comes past Commands::run:
+  # the hub refuses the server itself, as it starts (before_server_start). None
+  # of these forks or serves a request: Prefork's start is the daemon's, the
+  # fork is in its run.
+  require Mojo::Server::CGI;
+  require Mojo::Server::PSGI;
+  require Mojo::Server::Prefork;
+  {
+    package Local::Daemon;
+    use Mojo::Base 'Mojo::Server::Daemon';
+  }
+  my $hub    = MCP::Hub->new(hub_config_input => {mcpServers => {run => {class => 'MCP::Hub::Native::Status'}}});
+  my $listen = ['http://127.0.0.1:0'];
+  my $why    = qr/the hub is one process that owns every upstream and all state; /;
+
+  my $prefork = Mojo::Server::Prefork->new(app => $hub, listen => $listen);
+  ok !eval { $prefork->start; 1 }, 'a Mojo::Server::Prefork around the hub does not start';
+  like $@, qr/^mcp-hub refuses to run under prefork: $why/, '...refused, saying why';
+  like $@, qr/Run "mcp-hub daemon" instead\.\n\z/,          '...and pointing at mcp-hub daemon';
+  is_deeply $prefork->acceptors, [], '...and it listens on nothing';
+
+  my $err;
+  {
+    # Should the refusal ever stop working, the request it reads is empty and
+    # the response it writes goes nowhere -- not into the TAP stream.
+    open local *STDIN,  '<', '/dev/null' or die $!;
+    open local *STDOUT, '>', '/dev/null' or die $!;
+    ok !eval { Mojo::Server::CGI->new(app => $hub)->run; 1 }, 'nor does a Mojo::Server::CGI';
+    $err = $@;
+  }
+  like $err, qr/^mcp-hub refuses to run under cgi: $why/, '...refused';
+  ok !eval { Mojo::Server::PSGI->new(app => $hub)->to_psgi_app; 1 }, 'nor a Mojo::Server::PSGI';
+  like $@, qr/^mcp-hub refuses to run under psgi: $why/, '...refused';
+
+  my $own = Local::Daemon->new(app => $hub, listen => $listen);
+  ok !eval { $own->start; 1 }, 'nor a subclass of the daemon';
+  like $@, qr/^mcp-hub refuses to run under Local::Daemon: ${why}only a plain Mojo::Server::Daemon serves it/,
+    '...refused, naming it';
+  is_deeply $own->acceptors, [], '...and it listens on nothing';
+
+  my $daemon = Mojo::Server::Daemon->new(app => $hub, listen => $listen, silent => 1);
+  ok eval { $daemon->start; 1 }, 'a plain Mojo::Server::Daemon serves it' or diag $@;
+  is scalar @{$daemon->acceptors}, 1, '...listening';
+  $daemon->stop;
+};
+
 subtest 'the Mojolicious author tools are not hub commands' => sub {
   is_deeply $app->commands->namespaces, ['MCP::Hub::Command', 'Mojolicious::Command'],
     'ours first, then the core commands; no Mojolicious::Command::Author';

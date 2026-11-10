@@ -392,3 +392,6 @@ Revision history for MCP-Hub
     logs an error or leaves the upstream failed with "stopped".
   - A shutdown right after a reload now waits for the children of the servers
     that reload replaced or removed.
+  - A script that hands the hub to Mojo::Server::Prefork, CGI, PSGI or a
+    daemon subclass is refused as that server starts, pointing at
+    `mcp-hub daemon`.
