@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T03:57:43Z
+created: 2026-11-06T10:06:43Z
+id: 126
+priority: low
+started: 2026-11-06T10:46:42Z
+status: done
+tags:
+- docs
+title: 'Prose drift after k39/k81: what a stop and a shutdown wait for'
+updated: 2026-11-10T03:57:43Z
+---
+
+After the k39/k81 commits (EOF first, TERM after 2 s, KILL 5 s later; shutdown waits for stdio children and forked workers too), these still describe the old behaviour: lib/MCP/Hub.pm shutdown_p comment and POD, lib/MCP/Hub/Command/daemon.pm SHUTDOWN_WAIT comment and its "Shutting down" POD (only containers waited for); docs/superpowers/specs/2026-11-03-forked-class-workers-design.md around lines 338-339, 349-352, 359-365, 372, 768-769 (EOF+TERM together, EOF-first listed as risk/out of scope); docs/superpowers/specs/2026-08-25-mcp-hub-design.md:237 (close stdin, SIGTERM, after 5 s SIGKILL). Whether the dated specs get updated or stay historical is the maintainer call. Do after k39/k81 are committed.
+
+POD/comment part committed as b4b6624 (Hub.pm, Command/daemon.pm). Open: the dated design specs under docs/superpowers/specs/ — update or leave historical is the maintainer's call.
+
+Commit message reworded (Co-Authored-By trailer set to Opus 5.5, tree unchanged): b4b6624 is now 0455739 on local main.
+
+Prose done by the main session in worktree main (uncommitted): 2026-11-03-forked-class-workers-design.md (idle stop, normal shutdown, the k39 risk marked fixed, reload of a changed entry, follow-up 'Done with k39'), and the shutdown/idle-stop sentences of 2026-08-25-mcp-hub-design.md (stop: EOF, 2 s grace, SIGTERM, SIGKILL 5 s later; shutdown waits at most 20 s for stdio children, workers and containers).
+
+Committed as d3bd717 on main (local, not pushed).
