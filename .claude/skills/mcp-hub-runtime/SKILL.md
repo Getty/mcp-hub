@@ -28,8 +28,9 @@ das mit `_request_p`.
 Handshake: `initialize` mit Protokoll `2025-06-18` (der Server antwortet, was er
 will — seine Version wird übernommen) → `notifications/initialized` →
 `tools/list` **mit Cursor-Pagination** (`nextCursor` wird verfolgt) →
-`prompts/list`/`resources/list` nur, wenn die Capabilities sie deklarieren; jeder
-Fehler darauf ist beim Start eine leere Liste (beim Refresh nicht, siehe Façade). Ist
+`prompts/list`/`resources/list` nur, wenn die Capabilities sie deklarieren; eine
+Error-Antwort darauf ist eine leere Liste, ohne Antwort behält der Start die Liste aus
+dem Cache (siehe Façade). Ist
 das Kind am Ende des Handshakes weg, scheitert der Start trotzdem, mit dessen
 Exit-Grund (`$child->{exited}`; nur stdout zu → auf den Exit warten) — nie `ready` ohne
 Kind; der Exit zählt einmal zur Crash-Loop.
@@ -206,7 +207,9 @@ Legacy-`initialize` von MCP 0.15 liefert sie nicht). Danach werden ihre
 tool/prompt/resource-Listen geleert — Tool-Closures über `$self` sind ein Zyklus —
 und die Instanz freigegeben. Kein Cache, kein Hash. Eine Error-Antwort auf
 `prompts/list`/`resources/list` ist eine leere Liste wie in `_list_all_p`, das auch
-Handshake und Refresh des Workers lesen (`_handle_list` mit `$lenient`). Verweigert
+Handshake und Refresh des Workers lesen (`_handle_list` mit `$lenient`); bleibt einem
+Worker-Start die Antwort aus, behält er, was die Klasse beim Build listete
+(`{class_lists}`, Forks `_cached_manifest`). Verweigert
 (→ Placeholder): Klassen mit `hub`-Attribut, Listing per Promise, eine Error-Antwort
 auf `tools/list`, kein `/proc/self/fd`.
 
@@ -309,10 +312,12 @@ Kind oder Verbindung weg, HTTP-Fehlerstatus — mit einem String. Unterschieden 
 `_answered` (isa), nie am Text. In `_list_all_p` ist eine Error-Antwort auf
 `prompts/list`/`resources/list` eine leere Liste; keine Antwort lässt einen Refresh
 scheitern: das alte Manifest bleibt, nichts gespeichert, niemand benachrichtigt
-(`Http::refresh_p` fängt das selbst und loggt debug, Stdio lehnt ab). Ein Start nimmt
-beides als leer — offene Maintainer-Entscheidung (k143); nur ein stdio-Kind, das bis zum
-Ende des Handshakes weg ist, lässt ihn scheitern. Ein Fehler auf `tools/list` lässt beide
-scheitern.
+(`Http::refresh_p` fängt das selbst und loggt debug, Stdio lehnt ab). Ein Start ohne
+Antwort geht mit der Liste aus dem Cache weiter (`_kept_list` über `_cached_manifest`,
+loggt info): als leer genommen, landete sie über der guten im Cache, und die Listener
+hörten von einer Änderung, die keiner gemeldet hat. Ohne Cache ist sie leer; der nächste
+Refresh fragt neu. Nur ein stdio-Kind, das bis zum Ende des Handshakes weg ist, lässt den
+Start scheitern. Ein Fehler auf `tools/list` lässt beide scheitern.
 
 Ein Upstream, den ein Reload ersetzt oder entfernt hat, ist losgelassen (`let_go`:
 gestoppt, ein In-process-`class` mit geleerten Listen) und bleibt gehalten

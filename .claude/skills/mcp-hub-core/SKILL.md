@@ -103,7 +103,11 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   Upstream auf `stopping`. Ein `list_changed` dieses Kinds startet nichts — sonst
   spawnte jeder Idle-Stopp ein Kind, nach dem kein Call gefragt hat. Calls und der Refresh
   eines laufenden Upstreams sind in flight (`_held_p`): kein Countdown, solange einer
-  läuft — er beginnt, wenn der letzte endet. `always_on` startet eager
+  läuft. Der Countdown zählt ab der letzten Nutzung (`touch`: Call oder Start,
+  `{used_at}` auf `steady_time`); ein Refresh ist keine — er hält ihn nur an, danach
+  läuft der Rest weiter, und war `idle_timeout` schon um, stoppt er sofort. Sonst hielte
+  sich ein Kind, das öfter als `idle_timeout` `list_changed` schickt, ewig am Leben;
+  `last_used` bleibt der letzte Call. `always_on` startet eager
   ohne Idle-Timer. Ein `fork`-Upstream liest sein Manifest beim Build in-process aus
   einer Wegwerf-Instanz (kein Cache, kein Warming) und forkt erst beim ersten Call.
 - **Manifest-Hash geht über `[command, args, cwd]` — nie über `env`.** `env` kann
@@ -231,7 +235,8 @@ Pfad-`stat`, Intervall = Hub-Attribut `auto_reload_interval`), `POST /_hub/reloa
   Fehler geloggt und zurückgegeben. Nie halb anwenden, nie den Daemon beenden.
 - **Diff pro normalisiertem Eintrag.** Unverändert → **selbes Objekt, selber pid, selbe
   Stats, selber Idle-Timer** (`t/reload.t` prüft `refaddr`); nur Timeouts →
-  `apply_timeouts` in place. Geändert → nur dieser Upstream neu, Entfernt → `let_go` + 404.
+  `apply_timeouts` in place, ein neues `idle_timeout` zählt ab der letzten Nutzung.
+  Geändert → nur dieser Upstream neu, Entfernt → `let_go` + 404.
   Neu → gewärmt wie beim Daemon-Start, d. h. mit gecachtem Manifest **kein Spawn** — erst,
   wenn `upstreams_by_name` die neue Map hält; vorher gälte er selbst als losgelassen.
 - **Ein ersetzter oder entfernter Upstream wird gehalten, bis sein Stop vorbei ist, und
