@@ -384,14 +384,32 @@ subtest 'a refresh longer than idle_timeout is not stopped under it, over stdio 
     ok +(await($up->call_tool('notify', {what => 'tools', quiet => \1})))[0], "$mode: a new tool, unannounced";
 
     my $since = @LOG;
-    my ($through, $refreshed) = await($up->refresh_p);
+    my $used  = $up->last_used;
+
+    # What the upstream is when the refresh is through, before the loop runs
+    # anything after it -- the idle stop among them -- and a mark half of
+    # idle_timeout later: an idle stop due at once comes before it.
+    my %at_end;
+    my $mark = 'test: half of idle_timeout';
+    my ($through, $refreshed) = await($up->refresh_p->then(sub ($r) {
+      %at_end = (stops => scalar(grep {/idle for/} @LOG[$since .. $#LOG]), state => $up->state);
+      Mojo::IOLoop->timer(0.5 => sub { push @LOG, $mark });
+      return $r;
+    }));
     ok $through && $refreshed == $up, "$mode: the refresh is through";
-    Mojo::Promise->timer(0.3)->wait;    # what a stop under it would have ended by now
-    ok !(grep {/idle for/} @LOG[$since .. $#LOG]), "$mode: with no idle stop while it ran";
-    is $up->state, 'ready', "$mode: the container is up";
+    is $at_end{stops}, 0, "$mode: with no idle stop while it ran";
+    is $at_end{state}, 'ready', "$mode: the container is up";
     ok +(grep { $_->name eq 'echo2' } @{$up->server->tools}), "$mode: the refresh found the new tool";
     is_deeply [map { $_->uri } @{$up->server->resources}], ['echo://readme'], "$mode: and the resources";
+
+    # A refresh is no use: the last call ended 2.1 s before it was through, and
+    # the countdown, run out, stops the container at once.
+    is $up->last_used, $used, "$mode: last_used is still the end of the last call";
     ok wait_until(sub { $up->state eq 'stopped' }, 10), "$mode: stopped once idle";
+    my @after = @LOG[$since .. $#LOG];
+    my ($stop) = grep { $after[$_] =~ /idle for/ } 0 .. $#after;
+    my ($half) = grep { $after[$_] eq $mark } 0 .. $#after;
+    ok defined $stop && (!defined $half || $stop < $half), "$mode: at once, the last call being over idle_timeout ago";
     ok wait_until(sub { !@{records($fake)} }), "$mode: and the container is gone";
   }
 };

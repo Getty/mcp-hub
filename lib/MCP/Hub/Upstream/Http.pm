@@ -177,11 +177,11 @@ sub stop ($self) {
 }
 
 sub refresh_p ($self) {
-  # In flight like a call (_held_p): a remote has no idle timer, but the
-  # container behind a docker entry's engine has.
+  # In flight like a call, but no use (_held_p): a remote has no idle timer,
+  # but the container behind a docker entry's engine has.
   if ($self->state eq 'ready') {
     return $self->_held_p($self->_list_all_p
-      ->then(sub ($lists) { $self->_apply_manifest($self->_manifest_from($lists)); return $self }))
+      ->then(sub ($lists) { $self->_apply_manifest($self->_manifest_from($lists)); return $self }), 1)
       ->catch(sub ($err) { $self->log->debug("[@{[$self->name]}] refresh failed: $err"); return $self });
   }
   $self->_clear_failure if $self->state eq 'failed';

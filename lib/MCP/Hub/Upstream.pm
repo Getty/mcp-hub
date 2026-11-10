@@ -12,6 +12,7 @@ use Mojo::JSON   qw(encode_json);
 use Mojo::Loader qw(load_class);
 use Mojo::Log;
 use Mojo::Promise;
+use Mojo::Util   qw(steady_time);
 use Scalar::Util qw(blessed refaddr);
 
 # ABSTRACT: Base class for an upstream MCP server mounted in the hub
@@ -97,8 +98,11 @@ sub _failed_message ($self) {
 # takes its time -- a child that is still to exit, a container -- says so.
 sub stopped_p ($self) { return Mojo::Promise->resolve($self) }
 
+# A use: a call, or a start. The idle countdown runs from it ({used_at}, on
+# the steady clock: last_used is whole seconds, for the status).
 sub touch ($self) {
   $self->last_used(time);
+  $self->{used_at} = steady_time;
   $self->_arm_idle_timer if $self->state eq 'ready';
   return $self;
 }
@@ -110,9 +114,9 @@ sub apply_timeouts ($self, $timeouts) {
   return $self unless $self->_idles && defined(my $idle = $timeouts->{idle_timeout});
   $self->idle_timeout($idle);
   # A running upstream is already counting down against the old value: drop
-  # that timer and arm a fresh one, so the new timeout takes effect without
-  # waiting for the next request -- and a timeout of 0 really does stop the
-  # countdown.
+  # that timer and arm one with the new value, so it takes effect without
+  # waiting for the next request -- counted from the last use, as every
+  # countdown is (_arm_idle_timer), and a timeout of 0 really does stop it.
   return $self unless $self->state eq 'ready';
   $self->_clear_idle_timer;
   $self->_arm_idle_timer;
@@ -126,6 +130,12 @@ sub apply_timeouts ($self, $timeouts) {
 # and a container do, and have that attribute. The others never idle.
 sub _idles ($self) { return $self->can('idle_timeout') ? 1 : 0 }
 
+# The countdown runs from the last use (touch): idle_timeout seconds after it,
+# the upstream is stopped -- at once, when they are over by the time it is
+# armed. Only a use starts it over: a refresh holds it off while it runs, and
+# it goes on from the last use when the refresh is through (_held_p). Started
+# over by every refresh, it never ran out for a child that announces a changed
+# list more often than idle_timeout: each list_changed is answered with one.
 sub _arm_idle_timer ($self) {
   return unless $self->_idles;
   return if $self->always_on;
@@ -133,7 +143,9 @@ sub _arm_idle_timer ($self) {
   return unless $timeout > 0;
   $self->_clear_idle_timer;
   return if $self->{in_flight};    # the last request to end arms it (_held_p)
-  $self->{idle_timer} = Mojo::IOLoop->timer($timeout => sub {
+  my $left = $timeout - (steady_time - ($self->{used_at} // steady_time));
+  $left = 0 if $left < 0;
+  $self->{idle_timer} = Mojo::IOLoop->timer($left => sub {
     $self->log->info("[@{[$self->name]}] idle for ${timeout}s, stopping");
     $self->stop;
   });
@@ -182,16 +194,20 @@ sub _forward_p ($self, $method, $params) {
   }));
 }
 
-# $promise in flight: the idle countdown is off while any is, and starts when
-# the last one ends. A call -- or a refresh, which asks the running upstream
-# for one list after another -- that runs longer than idle_timeout must not
-# have its upstream stopped under it.
-sub _held_p ($self, $promise) {
+# $promise in flight: the idle countdown is off while any is, and is armed
+# again when the last one ends. A call -- or a refresh ($refresh), which asks
+# the running upstream for one list after another -- that runs longer than
+# idle_timeout must not have its upstream stopped under it. A call is a use,
+# and the countdown starts over from its end (touch). A refresh is none: it
+# leaves last_used alone, and the countdown goes on from the last use
+# (_arm_idle_timer).
+sub _held_p ($self, $promise, $refresh = 0) {
   $self->{in_flight}++;
   $self->_clear_idle_timer;
   return $promise->finally(sub {
     $self->{in_flight}--;
-    $self->touch;
+    if    (!$refresh)               { $self->touch }
+    elsif ($self->state eq 'ready') { $self->_arm_idle_timer }
     return;
   });
 }
@@ -489,7 +505,9 @@ The L<MCP::Hub> instance, when mounted in one.
 
 =attr last_used
 
-Epoch seconds of the last request, updated by L</touch>.
+Epoch seconds of the last use -- the end of the last call, or a start --
+updated by L</touch>. A refresh of the running upstream is no use, and leaves
+it as it was.
 
 =attr log
 
@@ -550,7 +568,8 @@ reload changed nothing about an entry except its timeouts, so that a global
 C<hub.idle_timeout> edit does not restart every child. An upstream that stops
 when idle -- one with an C<idle_timeout> attribute: stdio, fork, docker and
 compose -- also takes the C<idle_timeout> and re-arms a running idle timer with
-it; C<0> ends the countdown.
+it, counted from the last use as every countdown is (see L</touch>): one idle
+for longer already is stopped at once. C<0> ends the countdown.
 
 =method build
 
@@ -609,7 +628,9 @@ Forward a C<resources/read>, starting the upstream if needed.
 Re-fetch the manifest and rebuild L</server>. A promise. For a C<failed>
 upstream this is the explicit "try again": it clears the failure first. For a
 C<stopping> one it waits until the child is gone and asks the next one, as a
-call does. A no-op for Perl upstreams.
+call does. A no-op for Perl upstreams. The refresh of a running upstream holds
+its idle countdown off while it runs, but is no use of it: L</last_used> stays
+the end of the last call, and the countdown goes on from there (L</touch>).
 
 A C<prompts/list> or C<resources/list> the upstream answers with a JSON-RPC
 error is taken for an empty list: it declares the capability and has nothing to
@@ -662,9 +683,16 @@ CLI has stopped and removed its container. The daemon waits for it on shutdown.
 
 =method touch
 
-Reset L</last_used> and, for a running upstream that stops when idle, its idle
-timer -- unless a request is in flight, a call or a refresh of the running
-upstream: then the countdown starts when the last one ends.
+Record a use -- a call, or a start -- in L</last_used>, and start the idle
+countdown of a running upstream that stops when idle over from it: it is
+stopped C<idle_timeout> seconds after its last use. Not while a request is in
+flight, a call or a refresh of the running upstream: then the countdown is
+armed when the last one ends. A refresh is no use. It holds the countdown off
+while it runs, but does not start it over: once it is through, the countdown
+goes on from the last use, and an upstream idle for longer than
+C<idle_timeout> by then is stopped at once. So a child that announces a changed
+list more often than C<idle_timeout> -- each announcement answered with a
+refresh -- is still stopped when nothing calls it.
 
 =method type
 

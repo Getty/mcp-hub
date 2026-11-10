@@ -12,6 +12,7 @@ use lib "$FindBin::Bin/../lib";
 
 use EchoServer;
 use Mojo::JSON qw(decode_json encode_json);
+use POSIX ();
 
 # --bad-error=string|array switches the peer into a mode that answers a
 # tools/call with a broken error shape -- "error": "text" or "error": [..]
@@ -54,6 +55,14 @@ if (defined $HTTP) { _serve_http($server, $HTTP); exit 0 }
 # over: the orphan of a test that failed half-way ends all the same.
 # --notify-on-eof writes a notifications/tools/list_changed first, as a server
 # that unloads its tools on the way out may.
+# --chatty=SECONDS writes a notifications/tools/list_changed every SECONDS, with
+# nothing changed, as a server may whose tools come and go: the hub answers
+# each with a refresh (t/idle.t). A process of its own writes them, to the
+# same stdout -- the server blocks on its stdin between requests -- and ends
+# once the server is gone.
+my ($CHATTY)    = map { /^--chatty=([\d.]+)$/    ? $1 : () } @ARGV;
+_chatter($CHATTY) if $CHATTY;
+
 my ($SIGNALS)   = map { /^--signals=(.+)$/       ? $1 : () } @ARGV;
 my ($EOF_DELAY) = map { /^--eof-delay=([\d.]+)$/ ? $1 : () } @ARGV;
 if (defined $SIGNALS) {
@@ -74,6 +83,19 @@ if (grep { $_ eq '--notify-on-eof' } @ARGV) {
 }
 select undef, undef, undef, $EOF_DELAY if $EOF_DELAY;
 if (grep { $_ eq '--ignore-eof' } @ARGV) { sleep 1 for 1 .. 60 }
+
+sub _chatter ($seconds) {
+  my $server = $$;
+  my $pid    = fork // die "fork: $!\n";
+  return if $pid;
+  close STDIN;
+  STDOUT->autoflush(1);
+  while (1) {
+    select undef, undef, undef, $seconds;
+    POSIX::_exit(0) if getppid != $server;
+    print STDOUT encode_json({jsonrpc => '2.0', method => 'notifications/tools/list_changed'}), "\n";
+  }
+}
 
 sub _serve_http ($server, $port) {
   require Mojolicious;

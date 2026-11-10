@@ -221,13 +221,14 @@ sub stopped_p ($self) {
 
 sub refresh_p ($self) {
   # The running child is asked for its lists again, in flight like a call: an
-  # idle stop between two of them would refuse the next (_held_p). All of them
-  # are asked of that child, and of no other (_request_p).
+  # idle stop between two of them would refuse the next (_held_p). But it is
+  # no use of the child: the countdown goes on from the last call once it is
+  # through. All of them are asked of that child, and of no other (_request_p).
   if ($self->state eq 'ready' && $self->{pid}) {
     return $self->_held_p($self->_list_all_p(0, $self->{child})->then(sub ($lists) {
       $self->_apply_manifest($self->_manifest_from($lists));
       return $self;
-    }));
+    }), 1);
   }
 
   # A child being stopped is asked nothing: the refresh waits for it to be
@@ -692,9 +693,14 @@ Never the C<initialize>, which a client must not cancel (MCP 2025-06-18).
 The child is B<lazily> started: at daemon start a fresh cached manifest is
 enough to answer C<tools/list>, and nothing is spawned until the first
 C<tools/call>, C<prompts/get> or C<resources/read>. It is stopped again
-L</idle_timeout> seconds after its last request ended -- never while one is in
+L</idle_timeout> seconds after its last call ended -- never while one is in
 flight, however long it runs, nor while a refresh asks it for its lists --
-unless L<MCP::Hub::Upstream/always_on>, and restarted on the next call.
+unless L<MCP::Hub::Upstream/always_on>, and restarted on the next call. A
+refresh only holds the countdown off: it is no call, and once it is through
+the countdown goes on from the end of the last call -- a child idle for longer
+by then is stopped at once. So a child that sends a C<list_changed> more often
+than L</idle_timeout>, each answered with a refresh, is stopped all the same
+(L<MCP::Hub::Upstream/touch>).
 
 A stop closes the child's stdin -- after whatever was written to it before, so
 that a request written just before the stop still reaches it -- and gives it
@@ -784,8 +790,9 @@ C<5>.
 
 =attr idle_timeout
 
-Seconds after the last request -- a call, or a refresh of the running child --
-ended before the child is stopped. Defaults to C<300>.
+Seconds after the last call ended before the child is stopped. A refresh of
+the running child holds the countdown off while it runs, but does not start it
+over. Defaults to C<300>.
 
 =head1 METHODS
 

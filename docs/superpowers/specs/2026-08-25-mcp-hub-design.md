@@ -197,7 +197,7 @@ An upstream whose manifest is not available yet (still fetching at startup, or n
 - `start_p` → promise resolving when `ready`; idempotent (returns the in-flight promise while `starting`)
 - `stop` → terminate, `stopped`
 - `refresh_p` → re-fetch the manifest and rebuild `server`
-- `touch` → resets `last_used` and the idle timer
+- `touch` → stamps `last_used`; the idle countdown runs `idle_timeout` from it. A start and a call touch, a refresh does not
 - `stats`: `calls`, `errors`, `started_at`, `pid`
 
 ### `MCP::Hub::Upstream::Stdio`
@@ -234,7 +234,7 @@ stopped ──start_p──▶ starting ──handshake ok──▶ ready ──
 
 - **Lazy start.** At daemon start a stdio upstream with a fresh cached manifest is `stopped` with a façade built from the cache; nothing is spawned. Without a cached manifest (or with a stale one, see below) it is started once in the background to fetch it; the daemon does not wait for that.
 - **On demand.** The first `tools/call`, `prompts/get` or `resources/read` calls `start_p` and queues behind it; further calls during `starting` queue on the same promise.
-- **Idle.** Every request calls `touch`. When the timer fires: close stdin and give the child 2 s to exit on that EOF, then `SIGTERM`, and `SIGKILL` 5 s after that; reap with `waitpid`. Until the child is gone the upstream is `stopping`, and a call or refresh in that time waits for the next child; neither starts one for a server a reload replaced or removed meanwhile. `always_on` upstreams are started at daemon start and have no idle timer.
+- **Idle.** A start and every call run `touch`; a refresh after `list_changed` does not, so a child that announces a changed list more often than `idle_timeout` is still stopped. When the timer fires: close stdin and give the child 2 s to exit on that EOF, then `SIGTERM`, and `SIGKILL` 5 s after that; reap with `waitpid`. Until the child is gone the upstream is `stopping`, and a call or refresh in that time waits for the next child; neither starts one for a server a reload replaced or removed meanwhile. `always_on` upstreams are started at daemon start and have no idle timer.
 - **Crash.** On unexpected exit all pending promises are rejected (the façade turns that into an error result for the agent), state becomes `stopped`, and the next call starts the process again. Three exits within 5 s of their start (a kill for a line over 16 MB counts as one) mark the upstream `failed`; its endpoint answers 503 until `refresh` succeeds. A first manifest fetch that fails (no cached manifest to fall back on) marks it `failed` at once, with the reason; one that a reload or shutdown calls off leaves it `stopped`.
 - **Shutdown.** `SIGINT`/`SIGTERM` to the daemon stops every upstream the same way and waits, at most 20 s, for its stdio children and forked workers to exit and its containers to be removed before exiting.
 

@@ -422,3 +422,7 @@ Revision history for MCP-Hub
     when a reload removes or replaces the server meanwhile.
   - After a reload, a changed server's new stdio process or forked worker
     starts only once the old one has exited, so the two never run side by side.
+  - A refresh no longer restarts the idle countdown: a child that sends
+    list_changed more often than idle_timeout is stopped when idle, last_used
+    stays the last call's, and a reloaded idle_timeout counts from the last
+    call.

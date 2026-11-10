@@ -374,7 +374,7 @@ and changes exactly what the edit asks for — everything else keeps running:
 |---|---|
 | nothing about a server | Nothing. Same process, same stats, same idle timer. |
 | a profile, a client, `tools.allow`/`deny`, `public_profile` | Swapped in place; in effect on the next request. A tool you deny disappears from `tools/list` and `tools/call`, and no server is restarted. |
-| only timeouts (`idle_timeout`, `request_timeout`, per server or global) | Applied in place, no restart. A request already running finishes within the timeout it went out with; the next one gets the new one. |
+| only timeouts (`idle_timeout`, `request_timeout`, per server or global) | Applied in place, no restart. A request already running finishes within the timeout it went out with; the next one gets the new one. A new `idle_timeout` counts from the last call. |
 | a server's `command`, `args`, `env`, `url`, `docker`, … | That one server is stopped and rebuilt. A new stdio process or forked worker starts only once the old one has exited (up to about 7 s). |
 | `hub.docker_command` or `hub.docker_network` | The `docker` (and, for the command, `compose`) servers are rebuilt. |
 | remove a server | It is stopped and its path is `404` again. |
@@ -922,7 +922,7 @@ number: `"30"` is a config error.
 |---|---|---|
 | `listen` | `http://127.0.0.1:3080` | Listen address. |
 | `cache_dir` | `~/.cache/mcp-hub` | Where manifests are cached. |
-| `idle_timeout` | `300` | Seconds before an idle stdio, docker or compose upstream, or a forked class worker, is stopped. |
+| `idle_timeout` | `300` | Seconds before an idle stdio, docker or compose upstream, or a forked class worker, is stopped. Counted from the last call; a refresh after a `list_changed` notification does not count as one. |
 | `request_timeout` | `60` | Seconds to wait for an upstream response, however long the upstream stays silent before it answers. A positive integer, with no upper bound; `0` or a negative value is a config error. |
 | `profiles` | `{}` | Named permission sets. |
 | `clients` | `{}` | `name → { token, profile }`. |
