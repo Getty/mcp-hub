@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-10T07:03:31Z
+id: 194
+priority: low
+started: 2026-11-10T16:02:19Z
+status: todo
+tags:
+- docker
+- status
+title: 'Docker engines lag k124 and k146: no stopping state, an overflow reads exited
+  (signal 9)'
+updated: 2026-11-10T16:02:19Z
+---
+
+Found by mcp-hub-worker during wave B2 (k146/k124/k149/k112, 2026-11-10). Since k124 a stdio child in its stop's grace shows as stopping; a Docker owner shows stopped while its container is still stopping. Since k146 a stdio overflow kill reads 'line buffer exceeded 16MB'; Docker::_engine_down reports it as 'exited (signal 9)'. Bring both Docker engines to the stdio behavior; tests in t/docker.t.
