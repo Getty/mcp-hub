@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-10T02:03:49Z
+created: 2026-11-10T01:38:06Z
+id: 180
+priority: low
+started: 2026-11-10T02:03:49Z
+status: done
+tags:
+- pod
+- docs
+- drift
+title: 'Fix Upstream POD: C</< name >> renders as "/< name >", not /<name>'
+updated: 2026-11-10T02:03:49Z
+---
+
+Found by mcp-hub-worker during k168 (2026-11-10). lib/MCP/Hub/Upstream.pm:442, DESCRIPTION: "which the hub mounts at C</< name >>." The C<> closes at the first > and renders as "/< name ">, so the mount path /<name> is not shown. Fix with C<< /<name> >>. A sweep of lib/ and bin/ for single-bracket C<> holding < found only this one and k168. Done when pod2text shows "/<name>". Lane: mcp-hub-worker (POD in lib/).
+
+Committed as 5599397
