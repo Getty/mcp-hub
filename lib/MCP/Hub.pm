@@ -216,7 +216,7 @@ sub _apply_config ($self, $new) {
 
   my $previous = $self->upstreams_by_name;
   my %summary  = (added => [], removed => [], changed => [], unchanged => []);
-  my (@ups, %by);
+  my (@ups, %by, @warm);
 
   for my $entry (@{$new->servers}) {
     my $name = $entry->{name};
@@ -225,7 +225,7 @@ sub _apply_config ($self, $new) {
     if (!$up) {
       push @{$summary{added}}, $name;
       $up = $self->_build_upstream($entry, $new);
-      $self->_warm_upstream($up);
+      push @warm, $up;
     }
     else {
       my ($same, $timeouts_only) = _compare_entry($old, $old->server($name), $new, $entry);
@@ -244,7 +244,7 @@ sub _apply_config ($self, $new) {
         push @{$summary{changed}}, $name;
         $self->_let_go($up);
         $up = $self->_build_upstream($entry, $new);
-        $self->_warm_upstream($up);
+        push @warm, $up;
       }
     }
 
@@ -260,6 +260,11 @@ sub _apply_config ($self, $new) {
 
   $self->upstreams(\@ups);
   $self->upstreams_by_name(\%by);
+
+  # Warmed as at daemon start, once the hub holds them: an upstream that is
+  # not in upstreams_by_name is one the hub has let go of, and starts nothing
+  # (MCP::Hub::Upstream::_dropped).
+  $self->_warm_upstream($_) for @warm;
   $self->rebuild_aggregate;
 
   # Tell connected agents to list again. A server whose own tools are unchanged
@@ -1065,9 +1070,12 @@ L</shutdown_p> waits for that too, as for the upstreams the hub still has. A
 start of it that was under way, or a refresh, goes on to its end, but what it
 finds is not applied: it goes neither into the manifest cache -- which the new
 upstream shares when only the entry's C<env> changed -- nor to any listener, on
-the server's endpoint or on C</all>. An in-process class entry's server has its
-tools, prompts and resources emptied (L<MCP::Hub::Upstream/let_go>), so that an
-instance whose tools close over it is freed; a stop alone never does that.
+the server's endpoint or on C</all>. Nor is it started again: a call or a
+refresh that was waiting for its stdio child to go fails as
+C<upstream NAME: stopped> and starts no child. An in-process class entry's
+server has its tools, prompts and resources emptied
+(L<MCP::Hub::Upstream/let_go>), so that an instance whose tools close over it
+is freed; a stop alone never does that.
 
 C<profiles>, C<clients> and C<public_profile> are swapped in one step before any
 of that, so from a request's point of view the new access rules -- including a

@@ -61,6 +61,14 @@ sub start_p ($self) {
   # failed upstream reports why instead of spawning the loop all over again.
   return Mojo::Promise->reject($self->_failed_message) if $self->state eq 'failed';
 
+  # Nor does an upstream the hub has let go of start a child: a call or a
+  # refresh that waited for its leaving child above, while a reload let go of
+  # it. The hub holds it only until that child is gone (MCP::Hub::_let_go), so
+  # a child started for it then would be stopped by no one -- not by the
+  # shutdown either. The hub warms a new upstream only once it holds it.
+  return Mojo::Promise->reject("upstream @{[$self->name]}: stopped")
+    if $self->_dropped('it starts no child');
+
   $self->state('starting');
   my $done = Mojo::Promise->new;
   $self->{start_promise} = $done;
@@ -186,17 +194,9 @@ sub refresh_p ($self) {
   }
 
   # A child being stopped is asked nothing: the refresh waits for it to be
-  # gone and asks the next one, which it starts -- as a call does (start_p).
-  # Not for an upstream a reload has let go of meanwhile: the hub holds it
-  # only until that child is gone (MCP::Hub::_let_go), so a child started for
-  # it then would be stopped by no one.
-  if ($self->state eq 'stopping') {
-    return $self->_gone_p->then(sub {
-      return Mojo::Promise->reject("upstream @{[$self->name]}: stopped")
-        if $self->_dropped('the refresh starts no child');
-      return $self->refresh_p;
-    });
-  }
+  # gone and asks the next one, which it starts -- as a call does (start_p),
+  # and not for an upstream a reload has let go of meanwhile.
+  return $self->_gone_p->then(sub { $self->refresh_p }) if $self->state eq 'stopping';
   $self->_clear_failure if $self->state eq 'failed';
   return $self->start_p;
 }
@@ -669,10 +669,11 @@ upstream is C<stopping> -- in C<GET /_hub/status>, C<mcp-hub status> and
 C<hub_status> -- and the child is sent nothing more.
 A call that comes in meanwhile waits for it to be gone and starts the next
 child: the hub runs one child at a time. So does a refresh
-(L<MCP::Hub::Upstream/refresh_p>) -- unless a reload has let go of the
-upstream meanwhile, then it fails as C<upstream NAME: stopped> and starts
-nothing. A C<list_changed> from the child being stopped starts nothing either:
-the next child lists its own. L<MCP::Hub::Upstream/stopped_p>
+(L<MCP::Hub::Upstream/refresh_p>). Neither starts anything when a reload has
+let go of the upstream meanwhile: it fails as C<upstream NAME: stopped> -- an
+upstream the hub has let go of never starts a child, whatever asks it to
+(L<MCP::Hub/reload>). A C<list_changed> from the child being stopped starts
+nothing either: the next child lists its own. L<MCP::Hub::Upstream/stopped_p>
 resolves once it is gone, and the daemon waits for that on shutdown. A child
 that closes its stdout but goes on running can never answer again, and is
 killed after five seconds. Its exit status is collected without blocking the

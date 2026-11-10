@@ -254,8 +254,10 @@ sub _show_manifest ($self, $manifest) {
 # it under way -- or a refresh -- goes on, and when it is through, what it found
 # is not applied: not written to the cache, which the new upstream may share
 # (the hash leaves env out), nor told to anybody. It came from a child being
-# stopped, too. An upstream no hub holds -- built on its own -- is let go of by
-# nobody. The debug line says what is not done for it ($what).
+# stopped, too. Nor does a stdio upstream start another child once it is let go
+# of (MCP::Hub::Upstream::Stdio::start_p). An upstream no hub holds -- built on
+# its own -- is let go of by nobody. The debug line says what is not done for
+# it ($what).
 sub _dropped ($self, $what = 'the manifest it found is not applied') {
   my $hub = $self->hub;
   return 0 unless $hub && $hub->can('upstreams_by_name');

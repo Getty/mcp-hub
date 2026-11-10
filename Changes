@@ -418,3 +418,5 @@ Revision history for MCP-Hub
     upstream again instead of failing.
   - A refresh that a reload or shutdown interrupts no longer leaves the
     server failed with "stopped".
+  - A call or refresh during a server's stop no longer starts an orphan child
+    when a reload removes or replaces the server meanwhile.

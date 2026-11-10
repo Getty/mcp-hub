@@ -561,7 +561,41 @@ subtest 'a refresh waiting on the child of an upstream a reload lets go of start
   settle(0.5);    # time for a start that was kicked off to show
   is $up->stats->{pid}, undef, 'and no child is started for it';
   is scalar(grep {/started/} @logged), 1, 'none at all' or diag explain [grep {/started/} @logged];
-  ok +(grep { $_ eq 'debug [goes] no longer mounted, the refresh starts no child' } @logged), 'it says why, at debug';
+  ok +(grep { $_ eq 'debug [goes] no longer mounted, it starts no child' } @logged), 'it says why, at debug';
+  await_bounded($hub->shutdown_p, 20);
+};
+
+subtest 'a call waiting on the child of an upstream a reload lets go of starts nothing' => sub {
+  # A call during a stop waits for the child to be gone and starts the next.
+  # The reload lets go of the upstream meanwhile: the hub holds it only until
+  # that child is gone (MCP::Hub::_let_go), so the child the call started was
+  # stopped by no one -- not by the shutdown, which waits for the upstreams it
+  # holds. The call fails as stopped, as a refresh does.
+  my $dir  = tempdir;
+  my $file = $dir->child('config.json');
+  my $hub_settings = {cache_dir => $dir->child('cache')->to_string};
+  $file->spew(encode_json({
+    mcpServers => {goes => {command => $^X, args => ['-Ilib', "$ECHO", '--eof-delay=1']}},
+    hub        => $hub_settings,
+  }));
+  my @logged;
+  my $hub = MCP::Hub->new(log => log_to(\@logged)->level('debug'), hub_config_input => "$file");
+  my $up  = $hub->upstreams_by_name->{goes};
+  await_bounded($up->start_p, 30);
+  my $pid = $up->stats->{pid};
+  $up->stop;    # an idle stop, say
+  my $call = $up->call_tool('echo', {msg => 'a child of its own'});
+
+  $file->spew(encode_json({mcpServers => {}, hub => $hub_settings}));
+  is_deeply $hub->reload->{removed}, ['goes'], 'a reload removes it meanwhile';
+  my $r = await_bounded($call, 20);
+  is ref $r eq 'HASH' && ref $r->{content} eq 'ARRAY' ? $r->{content}[0]{text} : undef, 'upstream goes: stopped',
+    'the call fails as stopped' or diag explain $r;
+  ok !kill(0, $pid), 'once the child is gone';
+  # A child started for the call is there by the time the call is answered.
+  is $up->stats->{pid}, undef, 'and no child is started for it';
+  is scalar(grep {/started/} @logged), 1, 'none at all' or diag explain [grep {/started/} @logged];
+  ok +(grep { $_ eq 'debug [goes] no longer mounted, it starts no child' } @logged), 'it says why, at debug';
   await_bounded($hub->shutdown_p, 20);
 };
 
