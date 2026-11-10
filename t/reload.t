@@ -37,11 +37,7 @@ sub write_config ($file, $data) {
 sub warm_cache ($data, $cache) {
   my $app = MCP::Hub->new(hub_config_input => {%$data, hub => {%{$data->{hub} // {}}, cache_dir => "$cache"}});
   $app->start_background_fetches;
-  my $deadline = time + 15;
-  until (time > $deadline) {
-    Mojo::Promise->timer(0.1)->wait;
-    last unless grep { $_->type eq 'stdio' && !$_->manifest_fetched_at } @{$app->upstreams};
-  }
+  wait_until(sub { !grep { $_->type eq 'stdio' && !$_->manifest_fetched_at && $_->state ne 'failed' } @{$app->upstreams} });
   $_->stop for @{$app->upstreams};
   Mojo::Promise->timer(0.3)->wait;
   return $app;
@@ -65,6 +61,15 @@ sub client ($t, $path) {
 sub rpc { return {jsonrpc => '2.0', id => 1, method => 'tools/list', params => {}} }
 
 sub settle { Mojo::Promise->timer($_[0] // 0.4)->wait; return }
+
+# Wait for $cond, which is what the test is after, not for a time: a child's perl
+# takes seconds to start on a loaded host (a start, with its handshake, was seen
+# to take over ten), so the seconds are only a bound on a test that hangs.
+sub wait_until ($cond, $seconds = 60) {
+  my $deadline = time + $seconds;
+  Mojo::Promise->timer(0.05)->wait until $cond->() || time > $deadline;
+  return $cond->() ? 1 : 0;
+}
 
 # ---------------------------------------------------------------------------
 
@@ -199,11 +204,7 @@ subtest 'a changed entry is rebuilt and only that one' => sub {
 
   # It had no cached manifest under the new hash, so the reload warmed it in
   # the background exactly as a daemon start would -- and stopped it again.
-  my $deadline = time + 15;
-  until (time > $deadline) {
-    Mojo::Promise->timer(0.1)->wait;
-    last if $new->manifest_fetched_at;
-  }
+  wait_until(sub { $new->manifest_fetched_at });
   ok $new->manifest_fetched_at, 'the new entry fetched its manifest in the background';
   is client($t, '/echo')->call_tool('echo', {msg => 'after'})->{content}[0]{text}, 'after',
     'and the endpoint works';
@@ -250,8 +251,7 @@ subtest 'the late start of an upstream a reload replaced changes nothing' => sub
   };
   my $started;
   $old->start_p->then(sub { $started = 'started' }, sub ($err) { $started = "$err" });
-  my $deadline = time + 10;
-  Mojo::Promise->timer(0.05)->wait until $asked || time > $deadline;
+  wait_until(sub { $asked });
   ok $asked, 'the old upstream asks its child for the tools';
   # What it asks from here on goes to a child being stopped: it times out in a
   # second, not in a minute.
@@ -268,8 +268,7 @@ subtest 'the late start of an upstream a reload replaced changes nothing' => sub
   # The old start is let go on.
   @notified = ();
   $gate->resolve;
-  $deadline = time + 10;
-  Mojo::Promise->timer(0.05)->wait until defined $started || time > $deadline;
+  wait_until(sub { defined $started });
   ok defined $started, 'the old start is over';
   is_deeply \@notified, [], 'nobody is told anything changed';
   is_deeply [map { $_->name } @{$old->server->prompts}], ['greet'], 'the old facade is as it was';
