@@ -99,7 +99,9 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   `tools/call`/`prompts/get`/`resources/read` ruft `start_p`; weitere Calls
   während `starting` queuen auf derselben Promise. Jeder Request ruft `touch`; der
   Idle-Stopp schickt einem Kind erst EOF auf stdin, `SIGTERM` erst nach 2 s
-  (`EOF_GRACE`), `SIGKILL` 5 s danach (`KILL_GRACE`). Calls und der Refresh
+  (`EOF_GRACE`), `SIGKILL` 5 s danach (`KILL_GRACE`); bis es weg ist, steht der
+  Upstream auf `stopping`. Ein `list_changed` dieses Kinds startet nichts — sonst
+  spawnte jeder Idle-Stopp ein Kind, nach dem kein Call gefragt hat. Calls und der Refresh
   eines laufenden Upstreams sind in flight (`_held_p`): kein Countdown, solange einer
   läuft — er beginnt, wenn der letzte endet. `always_on` startet eager
   ohne Idle-Timer. Ein `fork`-Upstream liest sein Manifest beim Build in-process aus
@@ -142,7 +144,8 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
 - **`failed` ist sichtbar und klebt bis zum expliziten `refresh`.** Ein nicht baubarer
   Eintrag (z. B. `class` nicht ladbar) wird nicht verworfen, sondern durch einen
   Placeholder (`state => 'failed'`, `error`) ersetzt — er bleibt in Status, Setup-Seite,
-  `mcp-hub config` und `/all`. Ein stdio-Upstream wird nach 3 Exits in 5 s `failed`, ein
+  `mcp-hub config` und `/all`. Ein stdio-Upstream wird nach 3 Exits in 5 s `failed` (auch
+  der Kill eines Kinds, das eine Zeile über 16 MB schreibt, ist so ein Exit), ein
   docker/compose-Upstream nach 3 gescheiterten Starts oder Crashes in 5 s (über alle
   Container-Läufe gezählt, nie von der Engine), ein HTTP-Upstream nach 3 Connect-Fehlern
   in 5 s;
@@ -239,6 +242,9 @@ Pfad-`stat`, Intervall = Hub-Attribut `auto_reload_interval`), `POST /_hub/reloa
   zu ~7 s überlappen.
   Ein Start oder Refresh, der seinen `stop` überlebt, schreibt keinen Cache und
   benachrichtigt niemanden (`Upstream::_dropped`, per `refaddr` gegen `upstreams_by_name`).
+  Ein Refresh, der auf das Ende des alten Kinds wartet, oder ein HTTP-Call, den der Stop
+  überholt hat, startet für ihn nichts mehr: er scheitert als `upstream NAME: stopped` —
+  das Kind oder die Session beendete sonst niemand.
 - **profiles/clients/public_profile werden in place getauscht** (`auth->config($new)`);
   `Auth::last_seen` lebt auf `Auth`, nicht auf der Config, dann `notify_list_changed`.
   `/all` bekommt `tools/` **und** `prompts/list_changed`, sobald ein Eintrag added/

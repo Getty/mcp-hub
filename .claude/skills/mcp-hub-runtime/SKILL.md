@@ -36,7 +36,11 @@ Kind; der Exit zählt einmal zur Crash-Loop.
 
 stdout wird an Newlines gesplittet, jede Zeile als JSON dekodiert; eine kaputte
 Zeile wird übersprungen (debug). Der Line-Buffer ist bei 16 MB gekappt — dann
-wird der Kindprozess gekillt. Exit 127 beim Start ist ein Konfigurationsproblem:
+wird der Kindprozess gekillt (error-Log), und der Kill zählt wie ein Crash zur
+Crash-Loop: Requests in flight scheitern als `exited (signal 9)`, ist er der dritte, liest
+der Fehler `3 exits within 5s: line buffer exceeded 16MB` (`_record_exit` mit Grund).
+Ungezählt spawnte jeder Call einen Server neu, der bei jedem Start seinen stdout flutet,
+und nie `failed`. Exit 127 beim Start ist ein Konfigurationsproblem:
 die Meldung nennt das Kommando ("is it installed and executable?"). Drei Exits
 binnen 5 s → `failed`.
 
@@ -50,7 +54,9 @@ selben Tick geschriebener Request ginge sonst verloren (das Kind endet ohne ihn 
 scheitert als dessen Exit) und der Stream schriebe ihn endlos gegen den geschlossenen Socket
 (EPIPE-Spin) → nach `EOF_GRACE` (2 s) `SIGTERM` → nach `KILL_GRACE`
 (5 s) `SIGKILL`; wer auf EOF endet, sieht nie ein Signal. Ein Kind, das stdout schließt
-und weiterlebt, wird nach `KILL_GRACE` gekillt. Es läuft immer höchstens ein Kind: ein
+und weiterlebt, wird nach `KILL_GRACE` gekillt. Ab dem Stop, bis der Exit verarbeitet ist,
+steht der Upstream auf `stopping` (`failed` bleibt `failed`), auch nach einem Start, den
+der Stop absagt, solange dessen Kind lebt. Es läuft immer höchstens ein Kind: ein
 Call während eines Stops wartet auf dessen Ende (`_gone_p`) und startet das nächste.
 Was das Kind nicht mehr erreicht (`_refused`: kein Stream — Kind weg oder stdout zu —
 oder EOF geschickt), geht nicht raus und scheitert sofort als `upstream NAME: not
@@ -72,7 +78,10 @@ seiner Requests scheitert sofort (`the child the refresh began on is gone`), sob
 Kind nicht mehr das laufende ist oder EOF bekam. Zwischen zwei Listen kann die Loop den
 Exit und einen Call samt neuem Kind abwickeln — ungebunden nähme der Refresh dessen Listen
 für die alten. Fork und Docker-stdio erben das. Http bindet nicht (unten); die Transporte
-unterscheiden sich vorerst mit Absicht.
+unterscheiden sich vorerst mit Absicht. Trifft ein Refresh `stopping` an, fragt er das
+Kind nichts: er wartet wie ein Call auf `_gone_p` und fragt das nächste, das er dafür
+startet — außer ein Reload hat den Upstream inzwischen losgelassen (`_dropped`), dann
+scheitert er als `upstream NAME: stopped`: das Kind stoppte sonst niemand.
 
 ### Http — Streamable HTTP oder HTTP+SSE
 
@@ -94,7 +103,10 @@ close`. `type: "http"` = Streamable HTTP
 (langlebiger GET-Stream). `headers` trägt das Auth. Drei Fehlschläge binnen 5 s → `failed`.
 Jede Ablehnung liest `upstream NAME: …` — auch ohne Antwort (refused, `Request
 timeout`), wo Mojo `start_p` selbst nur mit seiner Meldung ablehnt: `_http_send_p`
-hängt dafür `$fail` als Reject-Handler an.
+hängt dafür `$fail` als Reject-Handler an. Ein Fehlerstatus liest mit Code vor der Phrase
+(`upstream NAME: 500 Internal Server Error`, `_http_error`) — die Phrase allein verbirgt
+ihn, und ein Remote schickt womöglich keine —, über beide Transporte, ebenso die
+debug-Zeilen eines gescheiterten Notification-POSTs und eines nicht angenommenen `DELETE`.
 
 Über SSE kommt jede Antwort auf dem Stream, der POST trägt nur den Request. Nimmt die
 Gegenseite ihn nicht (Fehlerstatus, keine Antwort, refused), scheitert sein Request sofort
@@ -125,8 +137,11 @@ trägt weder Session-Id noch `MCP-Protocol-Version`, die Id kommt nur aus dessen
 beendet die Session mit einem `DELETE`, aber erst, wenn der letzte Call darauf fertig
 ist — ein Call auf `ready` läuft über Streamable HTTP weiter (über SSE scheitert er als
 stopped); ein gescheiterter oder abgebrochener Start beendet die Session seines
-`initialize` genauso. Ein Start nach einem Stop ist frisch und beginnt erst, wenn der
-abgebrochene sich gesetzt hat (`next_start`) — nie zwei Handshakes zugleich. Ein `404` auf
+`initialize` genauso. Auf das `DELETE` wartet nichts, auch kein Shutdown: eins, das beim
+Shutdown rausgeht, kommt womöglich nicht mehr an, der Remote lässt die Session dann selbst
+auslaufen — ein Remote, der nicht antwortet, hält nie einen Shutdown auf. Ein Start nach
+einem Stop ist frisch und beginnt erst, wenn der abgebrochene sich gesetzt hat
+(`next_start`) — nie zwei Handshakes zugleich. Ein `404` auf
 einen Request **mit** Session-Id heißt: die Gegenseite hat die Session beendet → neue
 Session (geteilt von allen Requests, die dieselbe verloren), der Request geht genau
 einmal neu raus — nie ein Request des Starts, kein `DELETE` für die tote Session. Ein `404` ohne Session-Id ist ein gewöhnlicher Fehler.
@@ -134,11 +149,17 @@ einmal neu raus — nie ein Request des Starts, kein `DELETE` für die tote Sess
 Welche Requests die **des Starts** sind, sagt `_handshake_p` selbst (`$of_start` an
 `_request_p`, durch `_list_all_p`/`_paginate_p`) — nie aus dem Methodennamen
 geraten. Über Streamable HTTP wartet jeder andere Request, der einen Start antrifft
-(Call, nächste Seite eines Refreshs), auf ihn und geht auf dessen Session raus. Trifft
+(die nächste Seite eines Refreshs), auf ihn und geht auf dessen Session raus. Trifft
 er `stopped` ohne laufenden Start an, geht kein POST raus: er scheitert sofort als
 `upstream NAME: stopped` — der Stop hat die Session beendet und ihre Id vergessen. `$on`
 ignoriert Http: einen Refresh, den Stop und Start überholen, setzt die nächste Seite auf
-der neuen Session fort.
+der neuen Session fort. Ein Call kommt gar nicht so weit: `start_p` lässt ihn durch, raus
+geht er einen Tick später, und dann sieht `_forward_ready_p` noch einmal nach dem
+State. Hat ihn dazwischen ein Stop überholt, ist er ein Call auf `stopped`: er startet
+den Upstream neu bzw. wartet auf den laufenden Start und geht über beide Transporte auf
+dessen Session oder Stream raus — so abgeschickt ginge er auf nichts (Streamable HTTP
+`stopped`, SSE `not connected`). Außer ein Reload hat den Upstream losgelassen
+(`_dropped`): dann `upstream NAME: stopped`, kein Start, dessen Session niemand beendete.
 
 Eine `https`-URL braucht TLS in diesem Perl: `IO::Socket::SSL` 2.009+ und
 `MOJO_NO_TLS` ungesetzt. `Mojo::IOLoop::TLS` entscheidet das einmal beim Laden —
@@ -372,7 +393,9 @@ Der Hub terminiert alles, was der Upstream anfordert:
 | alles andere mit `id` (z. B. `sampling/createMessage`, `elicitation/create`) | Error `-32601` ("Method not supported by mcp-hub") |
 
 `notifications/(tools|prompts|resources)/list_changed` → Manifest stale, im
-Hintergrund `refresh_p`. `notifications/message` → Log auf der Ebene aus
+Hintergrund `refresh_p` — nicht von einem stdio-Kind, das gerade gestoppt wird: nur
+debug, kein Refresh, der sonst nach jedem Idle-Stop ein Kind ohne Call startete; das
+nächste Kind listet seine eigenen. `notifications/message` → Log auf der Ebene aus
 `params.level` (`debug`/`info`/`warn`/`error`). `notifications/progress` und
 alles andere werden verworfen.
 
