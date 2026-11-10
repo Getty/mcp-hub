@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-11-10T03:58:43Z
+created: 2026-11-07T03:04:11Z
+id: 163
+priority: low
+started: 2026-11-10T02:45:41Z
+status: done
+tags:
+- native
+- json
+- drift
+title: 'Decide: on a host without a C compiler, should the natives decode with Mojo::JSON
+  instead of JSON::PP?'
+updated: 2026-11-10T03:58:43Z
+---
+
+Found by mcp-hub-worker during k82 (2026-11-07). Without a compiler JSON::MaybeXS falls back to JSON::PP, which decodes 8 of 59 checked edge cases differently from Mojo::JSON's pure-Perl decoder (bigint, nul_escape internal form, nonchar_esc, bad_surr, bad_big, nonchar_raw, raw_del, num_dot -- all malformed or extreme lines; logs in scratchpad w-k82/logs/eq-noxs.txt). With Cpanel::JSON::XS all 59 match. Option: one line per native -- use Mojo::JSON::decode_json unless JSON::MaybeXS::JSON() is Cpanel::JSON::XS -- so the fallback is identical too. Question for the maintainer: worth it, or is JSON::PP fine on such hosts?
+
+Info from k162 (2026-11-07): the standalone binary now packs Cpanel::JSON::XS, and scripts/build-binary.sh and loaded-modules.pl refuse a perl without it. So the JSON::PP fallback can no longer happen in the binary or in the Docker image (k82). This card only matters for a CPAN install on a machine without a C compiler.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes. Where JSON::MaybeXS would fall back to JSON::PP (no compiler), the natives decode with Mojo::JSON, so every install decodes a line the same way. One line per native.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green with the patch; t/native/ + t/hub.t pass under EV and Poll (22 files, 350 tests) with all six natives cards applied. Apply order k99, k111, k163, k172, k173, k179 (scratchpad w-kNNN/incr.patch each). k163: each native decodes with its JSON::MaybeXS object only when JSON::MaybeXS::JSON() is Cpanel::JSON::XS, else Mojo::JSON::decode_json (decided once at load; JSON::XS-only hosts also get Mojo::JSON, per the card). New t/native/claude-json-fallback.t; red on HEAD: JSON::PP read "a\xEF\xBF\xBFb" instead of refusing it. cpanfile comment lines 12-13 now only half true (release-manager).
+
+Committed as a1f3c7c on main (local, not pushed).
