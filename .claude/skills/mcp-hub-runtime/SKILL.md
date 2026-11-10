@@ -380,7 +380,11 @@ Caches). `list_prompts` liest `history.jsonl` bei jedem Aufruf ganz, zeilenweise
 Treffer, sendet `display` und nie die eingefügten Inhalte, und setzt `has_transcript`
 allein nach den Namen der Session-Dateien, ohne eine zu lesen. `since`/`until` werden per
 `_iso_ms` als Zeitpunkte verglichen, nicht als Strings; eine Grenze, die kein Datum und
-keine Zeit ist, ist ein Error-Result.
+keine Zeit ist, ist ein Error-Result. Dieselben Zeitpunkte ordnen
+`list_projects`/`list_sessions` (neueste zuerst) und die Läufe (nach Start), per
+`_timed`/`_by_time`: `meta_cache` hält je Datei `started_at`/`last_activity` als ms, beim
+Lesen geparst, nie im Komparator; bei gleichem Zeitpunkt entscheidet der String, und eine
+Zeit ohne Zeitpunkt zählt als die älteste. Kein Key dafür an einem Record, der rausgeht.
 
 Jede Zeile, die `ClaudeHistory` und `ClaudeSessions` lesen (und jede `.meta.json`), geht
 durch das `decode_json` des eigenen Pakets: `JSON::MaybeXS->new(utf8 => 1)` mit

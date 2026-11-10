@@ -187,7 +187,7 @@ sub list_projects ($self) {
   for my $dir ($self->_project_dirs) {
     my @sessions = $self->_sessions_in($dir);
     next unless @sessions;
-    my $last = (sort { ($b->{last_activity} // '') cmp($a->{last_activity} // '') } @sessions)[0];
+    my ($last) = _by_time(-1, $self->_timed(last_activity => undef, @sessions));
     push @projects, {
       project       => $last->{project},
       dir           => $dir->basename,
@@ -195,7 +195,7 @@ sub list_projects ($self) {
       last_activity => $last->{last_activity},
     };
   }
-  return [sort { ($b->{last_activity} // '') cmp($a->{last_activity} // '') } @projects];
+  return [_by_time(-1, $self->_timed(last_activity => undef, @projects))];
 }
 
 sub list_sessions ($self, $args = {}) {
@@ -207,18 +207,18 @@ sub list_sessions ($self, $args = {}) {
 # The sessions list_sessions returns, each a copy of the cached metadata that
 # also holds, as _file, the path of its session file; search_conversations
 # reads that file, list_sessions sends no path of this host. Undef for a since
-# or until that is no time. A session's time is read only to compare it with
-# one of them.
+# or until that is no time. The since and until, and the order, compare a
+# session's time as the instant the cache worked out (see _timed).
 sub _sessions ($self, $args) {
   my $range = _range($args) // return undef;
-  my $timed = grep {defined} @$range;
   my $limit = $args->{limit} // 50;
   my @sessions;
   for my $dir ($self->_project_dirs) {
     push @sessions, $self->_sessions_in($dir);
   }
-  @sessions = grep { _filtered($args, $range, $_->{project}, $timed ? _iso_ms($_->{last_activity}) : undef) } @sessions;
-  @sessions = sort { ($b->{last_activity} // '') cmp($a->{last_activity} // '') } @sessions;
+  my @timed = grep { _filtered($args, $range, $_->[3]{project}, $_->[0]) }
+    $self->_timed(last_activity => undef, @sessions);
+  @sessions = _by_time(-1, @timed);
   @sessions = @sessions[0 .. $limit - 1] if @sessions > $limit;
   return [@sessions];
 }
@@ -425,7 +425,7 @@ sub _runs ($self, @files) {
     +{agent_id => _agent_id($_), started_at => $meta->{started_at}, last_activity => $meta->{last_activity},
       messages => $meta->{messages}, _file => $meta->{_file}};
   } @files;
-  return sort { ($a->{started_at} // '') cmp($b->{started_at} // '') || $a->{agent_id} cmp $b->{agent_id} } @runs;
+  return _by_time(1, $self->_timed(started_at => 'agent_id', @runs));
 }
 
 # The object a run's meta file holds; an empty one if the file is missing or
@@ -442,12 +442,13 @@ sub _meta ($self, $file, $run = 0) {
 }
 
 # Brings the cached metadata of $file up to date. The cache keeps the file's
-# device, inode, size and mtime, the offset after the last whole line read, and
-# the scan's state at that offset. A file that only grew is read from that
-# offset on; a new one, or one that shrank, was replaced (another inode) or
-# changed without growing, is read from the start. With $visit, a file that has
-# to be read at all is read from the start, and $visit sees every record
-# of it -- lines before the offset only if the raw test $skip lets them
+# device, inode, size and mtime, the offset after the last whole line read, the
+# scan's state at that offset, and, as ms, the started_at and last_activity of
+# the metadata in epoch milliseconds (see _timed). A file that only grew is read
+# from that offset on; a new one, or one that shrank, was replaced (another
+# inode) or changed without growing, is read from the start. With $visit, a
+# file that has to be read at all is read from the start, and $visit sees every
+# record of it -- lines before the offset only if the raw test $skip lets them
 # through. With $run, $file is a subagent run, whose first prompt the cache
 # keeps nowhere: no tool sends it, and it is often a whole briefing of tens of
 # KB, which over thousands of runs would be most of what the cache holds.
@@ -481,6 +482,7 @@ sub _refresh ($self, $file, $skip = undef, $visit = undef, $run = 0) {
   });
 
   @fstat = stat $fh;
+  my $meta = $self->_summary($file, $tail // \%state);
   $self->meta_cache->{"$file"} = {
     dev    => $fstat[0],
     ino    => $fstat[1],
@@ -488,7 +490,8 @@ sub _refresh ($self, $file, $skip = undef, $visit = undef, $run = 0) {
     mtime  => $fstat[9],
     offset => $offset,
     state  => \%state,
-    meta   => $self->_summary($file, $tail // \%state),
+    meta   => $meta,
+    ms     => {map { $_ => _iso_ms($meta->{$_}) } qw(started_at last_activity)},
   };
   return 1;
 }
@@ -695,6 +698,33 @@ sub _filtered ($args, $range, $project, $ms) {
   return 0 if defined $since && $ms < $since;
   return 0 if defined $until && $ms > $until;
   return 1;
+}
+
+# Each record given as [ms, time, then, record]: its time $key (started_at or
+# last_activity) in epoch milliseconds (see _iso_ms) and as it is ('' for
+# none), and its $then ('' without one). The ms of a session or run, a record
+# with a _file, is the one the cache worked out when it read the file; of any
+# other record, it is worked out here. No time is parsed in a sort, nor again
+# on every call for each of hundreds of sessions; the records get no key.
+sub _timed ($self, $key, $then, @recs) {
+  my $cache = $self->meta_cache;
+  return map {
+    my $cached = defined $_->{_file} ? $cache->{$_->{_file}} : undef;
+    [$cached ? $cached->{ms}{$key} : _iso_ms($_->{$key}), $_->{$key} // '', defined $then ? $_->{$then} : '', $_];
+  } @recs;
+}
+
+# The records of entries made by _timed, in the order of their times: oldest
+# first with $dir 1, newest first with -1. Times are in the order of the
+# instants they are, which their strings are not in where forms mix within a
+# second or a time has an offset; of one instant, in that of their strings,
+# then by their then. A time that is no instant (none, or no ISO 8601 time)
+# counts as the oldest.
+sub _by_time ($dir, @timed) {
+  my $oldest = -9**9**9;    # -inf
+  return map { $_->[3] } sort {
+    $dir * (($a->[0] // $oldest) <=> ($b->[0] // $oldest)) || $dir * ($a->[1] cmp $b->[1]) || $a->[2] cmp $b->[2]
+  } @timed;
 }
 
 # The since and until of $args as epoch milliseconds (see _iso_ms), each undef
