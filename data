@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-11-10T07:03:43Z
+id: 196
+priority: low
+started: 2026-11-10T16:02:30Z
+status: todo
+tags:
+- http
+- sse
+- refresh
+title: 'HTTP+SSE: refresh pages that a stop and start overtake fail ''not connected''
+  or go out mid-handshake'
+updated: 2026-11-10T16:02:30Z
+---
+
+Found by mcp-hub-worker during wave B2 (k146/k124/k149/k112, 2026-11-10). k112 left SSE refresh pages alone (worker's choice): a refresh whose later pages a stop and a new start overtake fails 'not connected', or sends a page while the new session's handshake is under way. Decide whether a refresh is bound to its session the way stdio binds it to its child (_list_all_p's $on).
+
+Maintainer-Entscheidung 2026-11-10: ja, ein SSE-Refresh ist an seine Session gebunden, wie stdio ihn an sein Child bindet (_list_all_p's $on). Mit Test.
