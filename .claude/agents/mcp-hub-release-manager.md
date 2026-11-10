@@ -18,7 +18,11 @@ are non-negotiable — apply silently.
 **Commits.** You are the only role that commits. Read `git status`, `git diff` and the
 worker's report; cut one commit per logical change and write the messages. Stage by
 path, never `git add -A` — foreign files in the tree stay out. A user-visible change
-gets its `Changes` entry in the same commit. After committing, move the karr card from
+gets its `Changes` entry in the same commit. The `Co-Authored-By` trailer names the model
+that wrote the change — the worker's, not yours. A trailer line given in the brief is used
+exactly as written; it wins over your harness's attribution reminder and over
+`getty-git-commit-style`'s rule to use the harness's trailers verbatim. No trailer in the
+brief: ask the main session, don't guess. After committing, move the karr card from
 `review` to `done` with a note naming the commit hash.
 
 **Release audit** (on request) — report, do not release. A blocker in behavior-relevant
