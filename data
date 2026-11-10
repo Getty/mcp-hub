@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-10T03:59:05Z
+created: 2026-11-09T19:29:56Z
+id: 172
+priority: low
+started: 2026-11-10T02:45:47Z
+status: done
+tags:
+- native
+- decision
+- wire
+title: 'Decide: should ClaudeSessions'' list_running_sessions cut last_prompt like
+  list_sessions'' first_prompt?'
+updated: 2026-11-10T03:59:05Z
+---
+
+From k170 (2026-11-09). ClaudeHistory list_sessions now sends a first_prompt cut to 500 characters plus "…". ClaudeSessions list_running_sessions still sends each live session's whole last_prompt, built by its own _text. It is not cached, but can be as large: a briefing of tens of KB. It changes an existing tool's output, so it is the maintainer's call. Done when decided; if yes, the same 500 + "…" cut and a test (lane mcp-hub-worker).
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes. list_running_sessions cuts last_prompt like list_sessions' first_prompt: 500 characters plus U+2026.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green with the patch; t/native/ + t/hub.t pass under EV and Poll (22 files, 350 tests) with all six natives cards applied. Apply order k99, k111, k163, k172, k173, k179 (scratchpad w-kNNN/incr.patch each). k172: last_prompt cut to 500 characters plus … (local _cut), edges 499/500/501, wide chars, emoji at 500, 40 KB, and the tool output tested.
+
+Committed as 34b3ff2 on main (local, not pushed).
