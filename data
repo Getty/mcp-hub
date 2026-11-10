@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-10T05:07:06Z
+created: 2026-11-03T18:39:39Z
+id: 33
+priority: low
+started: 2026-11-10T04:02:49Z
+status: done
+tags:
+- cli
+title: mcp-hub status exits 0 when the hub is down
+updated: 2026-11-10T05:07:06Z
+---
+
+Found by mcp-hub-binary-worker during k28. Documented behaviour, but scripts and health checks cannot tell a running hub from a dead one. Decide whether a non-zero exit when the daemon is unreachable is the better contract.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes. 'mcp-hub status' exits non-zero (1) when the daemon cannot be reached; the message stays. The dist is unreleased, so the contract can still change.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green under EV and Poll with t/hub.t; combined run of t/reload.t t/shutdown.t t/reload-free.t t/command.t t/cli.t t/aggregate-auth.t t/hub.t passed under both. Apply order k89 patch, then incr.patch of k125, k75, k76, k79, k33 (scratchpad w-kNN/). k33: status.pm dies with $! = 1, so 'hub is not running at …' goes to stderr and the exit is 1 (plain exit would kill in-process callers, plain die exits 111); t/command.t reads the error, t/cli.t checks exit 1. README and spec updated (main session).
+
+Committed as c3cceb6 (Exit 1 from mcp-hub status when no hub answers).
