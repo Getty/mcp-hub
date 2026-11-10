@@ -342,8 +342,8 @@ tool list:
 | `mcp-hub daemon` | Run the hub in the foreground (single process). |
 | `mcp-hub config [--client NAME] [--all] [--url BASE]` | Print `mcpServers` JSON. |
 | `mcp-hub status [--client NAME] [--url BASE] [--token TOKEN]` | Table of the running hub's upstreams and clients. Exits 1, saying "hub is not running" on stderr, when no hub answers. |
-| `mcp-hub refresh [NAME] [--client NAME] [--url BASE] [--token TOKEN]` | Re-fetch manifests; also the way to retry a `failed` server. |
-| `mcp-hub reload [--client NAME] [--url BASE] [--token TOKEN]` | Re-read the config and apply only what changed. |
+| `mcp-hub refresh [NAME] [--client NAME] [--url BASE] [--token TOKEN]` | Re-fetch manifests; also the way to retry a `failed` server. Exits 1, saying "hub is not running" on stderr, when no hub answers. |
+| `mcp-hub reload [--client NAME] [--url BASE] [--token TOKEN]` | Re-read the config and apply only what changed. Exits 1, saying "hub is not running" on stderr, when no hub answers. |
 | `mcp-hub token` | Print a fresh random bearer token. |
 
 A global `--config PATH` (or `-c PATH`, or `$MCP_HUB_CONFIG`) selects the config
@@ -440,8 +440,9 @@ the reason.
   the command when it died during start-up (the usual "command not found"). The
   log level is Mojolicious': everything by default, `info` and up with
   `mcp-hub daemon -m production`, or pick one with `MOJO_LOG_LEVEL=debug`.
-- **`status`/`refresh` say the hub is not running.** They look at the config's
-  `listen` address; use `--url` if the daemon listens elsewhere.
+- **`status`, `refresh` or `reload` say the hub is not running, and exit 1.**
+  They look at the config's `listen` address; use `--url` if the daemon listens
+  elsewhere.
 - **A command dies on a broken config while the daemon is still up.** `status`,
   `refresh` and `reload` normally read the config for the address and token; pass
   `--url` and `--token` (or `$MCP_HUB_TOKEN`) to skip the file and reach the

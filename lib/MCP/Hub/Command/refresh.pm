@@ -21,6 +21,8 @@ Options:
   --url BASE      Base URL of the running hub (default derived from the listen address)
   --token TOKEN   Bearer token to authenticate with, instead of a configured client
                   (or $MCP_HUB_TOKEN); with --url the config file is never read
+
+Exits 1, saying so, when no hub answers at the base URL.
 USAGE
 
 sub run ($self, @args) {
@@ -34,7 +36,12 @@ sub run ($self, @args) {
   my $body = encode_json(defined $name ? {name => $name} : {});
   my $tx   = Mojo::UserAgent->new->post("$base/_hub/refresh" => $headers => $body);
   if (my $err = $tx->error) {
-    return print "hub is not running at $base ($err->{message})\n" unless $err->{code};
+    # No hub answers: a failure, exit 1 with the reason on stderr, as for
+    # status -- an uncaught die exits with $!.
+    unless ($err->{code}) {
+      local $! = 1;
+      die "hub is not running at $base ($err->{message})\n";
+    }
     die "refresh request failed: $err->{code} $err->{message}\n";
   }
 
@@ -82,6 +89,10 @@ C<mcp-hub status>.
 
 A refresh is also the way back from a C<failed> upstream: it clears the failure
 and tries to start the server once more (see L<MCP::Hub::Upstream/refresh_p>).
+
+When no hub answers -- the connection is refused, or no HTTP response comes
+back -- it says "hub is not running at" that base URL on standard error and
+exits 1, as C<mcp-hub status> does.
 
 =head1 SEE ALSO
 

@@ -428,3 +428,5 @@ Revision history for MCP-Hub
     call.
   - A start whose prompts/list or resources/list times out keeps the cached
     list instead of storing an empty one and telling listeners it changed.
+  - `mcp-hub refresh` and `mcp-hub reload` exit 1 with "hub is not running at
+    …" on stderr when no hub answers, as `mcp-hub status` does.

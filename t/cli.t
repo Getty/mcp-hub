@@ -180,14 +180,17 @@ subtest "after the command, -c is the command's own option" => sub {
   is_deeply servers($r), [],        '...and prints no configuration';
 };
 
-subtest 'status exits 1 when no hub answers' => sub {
+subtest 'status, refresh and reload exit 1 when no hub answers' => sub {
   # So that a script or a health check can tell a running hub from a dead one:
-  # it said "not running" and exited 0, as if all were well.
+  # each said "not running" and exited 0, as if all were well -- status until
+  # k33, refresh and reload until k186.
   my $url = 'http://127.0.0.1:' . Mojo::IOLoop::Server->generate_port;
-  my $r   = mcp_hub('--config', $config{alpha}, 'status', '--url', $url);
-  is $r->{exit}, 1, 'mcp-hub status --url (nothing there) exits 1';
-  like $r->{err}, qr/\Ahub is not running at \Q$url\E \(.+\)\n\z/, '...saying the hub is not running there';
-  is $r->{out}, '', '...and prints no table';
+  for my $command (qw(status refresh reload)) {
+    my $r = mcp_hub('--config', $config{alpha}, $command, '--url', $url);
+    is $r->{exit}, 1, "mcp-hub $command --url (nothing there) exits 1";
+    like $r->{err}, qr/\Ahub is not running at \Q$url\E \(.+\)\n\z/, '...saying the hub is not running there';
+    is $r->{out}, '', '...on stderr, and prints nothing else';
+  }
 };
 
 done_testing;

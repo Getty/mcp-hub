@@ -105,10 +105,10 @@ subtest 'the status table names a failure and when a client was last seen' => su
 subtest 'status and refresh talk to --url' => sub {
   my $url = 'http://127.0.0.1:' . Mojo::IOLoop::Server->generate_port;
 
-  # status dies with it, and so exits 1 (t/cli.t); refresh prints it.
+  # Each dies with it, and so exits 1 (t/cli.t).
   for my $command (qw(status refresh)) {
-    my ($out, $err) = run_command($app, $command, '--url', $url);
-    like $command eq 'status' ? $err : $out, qr/\Qnot running at $url\E/,
+    my (undef, $err) = run_command($app, $command, '--url', $url);
+    like $err, qr/\Qnot running at $url\E/,
       "$command --url overrides the configured listen address";
   }
 };
@@ -124,8 +124,8 @@ subtest 'a broken config file is remembered (cli), not thrown, so --url + token 
 
   my $url = 'http://127.0.0.1:' . Mojo::IOLoop::Server->generate_port;
   for my $command (qw(status refresh reload)) {
-    my ($out, $err) = run_command($app, $command, '--url', $url, '--token', 'sekret');
-    like $command eq 'status' ? $err : $out, qr/\Qnot running at $url\E/,
+    my (undef, $err) = run_command($app, $command, '--url', $url, '--token', 'sekret');
+    like $err, qr/\Qnot running at $url\E/,
       "$command --url + --token talks to the daemon without reading the broken config";
   }
 };

@@ -326,10 +326,11 @@ Mojolicious commands; `--config` and `MCP_HUB_CONFIG` apply to all of them.
 | `daemon` | Runs the hub in the foreground. `--log-level` / `MOJO_LOG_LEVEL` as usual. |
 | `config [--client NAME] [--all] [--url BASE]` | Prints `{"mcpServers": {…}}`. In clients mode `--client` is required and adds `"headers": {"Authorization": "Bearer …"}`; in open mode it is omitted. Default: one `{"type": "http", "url": "<base>/<name>"}` entry per server the profile allows, keyed by the server name. `--all`: a single entry `hub` pointing at `<base>/all`. `--url` overrides the base (default derived from `listen`). `--client` in open mode is ignored with a warning. |
 | `status` | Calls `GET /_hub/status` and prints a table. Reports "not running" on connection refused, on stderr, and exits 1. |
-| `refresh [NAME]` | Calls `POST /_hub/refresh`. |
+| `refresh [NAME]` | Calls `POST /_hub/refresh`. Reports "not running" on connection refused, on stderr, and exits 1, as `status` does. |
+| `reload` | Calls `POST /_hub/reload` and prints what changed; a refused config is printed with its JSON path and exits non-zero. Reports "not running" on connection refused, on stderr, and exits 1, as `status` does. |
 | `token` | Prints 32 random bytes as base64url — to paste into `clients`. Never touches the config file. |
 
-`status` and `refresh` use the token of the first client whose profile has `admin: true` when in clients mode; `--client` selects another.
+`status`, `refresh` and `reload` use the token of the first client whose profile has `admin: true` when in clients mode; `--client` selects another.
 
 ## Error handling
 

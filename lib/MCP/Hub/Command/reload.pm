@@ -19,6 +19,8 @@ Options:
   --url BASE      Base URL of the running hub (default derived from the listen address)
   --token TOKEN   Bearer token to authenticate with, instead of a configured client
                   (or $MCP_HUB_TOKEN); with --url the config file is never read
+
+Exits 1, saying so, when no hub answers at the base URL.
 USAGE
 
 sub run ($self, @args) {
@@ -31,7 +33,12 @@ sub run ($self, @args) {
   my $tx = Mojo::UserAgent->new->post("$base/_hub/reload" => $headers => '{}');
   my $summary = $tx->res->json;
   if (my $err = $tx->error) {
-    return print "hub is not running at $base ($err->{message})\n" unless $err->{code};
+    # No hub answers: a failure, exit 1 with the reason on stderr, as for
+    # status -- an uncaught die exits with $!.
+    unless ($err->{code}) {
+      local $! = 1;
+      die "hub is not running at $base ($err->{message})\n";
+    }
 
     # The hub refused the new configuration and said why. That is the message
     # worth printing -- and worth exiting non-zero on, so a script that reloads
@@ -81,6 +88,10 @@ stays fully in effect, the hub answers with the error and its JSON path, and
 this command prints that and exits non-zero:
 
   Invalid configuration at mcpServers.serper.hub.idle_timeout: must be an integer
+
+When no hub answers -- the connection is refused, or no HTTP response comes
+back -- it says "hub is not running at" that base URL on standard error and
+exits 1, as C<mcp-hub status> does.
 
 In clients mode it authenticates as the first admin client (or C<--client>).
 C<--url> points it at another base URL, and C<--token> (or C<$MCP_HUB_TOKEN>)
