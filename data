@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-10T07:03:56Z
+id: 198
+priority: low
+started: 2026-11-10T16:02:42Z
+status: todo
+tags:
+- tests
+- style
+title: t/http.t has many lines over 120 columns
+updated: 2026-11-10T16:02:42Z
+---
+
+Found by mcp-hub-worker during wave B2 (k146/k124/k149/k112, 2026-11-10). Style only: many existing lines in t/http.t pass 120 columns. Reflow when the file is next touched for something else, or in one pass.
