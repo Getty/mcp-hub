@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-10T10:58:24Z
+id: 204
+priority: low
+started: 2026-11-10T16:03:10Z
+status: todo
+tags:
+- tests
+- skills
+title: Say in the test-writer's guidance that a liveness check on a process not the
+  test's own child counts a zombie as ended
+updated: 2026-11-10T16:03:10Z
+---
+
+From k182 (2026-11-10): in a container whose PID 1 reaps nothing (CI's job container), a grandchild the test does not own stays a zombie after it exits, and kill 0 still finds it. t/stdio*.t now use an ended($pid) helper (/proc state Z/X). The other kill 0 checks in t/ look only at the hub's own children, which the hub reaps. Add one line to the test guidance the mcp-hub-test-writer loads (skill text, not code).
