@@ -81,7 +81,8 @@ sub _register ($self) {
 
   $self->tool(
     name         => 'list_sessions',
-    description  => 'List conversation sessions, newest first',
+    description  => qq{List conversation sessions, newest first. A first_prompt over 500 characters is cut to 500}
+      . qq{ plus "\x{2026}"; get_conversation has the whole text},
     input_schema => {
       type       => 'object',
       properties => {

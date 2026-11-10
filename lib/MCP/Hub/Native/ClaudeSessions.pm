@@ -39,7 +39,8 @@ sub _register ($self) {
 
   $self->tool(
     name         => 'list_running_sessions',
-    description  => 'List the Claude Code sessions currently running on this machine',
+    description  => qq{List the Claude Code sessions currently running on this machine. A last_prompt over 500}
+      . qq{ characters is cut to 500 plus "\x{2026}"; the history server's get_conversation has the whole text},
     input_schema => {type => 'object'},
     code         => sub ($tool, $args) {
       return $tool->text_result($gone, 1) unless $self;

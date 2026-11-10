@@ -384,3 +384,5 @@ Revision history for MCP-Hub
     rather than JSON::PP, so a session line reads the same on every install.
   - list_running_sessions' last_prompt is cut to its first 500 characters,
     followed by `…` when longer, as list_sessions cuts first_prompt.
+  - The list_sessions and list_running_sessions descriptions say their prompts
+    are cut and that get_conversation returns the whole text.

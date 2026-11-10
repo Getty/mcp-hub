@@ -306,7 +306,7 @@ Dates are ISO 8601; `since`/`until` accept `YYYY-MM-DD` or a full timestamp, and
 |---|---|
 | `list_running_sessions` | `[{pid, cwd, project, session_id, started_at, last_activity, last_prompt, git_branch}]` |
 
-Process discovery: `/proc/*/comm` equal to `claude` (no `pgrep`: it reads the same names), `cwd` from `/proc/<pid>/cwd`. The session is the newest `.jsonl` in the project directory matching that `cwd`; `last_prompt` is the most recent `user` line's text. Linux only; on other systems the tool returns an error result saying so.
+Process discovery: `/proc/*/comm` equal to `claude` (no `pgrep`: it reads the same names), `cwd` from `/proc/<pid>/cwd`. The session is the newest `.jsonl` in the project directory matching that `cwd`; `last_prompt` is the text of the last `user` line that carries text — lines holding only tool results are passed over, `null` when none does — cut to its first 500 characters plus `…` when longer, as `list_sessions` cuts `first_prompt`; both tools' descriptions say their prompts are cut and that `get_conversation` has the whole text. Linux only; on other systems the tool returns an error result saying so.
 
 ### `MCP::Hub::Native::Status`
 
