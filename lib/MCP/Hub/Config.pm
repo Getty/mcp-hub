@@ -95,11 +95,12 @@ sub _decode_yaml ($class, $file, $text) {
   croak "invalid UTF-8 in $file\n" unless defined $chars;
 
   # Core schema only: no Perl schema is loaded, so a tag can never construct an
-  # object or run code. Booleans come out as plain 1/'' so that true/false
-  # behave exactly like their JSON counterparts, duplicate keys are refused,
-  # and a cyclic alias dies here instead of being walked forever below.
+  # object or run code. Booleans come out as JSON::PP::Boolean, what a JSON
+  # true/false decodes to, so that they behave exactly like their JSON
+  # counterparts -- a plain 1 would pass for an integer. Duplicate keys are
+  # refused, and a cyclic alias dies here instead of being walked forever below.
   my $pp = YAML::PP->new(
-    boolean        => 'perl',
+    boolean        => 'JSON::PP',
     schema         => ['Core'],
     cyclic_refs    => 'fatal',
     duplicate_keys => 0,
@@ -127,9 +128,11 @@ sub _yaml_error ($file, $error) {
 
 # YAML can express things JSON cannot, a tagged object above all. The
 # configuration surface stays JSON-expressible, so anything that is not a plain
-# hash, array or scalar is refused with its path instead of reaching _parse.
+# hash, array, scalar or boolean is refused with its path instead of reaching
+# _parse.
 sub _assert_json_expressible ($data, $path) {
   my $ref = ref $data or return;
+  return if $ref eq 'JSON::PP::Boolean';
   _err($path, "unsupported YAML value ($ref): the configuration must be JSON-expressible")
     unless $ref eq 'HASH' || $ref eq 'ARRAY';
 
@@ -467,7 +470,7 @@ sub _default_cache_dir {
   return "$base/mcp-hub";
 }
 
-# A JSON true is no 1: it would read as one second, or as port 1.
+# A JSON or YAML true is no 1: it would read as one second, or as port 1.
 sub _int ($path, $value) {
   _err($path, 'must be an integer') unless defined $value && !ref $value && $value =~ /^-?\d+$/;
   return $value + 0;
@@ -560,7 +563,10 @@ not a plain mapping, sequence or scalar -- a tagged object, say -- is a
 configuration error naming its path. No Perl schema is loaded, so no tag can
 construct an object or run code, duplicate keys are an error, and a cyclic
 alias is fatal. C<true>/C<false> and integers behave exactly as they do in
-JSON, so C<always_on: true> and C<idle_timeout: 120> mean what they look like.
+JSON, so C<always_on: true> and C<idle_timeout: 120> mean what they look like,
+and C<idle_timeout: true> is refused as C<"idle_timeout": true> is: a boolean
+is no number of seconds, and no port. A class's C<args> get the same booleans
+from either syntax.
 
 A YAML syntax error is reported like its JSON counterpart, with the file and
 the parser's line and column: C<invalid YAML in /etc/mcp-hub.yml: Line : 7

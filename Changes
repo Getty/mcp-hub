@@ -370,3 +370,6 @@ Revision history for MCP-Hub
     until of a day keeps all of it. A since or until that is not a date or
     an ISO 8601 time is an error result naming it, where it used to filter
     silently.
+  - A YAML `true` or `false` is a boolean, as in JSON: `idle_timeout: true`,
+    `request_timeout: true` or `port: true` is refused with its path, where it
+    used to be read as the number one.

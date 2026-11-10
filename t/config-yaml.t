@@ -45,6 +45,7 @@ mcpServers:
     class: MCP::Run
     args:
       allowed_commands: ["ls", "cat"]
+      verbose: true
   remote:
     url: http://example.test/mcp
     headers:
@@ -73,7 +74,7 @@ YAML
     "context7":   {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]},
     "playwright": {"command": "npx", "args": ["-y", "@playwright/mcp@latest"],
                    "hub": {"idle_timeout": 120, "always_on": false}},
-    "run":        {"class": "MCP::Run", "args": {"allowed_commands": ["ls", "cat"]}},
+    "run":        {"class": "MCP::Run", "args": {"allowed_commands": ["ls", "cat"], "verbose": true}},
     "remote":     {"url": "http://example.test/mcp",
                    "headers": {"Authorization": "Bearer xyz"}}
   },
@@ -103,6 +104,8 @@ JSON
   is $y->mode, 'clients', 'clients block derives clients mode';
   is_deeply $y->server_names, [qw(context7 playwright remote run)], 'all four servers';
   is $y->clients->{main}{token}, 'sk-hub', '${VAR} expanded in a YAML value';
+  is ref $y->server('run')->{class_args}{verbose}, 'JSON::PP::Boolean',
+    'a true in class args reaches the class as the boolean JSON hands it, not as 1';
 };
 
 subtest 'booleans and integers mean what JSON means' => sub {
@@ -133,6 +136,55 @@ YAML
   is $c->server('lazy')->{always_on},     0,   'always_on: false -> 0, not a true string';
   is $c->profiles->{boss}{admin},  1, 'admin: true -> 1';
   is $c->profiles->{guest}{admin}, 0, 'admin: false -> 0';
+
+  # The other boolean keys, each way.
+  for my $bool (qw(true false)) {
+    my $want = $bool eq 'true' ? 1 : 0;
+    my $more = MCP::Hub::Config->from_file(write_config("more-$bool.yml", <<"YAML"));
+mcpServers:
+  forked:
+    class: MCP::Run
+    hub:
+      fork: $bool
+  box:
+    docker: mcp/time
+    stdio: $bool
+hub:
+  auto_reload: $bool
+YAML
+    is $more->server('forked')->{type}, ($want ? 'fork' : 'perl'), "fork: $bool";
+    is $more->server('box')->{stdio},   $want,                      "stdio: $bool -> $want";
+    is $more->auto_reload,              $want,                      "auto_reload: $bool -> $want";
+  }
+};
+
+# A YAML true is a boolean, as a JSON true is -- never the number 1, which would
+# read as one second, or as port 1.
+subtest 'a YAML boolean is no integer, as a JSON one is not' => sub {
+  my %yaml = (
+    'hub.idle_timeout'                 => "mcpServers: {}\nhub:\n  idle_timeout: %s\n",
+    'hub.request_timeout'              => "mcpServers: {}\nhub:\n  request_timeout: %s\n",
+    'mcpServers.x.hub.idle_timeout'    => "mcpServers:\n  x:\n    command: a\n    hub:\n      idle_timeout: %s\n",
+    'mcpServers.x.hub.request_timeout' => "mcpServers:\n  x:\n    command: a\n    hub:\n      request_timeout: %s\n",
+    'mcpServers.x.port'                => "mcpServers:\n  x:\n    docker: mcp/time\n    port: %s\n",
+  );
+  my %json = (
+    'hub.idle_timeout'                 => '{"mcpServers": {}, "hub": {"idle_timeout": %s}}',
+    'hub.request_timeout'              => '{"mcpServers": {}, "hub": {"request_timeout": %s}}',
+    'mcpServers.x.hub.idle_timeout'    => '{"mcpServers": {"x": {"command": "a", "hub": {"idle_timeout": %s}}}}',
+    'mcpServers.x.hub.request_timeout' => '{"mcpServers": {"x": {"command": "a", "hub": {"request_timeout": %s}}}}',
+    'mcpServers.x.port'                => '{"mcpServers": {"x": {"docker": "mcp/time", "port": %s}}}',
+  );
+
+  for my $path (sort keys %yaml) {
+    my $integer = $path =~ /request_timeout/ ? 'a positive integer' : 'an integer';
+    for my $bool (qw(true false)) {
+      my $from_yaml = error_from(write_config('bool.yml',  sprintf $yaml{$path}, $bool));
+      my $from_json = error_from(write_config('bool.json', sprintf $json{$path}, $bool));
+      like $from_yaml, qr/^Invalid configuration at \Q$path\E: must be \Q$integer\E$/m, "$path: $bool is refused";
+      is $from_yaml, $from_json, "$path: $bool, byte for byte the message of the JSON twin";
+    }
+  }
 };
 
 subtest '${VAR} expansion works in YAML values' => sub {

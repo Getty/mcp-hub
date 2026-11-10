@@ -832,8 +832,9 @@ hub:
 Without `--config` / `$MCP_HUB_CONFIG` the hub looks for `config.json`, then
 `config.yml`, then `config.yaml` in `~/.config/mcp-hub/` and takes the first that
 exists. A file must hold a single YAML document; duplicate keys are an error,
-and no YAML tag can construct an object. `mcp-hub config` always prints JSON —
-that output is for MCP clients.
+and no YAML tag can construct an object. `true` and `false` are booleans as in
+JSON, so `idle_timeout: true` is a config error, not one second. `mcp-hub config`
+always prints JSON — that output is for MCP clients.
 
 The Docker image sets `MCP_HUB_CONFIG_DIR=/config` and finds `mcp.json`, then
 `mcp.yml`, then `mcp.yaml` there (first that exists, JSON leading), so a YAML
