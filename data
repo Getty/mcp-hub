@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-10T04:00:25Z
+created: 2026-11-06T01:18:38Z
+id: 60
+priority: low
+started: 2026-11-10T02:58:56Z
+status: done
+tags:
+- agent
+- release
+- docker
+title: 'Release-manager audit: dzil build waits on the Docker image'
+updated: 2026-11-10T04:00:25Z
+---
+
+Seen during the k52 commit (2026-11-06). [@Author::GETTY] with docker_image adds the Docker::API releaser, whose after_build hook builds the raudssus/mcp-hub image on every dzil build. The release-manager's audit build hung there past a 500 s timeout and produced no tarball. DZIL_DOCKER_API_SKIP=1 dzil build gives the dist check in seconds (verified: exit 0, no warnings). The agent definition (.claude/agents/mcp-hub-release-manager.md -- check whether skilletor manages it) should say: audit with DZIL_DOCKER_API_SKIP=1, and build the image separately (DOCKER_BUILDKIT=0 on this podman host) only when the image is what is being checked.
+
+Text done by mcp-hub-worker in worktree main (uncommitted): release-manager step 7 audits with DZIL_DOCKER_API_SKIP=1 dzil build, image separately only when checked, DZIL_BINARY_SKIP=1 once dist.ini declares binary. Verified against Docker::API 0.105 and bundle 0.328 (Author::GETTY::Binary::after_build returns early). Patch: scratchpad w-k60-107/patch, hunk 2.
+
+Committed as b5f2422 on main (local, not pushed).
