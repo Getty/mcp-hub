@@ -461,7 +461,7 @@ Key wie bei Mojo::JSON der letzte Wert gewinnt (Cpanel::JSON::XS verwürfe die Z
 Bei jedem anderen Backend (JSON::PP, auf einem Host ohne C-Compiler) dekodiert
 `Mojo::JSON::decode_json`, weil JSON::PP manche kaputte oder extreme Zeile anders läse — so
 liest jede Installation eine Zeile gleich. Das Tempo von Cpanel::JSON::XS zählt auf
-Historien von vielen MB; das Binary packt es mit (`scripts/build-binary.sh` bricht ohne
+Historien von vielen MB; das Binary packt es mit (`scripts/binary-pp-args.sh` bricht ohne
 ab). Encodiert wird weiter mit Mojo::JSON. Die Tests zählen Decodes, indem sie dieses
 `decode_json` umhängen — kein Decode an ihm vorbei.
 

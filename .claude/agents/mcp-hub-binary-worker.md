@@ -73,7 +73,7 @@ next to it and runs `binary_verify` and `binary_smoke` on it from the build dir
 per platform. `scripts/binary-verify.sh <binary>` must print `verify: OK`: it compares
 the binary with `perl -Ilib bin/mcp-hub` where it was built, so it needs the dist's
 dependencies — the bundle starts it with no `PERL5LIB` and names them in
-`DZIL_BINARY_PERL5LIB` (bundle card k32, not in the installed 0.328; unset, the script
+`DZIL_BINARY_PERL5LIB` (bundle card k32, in the installed 0.328; unset, the script
 uses its shell's environment as it is). `scripts/binary-smoke.sh <binary>` must print
 `smoke: OK` on a machine without perl — bash, coreutils, grep, sed and awk only, every
 Perl check inside the binary: `mcp-hub token`, `mcp-hub config`, and a `mcp-hub daemon`
