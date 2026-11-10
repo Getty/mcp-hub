@@ -495,24 +495,31 @@ sub _build_aggregate ($self) {
   # that server's own route. MCP::Server looks tools/call and prompts/get up in
   # the list these leave, so what the profile hides is "not found" as well.
   $agg->on(tools => sub ($srv, $tools, $ctx) {
-    my $c       = $ctx->controller  or return;
-    my $profile = $c->stash('mcp.profile') or return;
-    $self->auth->filter_aggregate($profile, $tools, $srv);
+    $self->auth->filter_aggregate($self->_aggregate_profile($ctx), $tools, $srv);
   });
   $agg->on(prompts => sub ($srv, $prompts, $ctx) {
-    my $c       = $ctx->controller  or return;
-    my $profile = $c->stash('mcp.profile') or return;
-    $self->auth->filter_aggregate_prompts($profile, $prompts, $srv);
+    $self->auth->filter_aggregate_prompts($self->_aggregate_profile($ctx), $prompts, $srv);
   });
   $self->aggregate($agg);
   # server/discover: each section of the instructions is headed by its server's
   # name, so only those of the servers the profile may see.
   $agg->on(instructions => sub ($srv, $servers, $ctx) {
-    my $c       = $ctx->controller  or return;
-    my $profile = $c->stash('mcp.profile') or return;
+    my $profile = $self->_aggregate_profile($ctx);
     @$servers = grep { $self->auth->allows_server($profile, $_) } @$servers;
   });
   return $self;
+}
+
+# What /all shows a request: what the profile the auth bridge stashed may see.
+# A request without one -- no controller, or a way in that never went through
+# the bridge -- sees everything in open mode, as every request there does, and
+# nothing at all in clients mode: there it fails closed, never open.
+my $NO_PROFILE = {name => '', servers => [], tools => {}};
+
+sub _aggregate_profile ($self, $ctx) {
+  my $c = $ctx->controller;
+  if ($c and my $profile = $c->stash('mcp.profile')) { return $profile }
+  return $self->hub_config->mode eq 'open' ? $self->auth->open_profile : $NO_PROFILE;
 }
 
 sub _setup_routes ($self) {

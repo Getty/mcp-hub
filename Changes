@@ -397,3 +397,5 @@ Revision history for MCP-Hub
     `mcp-hub daemon`.
   - `morbo bin/mcp-hub` is refused: its worker restarts on every file change
     without waiting for the upstreams it started.
+  - /all shows no tools, prompts or instructions in clients mode to a request
+    without a profile; open mode still shows everything.

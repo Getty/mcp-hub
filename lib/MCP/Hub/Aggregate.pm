@@ -199,6 +199,12 @@ are C<p__x__...>, and a profile that allows C<p> must not reach them. C<tools/ca
 and C<prompts/get> look the name up in the filtered list, so an entry the
 profile hides is not found, as on its own endpoint.
 
+The profile is the one the auth bridge stashed for the request
+(L<MCP::Hub::Auth/authenticate>). A request that comes without one -- with no
+controller, or by a way in that skipped the bridge -- fails closed in clients
+mode: no tools, no prompts, no instructions. In open mode it is shown
+everything, as every request there is.
+
 =head2 Known limit: colliding names
 
 Two servers can produce the same name here: the tool C<x__echo> of C<p> and the

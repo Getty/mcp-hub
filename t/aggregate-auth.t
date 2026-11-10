@@ -3,7 +3,9 @@ use Mojo::Base -strict, -signatures;
 use Test::More;
 use Test::Mojo;
 use Mojo::File qw(curfile tempdir);
+use MCP::Constants qw(META_CLIENT_CAPABILITIES META_PROTOCOL_VERSION PROTOCOL_VERSION);
 use MCP::Hub;
+use MCP::Server::Context;
 
 use lib curfile->sibling('lib')->to_string;
 
@@ -120,6 +122,56 @@ subtest 'public_profile: a request without a token is filtered alike' => sub {
   is_deeply $hidden->{error}, {code => -32602, message => "Prompt 'q__greet' not found"}, 'it is not found';
   is_deeply rpc($t, '/all', undef, 'tools/call', echo('q__echo'))->{error},
     {code => -32602, message => "Tool 'q__echo' not found"}, 'q__echo is not found';
+};
+
+# The /all filters read the profile the auth bridge stashed. A request that
+# comes to /all without one -- with no controller, or with one that never went
+# through the bridge -- must not see everything for it: in clients mode it sees
+# nothing, and in open mode what every request there sees, everything.
+subtest 'without a stashed profile, /all shows nothing in clients mode, everything in open mode' => sub {
+  my $open = MCP::Hub->new(hub_config_input => {
+    mcpServers => {p => {class => 'EchoServer'}, q => {class => 'EchoServer'}},
+    hub        => {cache_dir => tempdir->to_string},
+  });
+  my $meta = {META_PROTOCOL_VERSION() => PROTOCOL_VERSION, META_CLIENT_CAPABILITIES() => {}};
+  my $ask  = sub ($hub, $ctx, $method, $params = {}) {
+    my $res = $hub->aggregate->handle(
+      {jsonrpc => '2.0', id => 1, method => $method, params => {%$params, _meta => $meta}}, $ctx);
+    $res->then(sub { $res = shift })->wait if ref $res ne 'HASH';    # a tool call in flight
+    return $res;
+  };
+
+  for my $case (['clients', hub()], ['open', $open]) {
+    my ($mode, $hub) = @$case;
+    is $hub->hub_config->mode, $mode, "a hub in $mode mode";
+    for my $without (['no controller', sub { MCP::Server::Context->new }],
+      ['a controller without a profile', sub { MCP::Server::Context->new(controller => $hub->build_controller) }])
+    {
+      my ($what, $ctx) = @$without;
+      my $tools    = $ask->($hub, $ctx->(), 'tools/list')->{result}{tools};
+      my $prompts  = $ask->($hub, $ctx->(), 'prompts/list')->{result}{prompts};
+      my $discover = $ask->($hub, $ctx->(), 'server/discover')->{result};
+      my $call     = $ask->($hub, $ctx->(), 'tools/call', echo('p__echo'));
+
+      if ($mode eq 'clients') {
+        is_deeply $tools,   [], "$mode mode, $what: no tools";
+        is_deeply $prompts, [], '...no prompts';
+        ok !exists $discover->{instructions}, '...no instructions';
+        ok !exists $discover->{capabilities}{$_}, "...and no $_ capability" for qw(tools prompts);
+        is_deeply $call->{error}, {code => -32602, message => "Tool 'p__echo' not found"}, '...and no tool is run';
+      }
+      else {
+        my @every = sort map {
+          my $srv = $_;
+          map { "${srv}__" . $_->name } @{$hub->upstreams_by_name->{$srv}->server->tools};
+        } qw(p q);
+        is_deeply [sort map { $_->{name} } @$tools], \@every, "$mode mode, $what: every tool";
+        is_deeply [sort map { $_->{name} } @$prompts], [qw(p__greet q__greet)], '...every prompt';
+        is $discover->{instructions}, "## p\nEcho things back.\n\n## q\nEcho things back.", '...every instruction';
+        is $call->{result}{content}[0]{text}, 'hi', '...and its tools are run';
+      }
+    }
+  }
 };
 
 done_testing;
