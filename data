@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-10T07:12:43Z
+created: 2026-11-06T07:40:51Z
+id: 108
+priority: low
+started: 2026-11-10T06:07:25Z
+status: done
+tags:
+- http
+- upstream
+- decision
+title: 'Decide: should Http stopped_p wait (bounded) for the session DELETE at daemon
+  shutdown?'
+updated: 2026-11-10T07:12:43Z
+---
+
+Split from k101 item 1. Since k94 a stop ends a Streamable HTTP session with one fire-and-forget DELETE. Http inherits a stopped_p that resolves at once, and the daemon exits soon after shutdown_p, so on shutdown the DELETE most likely never gets out (on a reload it does). Options: (a) leave it -- the remote times the session out; (b) Http::stopped_p waits for the DELETE, bounded by the connect/request timeout -- can delay shutdown by up to that timeout per dead remote (in parallel across upstreams). Maintainer decision.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: (a) leave it. The remote times the session out; a shutdown is not delayed by dead remotes. Http's POD says the DELETE at shutdown is fire-and-forget.
+
+Committed as c968df9 (Say in MCP::Hub::Upstream::Http's POD that the session DELETE at shutdown is not waited for).
