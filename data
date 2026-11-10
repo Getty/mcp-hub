@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-10T06:06:32Z
+created: 2026-11-06T04:47:38Z
+id: 88
+priority: low
+started: 2026-11-10T05:07:58Z
+status: done
+tags:
+- native
+- transport
+- decision
+title: In-process class calls over 30 s lose their response
+updated: 2026-11-10T06:06:32Z
+---
+
+From k40 research (2026-11-06, results: /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/results.md). A synchronous in-process tool call that blocks the loop over 30 s: Mojo::Server::Daemon's inactivity timeout fires as soon as the loop resumes, the client gets 'Premature connection close' though the hub logs 200 OK. Forked calls survive (MCP's streamed promise results set inactivity_timeout(0)). Decide: document it, or run in-process calls behind a promise so the transport streams them. Done: decision made, plus a test with MOJO_INACTIVITY_TIMEOUT lowered.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: fix it. The result of an in-process class's tool call reaches the transport as a promise, so MCP streams it and the 30 s inactivity timeout no longer cuts the answer after a long call. Test with MOJO_INACTIVITY_TIMEOUT lowered.
+
+Committed as a6a9849 (Stream every call an endpoint answers there and then, so a long in-process call keeps its answer past the inactivity timeout).
