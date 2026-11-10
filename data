@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-10T13:29:55Z
+created: 2026-11-06T04:46:51Z
+id: 83
+priority: high
+started: 2026-11-10T13:12:22Z
+status: done
+tags:
+- docs
+- native
+- fork
+title: Recommend hub.fork for ClaudeHistory and ClaudeSessions in the README
+updated: 2026-11-10T13:29:55Z
+---
+
+From k40 research (2026-11-06, results: /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/results.md). In-process, a call stalls the hub's loop for its whole duration: on a 1.9 GB history (this machine's size) a cold list_sessions is ~16 s CPU / 37-52 s wall, every search ~20 s CPU; past 30 s the caller loses the response (Mojo::Server::Daemon inactivity timeout fires when the loop resumes). Forked: hub stall 54-109 ms at every size, hub RSS flat at 67 MB, worker freed on idle. Done: README example and natives section show both with "hub": {"fork": true} and why (Linux only; macOS stays in-process); a test drives forked ClaudeHistory against t/fixtures/claude with the same results as in-process. Lanes: README (main agent), test (mcp-hub-test-writer). Maintainer: whether fork becomes the recommended default for these two.
+
+README part done by the main session (worktree main, uncommitted): Native Perl servers recommends hub.fork for ClaudeHistory (idle_timeout 1800) and ClaudeSessions on Linux, with the reasons and macOS staying in-process; the quick start's claude-history line has "hub": { "fork": true }; validated with MCP::Hub::Config->from_data. Still open: the test (forked ClaudeHistory against t/fixtures/claude gives the in-process results) for mcp-hub-test-writer.
+
+README advice committed as b88791e on main (local, not pushed); the test is still to do.
+
+Test done by mcp-hub-test-writer: new t/native/claude-history-fork.t mounts ClaudeHistory in-process and with hub.fork over one temp copy of t/fixtures/claude (plus a subagent run and a history.jsonl), compares the tool list and 18 calls across all six tools (filters, pagination, include_subagents, agent_id, unknown session, an error result) deep-equal, with a regex on each in-process answer; checks the forked entry has a worker pid and listing forks nothing; skips without /proc/self/fd. Mutation check: 6 comparisons red when the fork reads the plain fixtures. 58 tests, green under EV and Poll. Still open for the maintainer: whether fork becomes the recommended default for these two.
+
+Committed as 93dede9
