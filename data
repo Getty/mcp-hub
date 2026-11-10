@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-10T07:03:49Z
+id: 197
+priority: low
+started: 2026-11-10T16:02:36Z
+status: todo
+tags:
+- http
+- sse
+title: 'HTTP+SSE: the GET event stream ignores its HTTP status'
+updated: 2026-11-10T16:02:36Z
+---
+
+Found by mcp-hub-worker during wave B2 (k146/k124/k149/k112, 2026-11-10). The SSE transport opens its GET event stream and reads events without checking the response status; an error status (401, 404, 500) is not reported as such. Done when a non-2xx GET fails the start with the status and code (as k149 reads them), with a test in t/http.t.
