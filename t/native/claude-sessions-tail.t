@@ -5,14 +5,24 @@ use Mojo::File qw(tempdir);
 use Mojo::JSON qw(decode_json encode_json);
 use MCP::Hub::Native::ClaudeSessions;
 
+binmode Test::More->builder->$_, ':encoding(UTF-8)' for qw(output failure_output todo_output);
+
 # list_running_sessions reads only the head and the tail of a session file.
 # Each case here is compared with reading every line, the way it did before.
 # The last prompt is the text of the last user line whose text is not empty: a
-# user line that holds only tool results is passed over. The rule is written
-# out here, in every_line, not asked of the code under test.
+# user line that holds only tool results is passed over. It is sent cut to its
+# first 500 characters, followed by an ellipsis (U+2026) where it is longer.
+# The rules are written out here, in every_line and _cut, not asked of the
+# code under test.
 my $CHUNK = MCP::Hub::Native::ClaudeSessions::TAIL_CHUNK;
 my $s     = MCP::Hub::Native::ClaudeSessions->new(root => "@{[tempdir]}", proc_root => "@{[tempdir]}");
 my $dir   = tempdir;
+my $more  = "\x{2026}";
+
+sub _cut ($text) {
+  return $text if !defined $text || length($text) <= 500;
+  return substr($text, 0, 500) . $more;
+}
 
 sub every_line ($file) {
   my ($session_id, $started, $last, $branch, $last_prompt);
@@ -28,7 +38,7 @@ sub every_line ($file) {
     $last_prompt = $text if defined $text && length $text;
   }
   return {session_id => $session_id // $file->basename =~ s/\.jsonl$//r, started_at => $started,
-    last_activity => $last // $started, last_prompt => $last_prompt, git_branch => $branch};
+    last_activity => $last // $started, last_prompt => _cut($last_prompt), git_branch => $branch};
 }
 
 my $t = 0;
@@ -114,6 +124,39 @@ subtest 'only the head and the tail are decoded' => sub {
   is $meta->{last_prompt}, 'the end', 'last prompt from the tail';
   is $meta->{started_at},  every_line($file)->{started_at}, 'start from the head';
   ok $decoded <= 4, "decoded $decoded of 2003 lines";
+};
+
+subtest 'a last prompt over 500 characters is cut' => sub {
+  my $tick = "\x{1F600}";
+  for my $case (
+    ['499 characters',                  'a' x 499,                   'a' x 499],
+    ['500 characters',                  'b' x 500,                   'b' x 500],
+    ['501 characters',                  'c' x 501,                   'c' x 500 . $more],
+    ['500 wide characters',             "\x{f6}" x 500,              "\x{f6}" x 500],
+    ['501 wide characters',             "\x{f6}" x 501,              "\x{f6}" x 500 . $more],
+    ['an emoji as the 500th character', 'x' x 499 . $tick . 'tail', 'x' x 499 . $tick . $more],
+    ['a briefing of 40 KB',             'y' x 40_000,                'y' x 500 . $more],
+  ) {
+    my ($name, $prompt, $want) = @$case;
+    my $file = $dir->child('cut.jsonl');
+    $file->spew(join '', map {"$_\n"} user('first'), user($prompt), assistant('an answer'));
+    is $s->_session_meta($file)->{last_prompt}, $want, $name;
+  }
+
+  SKIP: {
+    skip 'symlink not supported here', 1 unless eval { symlink('', "@{[tempdir]}/x"); 1 };
+    my $root = tempdir;
+    $root->child('projects', '-home-tester-cut')->make_path->child('cut.jsonl')
+      ->spew(join '', map {"$_\n"} user('z' x 600), tool_result());
+    my $proc = tempdir;
+    my $pid  = $proc->child('4242')->make_path;
+    $pid->child('comm')->spew("claude\n");
+    symlink('/home/tester/cut', $pid->child('cwd')->to_string) or die $!;
+    my $server = MCP::Hub::Native::ClaudeSessions->new(root => "$root", proc_root => "$proc");
+    my ($tool) = @{$server->tools};
+    is decode_json($tool->code->($tool, {})->{content}[0]{text})->[0]{last_prompt}, 'z' x 500 . $more,
+      'list_running_sessions sends it so';
+  }
 };
 
 subtest 'the tail is decoded back to the last prompt, no further' => sub {

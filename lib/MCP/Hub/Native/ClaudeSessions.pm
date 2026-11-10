@@ -160,9 +160,18 @@ sub _session_meta ($self, $file) {
     session_id    => $session_id // $file->basename =~ s/\.jsonl$//r,
     started_at    => $started,
     last_activity => $last // $started,
-    last_prompt   => $last_prompt,
+    last_prompt   => _cut($last_prompt),
     git_branch    => $branch,
   };
+}
+
+# A last prompt as list_running_sessions sends it, cut as
+# MCP::Hub::Native::ClaudeHistory cuts a first prompt: its first 500
+# characters, followed by an ellipsis (U+2026) where it is longer. The text is
+# decoded, so the cut counts characters and never splits one.
+sub _cut ($text) {
+  return $text if !defined $text || length $text <= 500;
+  return substr($text, 0, 500) . "\x{2026}";
 }
 
 # The record a line holds: the object it decodes to, or undef for a line that
@@ -254,7 +263,12 @@ The Claude configuration directory, as for L<MCP::Hub::Native::ClaudeHistory>.
 
 The tool as a plain method. Returns
 C<[{pid, cwd, project, session_id, started_at, last_activity, last_prompt,
-git_branch}]>, with C<pid> a number.
+git_branch}]>, with C<pid> a number. C<last_prompt> is cut as
+L<MCP::Hub::Native::ClaudeHistory>'s C<list_sessions> cuts C<first_prompt>: it
+holds the prompt's first 500 characters, followed by C<…> (U+2026) where the
+prompt is longer; a prompt of 500 characters or fewer is sent as it is.
+C<get_conversation> of L<MCP::Hub::Native::ClaudeHistory> returns the whole
+prompt.
 
 =head1 SEE ALSO
 

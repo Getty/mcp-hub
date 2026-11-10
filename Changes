@@ -382,3 +382,5 @@ Revision history for MCP-Hub
     results.
   - On hosts without Cpanel::JSON::XS, the natives decode with Mojo::JSON
     rather than JSON::PP, so a session line reads the same on every install.
+  - list_running_sessions' last_prompt is cut to its first 500 characters,
+    followed by `…` when longer, as list_sessions cuts first_prompt.
