@@ -283,6 +283,34 @@ subtest 'failed after three quick exits' => sub {
   settle;
 };
 
+subtest 'a child killed for a line over 16MB counts toward the crash loop' => sub {
+  # A server that floods its stdout with no newline on every start. The kill
+  # for it was taken for a deliberate stop: no exit was counted, and every call
+  # spawned it again -- the crash loop never ended in `failed`.
+  my @lines;
+  my $up = oneliner('flood', q{$| = 1; print 'x' x (17 * 1024 * 1024); sleep 30}, fail_window => $WINDOW,
+    request_timeout => 30);
+  $up->log(log_to(\@lines));
+
+  for my $n (1 .. 3) {
+    my $r = _await_bounded($up->start_p, 30);
+    like ref $r eq 'HASH' ? $r->{err} : 'started', qr/^upstream flood: exited \(signal 9\)/,
+      "start $n fails as the child is killed";
+  }
+  is $up->state, 'failed', 'three such kills within the window mark it failed';
+  is $up->error, "3 exits within ${WINDOW}s: line buffer exceeded 16MB", 'the error names the kill';
+  is scalar(grep {/line buffer exceeded 16MB, killing child/} @lines), 3, 'each kill is logged';
+  is_deeply [grep {/child exited/} @lines], [], 'and none of them as an exit as well';
+
+  @lines = ();
+  my $r = _await_bounded($up->call_tool('echo', {}), 5);
+  like _error_text($r), qr/^upstream flood: 3 exits within ${WINDOW}s: line buffer exceeded 16MB, run /,
+    'a call is answered with the reason' or diag explain $r;
+  is_deeply [grep {/started/} @lines], [], 'and starts no child';
+  $up->stop;
+  settle;
+};
+
 subtest 'exits older than the window are forgotten' => sub {
   # The other side of the window, and safe under load: a busy machine only
   # makes the pause longer. Two exits, a pause past the one-second window, a

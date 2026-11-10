@@ -408,3 +408,5 @@ Revision history for MCP-Hub
   - A call to an in-process class that holds the hub longer than the
     inactivity timeout (30 s) no longer loses its answer under EV; such
     answers now come as an event stream, as every other upstream's do.
+  - A stdio server killed for writing a line over 16 MB now counts toward the
+    crash loop, and the error says why.

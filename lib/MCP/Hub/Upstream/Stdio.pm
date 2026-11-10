@@ -114,7 +114,9 @@ sub start_p ($self) {
     # is still there -- a handshake timeout, say, which we kill ourselves.
     # Not so for a child a stop has sent EOF: the stop is no failed start, and
     # goes on as any stop -- a child that ends on its EOF is never signalled.
-    $self->_record_exit unless ($self->{exited_pid} // 0) == $pid || $stopped;
+    # Nor for a child killed for a line over the limit: its exit counts as that
+    # kill, once it is handled (_on_exit).
+    $self->_record_exit unless ($self->{exited_pid} // 0) == $pid || $stopped || $child->{overflow};
 
     # The stopping flag means "this exit is deliberate" -- it may only be set
     # while there is a child to stop. Set for a child that is already gone, it
@@ -417,7 +419,13 @@ sub _on_exit ($self, $status) {
     $pending->{promise}->reject("upstream @{[$self->name]}: $why");
   }
 
-  unless ($self->{stopping}) {
+  # A child killed for a line over the limit was not stopped: the kill counts
+  # toward the crash loop like a crash, with its own reason. It was logged as
+  # the kill (_on_read), so its exit is not warned of as well. Uncounted, a
+  # server that floods its stdout on every start was spawned again by every
+  # call, and never marked failed.
+  if ($child->{overflow}) { $self->_record_exit('line buffer exceeded 16MB') }
+  elsif (!$self->{stopping}) {
     $self->log->warn("[@{[$self->name]}] child exited ($reason)" . $self->_exit_hint($status));
     $self->_record_exit;
   }
@@ -535,14 +543,17 @@ sub _kill_now ($self) {
   return $self;
 }
 
-sub _record_exit ($self) {
+# An exit -- a crash or a failed start -- counted toward the crash loop. One
+# with a reason of its own (a line over the limit) gives the error its reason
+# when it is the exit that marks the upstream failed, as over HTTP.
+sub _record_exit ($self, $reason = undef) {
   my $now    = time;
   my $window = $self->fail_window;
   push @{$self->{exits}}, $now;
   @{$self->{exits}} = grep { $_ >= $now - $window } @{$self->{exits}};
   return $self unless @{$self->{exits}} >= 3;
   $self->{failed} = 1;
-  $self->error(scalar(@{$self->{exits}}) . ' exits within ' . $window . 's');
+  $self->error(scalar(@{$self->{exits}}) . ' exits within ' . $window . 's' . (defined $reason ? ": $reason" : ''));
   return $self;
 }
 
@@ -647,7 +658,11 @@ failed handshake -- and the child is left to the stop: one that ends on its EOF
 is never signalled. A start that fails on its own is logged at error level.
 
 Three exits within five seconds mark it C<failed>, with the reason in
-L<MCP::Hub::Upstream/error>. A failed upstream stays failed until it is
+L<MCP::Hub::Upstream/error>. A child that writes a line longer than 16 MB is
+killed -- logged as the kill, at error level -- and the kill is such an exit,
+like a crash: the requests in flight fail as C<exited (signal 9)>, and when it
+is the third, the error reads C<3 exits within 5s: line buffer exceeded 16MB>.
+A failed upstream stays failed until it is
 refreshed: further calls are answered with that reason rather than spawning the
 crash loop again, and its endpoint answers C<503>. L<MCP::Hub::Upstream/refresh_p>
 -- C<mcp-hub refresh NAME>, or the C<hub_refresh> tool -- clears the failure and
