@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-10T02:04:06Z
+created: 2026-11-09T19:30:14Z
+id: 175
+priority: low
+started: 2026-11-10T01:17:40Z
+status: done
+tags:
+- test
+- native
+title: 'claude-history-incremental.t: let the every_line oracle model the 500-character
+  first_prompt cut'
+updated: 2026-11-10T02:04:06Z
+---
+
+From k170 (2026-11-09). The every_line oracle in t/native/claude-history-incremental.t (lines ~28-45) takes first_prompt from _text without the cut that _absorb now applies (_first_prompt: 500 characters plus "…"). All prompts there are 30 characters or fewer, so it agrees today; a prompt over 500 characters added there would make the oracle diverge. Optional. Lane: mcp-hub-test-writer.
+
+Committed as 4a07685
