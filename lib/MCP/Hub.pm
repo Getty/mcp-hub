@@ -90,10 +90,16 @@ sub refresh_p ($self, $name = undef) {
   my @targets = defined $name ? grep { $_->name eq $name } @{$self->upstreams} : @{$self->upstreams};
   return Mojo::Promise->reject("unknown server '$name'") if defined $name && !@targets;
 
+  # A refresh that a stop called off -- a reload replaced or removed the
+  # upstream, or the hub is shutting down -- did not fail, as a warming fetch
+  # a stop calls off does not (_warm_upstream): the upstream is left stopped.
   my @promises = map {
     my $up   = $_;
     my $done = sub { +{name => $up->name, result => _refresh_result($up)} };
-    $up->refresh_p->then($done)->catch(sub ($err) { $self->_fetch_failed($up, $err); $done->() });
+    $up->refresh_p->then($done)->catch(sub ($err) {
+      $self->_fetch_failed($up, $err) unless _called_off($up, $err);
+      return $done->();
+    });
   } @targets;
 
   return Mojo::Promise->all(@promises)->then(sub (@results) {
@@ -987,9 +993,11 @@ and state of each refreshed upstream, plus C<error> with the reason when it is
 C<failed> -- so a failed upstream reports its failure rather than C<0> tools.
 The refresh of an upstream that has no manifest yet and cannot fetch one leaves
 it C<failed> with the reason (L<MCP::Hub::Upstream/fail>); one that has a
-manifest keeps it. A refresh that changes what an upstream lists tells the
-agents listening on its endpoint and on C</all> (L<MCP::Hub::Upstream/refresh_p>);
-one that changes nothing tells them nothing.
+manifest keeps it. A refresh that a stop calls off -- a L</reload> replaces or
+removes the upstream, or L</shutdown_p> stops it -- has not failed: the
+upstream is left C<stopped>, and reported so. A refresh that changes what an
+upstream lists tells the agents listening on its endpoint and on C</all>
+(L<MCP::Hub::Upstream/refresh_p>); one that changes nothing tells them nothing.
 
 =method rebuild_aggregate
 

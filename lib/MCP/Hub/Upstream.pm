@@ -571,7 +571,8 @@ JSON-RPC error, timeout, crash or failed start.
 Mark the upstream C<failed> with the reason, which becomes L</error> without
 the leading C<upstream NAME:>. Stops nothing. L<MCP::Hub> calls it when its
 warming fetch, an C<always_on> start or a refresh of an upstream that has no
-manifest yet fails (see L<MCP::Hub/start_background_fetches>): nothing would
+manifest yet fails -- not when a stop calls it off (see
+L<MCP::Hub/start_background_fetches>): nothing would
 try again, and the upstream would sit there with nothing to list. As with a
 crash loop, L</start_p> then rejects and only L</refresh_p> clears it.
 

@@ -659,6 +659,58 @@ subtest 'a reload during warming calls the fetch off, it does not fail it' => su
   }
 };
 
+subtest 'a reload during a refresh calls the fetch off, it does not fail it' => sub {
+  # The refresh of a server that has no manifest yet starts it, and a reload
+  # that replaces or removes it meanwhile stops it: the start is rejected as
+  # "upstream echo: stopped", as the warming fetch is above. The refresh took
+  # that for a fetch that failed, left the upstream failed, with "stopped" for
+  # the reason, and reported it so.
+  for my $case (
+    [removed => {mcpServers => {history => history_entry()}}],
+    [changed => {mcpServers => {echo => echo_entry_alt(), history => history_entry()}}],
+  ) {
+    my ($what, $next) = @$case;
+    my $dir   = tempdir;
+    my $cache = $dir->child('cache');
+    my $file  = write_config($dir->child('config.json'),
+      {mcpServers => {echo => echo_entry(), history => history_entry()}, hub => {cache_dir => "$cache"}});
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message');
+    $log->on(message => sub ($l, $level, @msg) { push @logged, "$level @msg" });
+    my $app = MCP::Hub->new(log => $log, hub_config_input => "$file");
+    my $old = $app->upstreams_by_name->{echo};
+    ok !$old->manifest_fetched_at, "$what: nothing cached";
+    my $result;
+    my $refresh = $app->refresh_p('echo')->then(sub ($r) { $result = $r });
+    is $old->state, 'starting', "$what: the refresh starts it";
+
+    write_config($file, {%$next, hub => {cache_dir => "$cache"}});
+    is_deeply $app->reload->{$what}, ['echo'], "$what: the reload counts it as $what";
+
+    # A child's perl can take seconds to start on a loaded host.
+    Mojo::Promise->race(Mojo::Promise->timeout(30), Mojo::Promise->all($refresh, $old->stopped_p))
+      ->catch(sub ($err) { fail "$what: $err" })->wait;
+    my $row = $result ? $result->{echo} : {};
+    ok $row->{state} && $row->{state} ne 'failed', "$what: the refresh reports it as called off, not failed"
+      or diag explain $row;
+    ok !exists $row->{error}, "$what: with no error" or diag explain $row;
+    is $old->state, 'stopped', "$what: the upstream is left stopped";
+    is $old->error, undef, "$what: not failed";
+    is_deeply [grep { /^(?:warn|error|fatal) / } @logged], [], "$what: nor logged as a failure"
+      or diag explain \@logged;
+
+    # The replacement of a changed one is warmed in its own right.
+    if (my $new = $app->upstreams_by_name->{echo}) {
+      my $deadline = time + 30;
+      settle(0.05) until $new->manifest_fetched_at || time > $deadline;
+      ok $new->manifest_fetched_at, "$what: the new upstream fetched its manifest";
+    }
+    $_->stop for @{$app->upstreams};
+    settle;
+  }
+};
+
 subtest 'the reload endpoint is admin-only' => sub {
   my $dir  = tempdir;
   my $file = $dir->child('config.json');

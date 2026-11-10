@@ -123,4 +123,37 @@ for my $case (
   };
 }
 
+subtest 'a shutdown during a refresh calls the fetch off, it does not fail it' => sub {
+  # The refresh of an upstream that has no manifest yet starts it, and the
+  # shutdown stops it: the start is rejected as "upstream echo: stopped". The
+  # refresh took that for a fetch that failed, left the upstream failed, with
+  # "stopped" for the reason, and reported it so.
+  my $dir = tempdir;
+  my @logged;
+  my $log = Mojo::Log->new;
+  $log->unsubscribe('message');
+  $log->on(message => sub ($l, $level, @msg) { push @logged, "$level @msg" });
+  my $hub = MCP::Hub->new(log => $log, hub_config_input => {
+    mcpServers => {echo => {command => $^X, args => ['-Ilib', "$ECHO"]}},
+    hub        => {cache_dir => $dir->child('cache')->to_string},
+  });
+  my $up = $hub->upstreams_by_name->{echo};
+  ok !$up->manifest_fetched_at, 'nothing cached';
+  my $result;
+  my $refresh = $hub->refresh_p('echo')->then(sub ($r) { $result = $r });
+  is $up->state, 'starting', 'the refresh starts it';
+
+  my $r = await_bounded($hub->shutdown_p, 20);
+  ok $r->{ok}, 'the shutdown is over' or diag $r->{err};
+  $r = await_bounded($refresh, 20);
+  ok $r->{ok}, 'and so is the refresh' or diag $r->{err};
+  my $row = $result ? $result->{echo} : {};
+  ok $row->{state} && $row->{state} ne 'failed', 'it reports the upstream as called off, not failed'
+    or diag explain $row;
+  ok !exists $row->{error}, 'with no error' or diag explain $row;
+  is $up->state, 'stopped', 'the upstream is left stopped';
+  is $up->error, undef, 'not failed';
+  is_deeply [grep { /^(?:warn|error|fatal) / } @logged], [], 'nor logged as a failure' or diag explain \@logged;
+};
+
 done_testing;
