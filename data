@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-10T03:56:22Z
+created: 2026-11-07T03:54:20Z
+id: 165
+priority: medium
+started: 2026-11-10T02:45:19Z
+status: done
+tags:
+- test
+- flake
+- refresh
+title: t/refresh.t 'a refresh cut short keeps the manifest' fails under load
+updated: 2026-11-10T03:56:22Z
+---
+
+Found by mcp-hub-release-manager during the k82 commit (2026-11-07). With the load average near 6 on 8 cores (a parallel worker's docker build and suite), t/refresh.t subtest 'a refresh cut short keeps the manifest, an error answer is an empty list' failed 1 of 2: test 'the prompts/list times out: started' got HASH(0x...) where it expected an MCP::Hub::Upstream::Stdio object, and '...the prompts are listed' got [] instead of greet (t/refresh.t lines 110-111). Standalone reruns under EV then failed 3 times in a row, and the same file failed twice on a 5e2ec4a export -- so not a k82 regression; it passed again on 5e2ec4a, 961296f and 1d6cbb9 once the load dropped to ~2. Logs: scratchpad full-ev.log (x-k82, x-head1 exports). Same pattern as k156 (a short request_timeout racing a loaded machine). Done when: the cause is shown under load (bounded burners, N = cores, timeout 120), the test is fixed without weakening its claim, and it passes 5/5 under EV and Poll with that load.
+
+Seen again 2026-11-09 during the k170 release run: the full prove -lr t/ under EV failed only on t/refresh.t subtest 1 ('a refresh cut short keeps the manifest, an error answer is an empty list') at load 5.64, with other repos' suites running. t/refresh.t alone under EV passed at load 2.88; the Poll full run at 2.83 was green.
+
+2026-11-10, batch k168–k180: failed again, in every run. EV full suite at load ~7; Poll full suite at load ~10, this time in all three cases (child answers with an error, child is stopped, prompts/list times out); t/refresh.t alone under EV at load 6.7. On a HEAD export (1ff42b7, without the batch) alone under EV: 2 of 2 FAIL at load 11.7. So with other repos' suites running it now fails even standalone, and every release check hits it. The rest of the suite (52 files) was green under both reactors.
+
+Fixed in the test by mcp-hub-worker in worktree main (uncommitted); no race in the code. Cause: upstream() set request_timeout 2, which also bounds each child start's initialize; at load 28-30 a child's perl start alone took 2.8-7.2 s, so setup failed (not the claim). Fix: request_timeout 30 (as k156), subtest 2 drops its 5 s override, the awaits on starts bounded at 30 s; the prompts/list timeout case SIGSTOPs the child before the 0.2 s request and CONTs it in finally, so the answer cannot race the timer under Poll (shown: Poll ran I/O before timers in the same tick). Claims kept: against 8a4a0e7^ and a22c18d^ the test still fails as the original did. 5/5 EV and 5/5 Poll at load 22-27; before: FAIL at 23 (EV) and 28 (Poll). Patch: scratchpad w-k165/patch.
+
+Committed as 301ad39 on main (local, not pushed).
