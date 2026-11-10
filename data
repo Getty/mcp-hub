@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-10T10:20:46Z
+created: 2026-11-10T03:27:43Z
+id: 184
+priority: low
+started: 2026-11-10T08:31:20Z
+status: done
+tags:
+- test
+- flake
+- reload
+title: t/reload.t subtests 4 and 8 time out under load
+updated: 2026-11-10T10:20:46Z
+---
+
+Found by mcp-hub-worker during k165 (2026-11-10), full suite under EV at load 22-35, t/reload.t unchanged from HEAD (dcedd74): subtests 4 and 8 failed; line 254 gives a child start 10 s to reach tools/list, then request_timeout(1); subtest 8 ran no tests and the file exited 255. Same pattern as k165 (t/refresh.t) and k181 (t/docker.t): a timeout that also bounds a child start. Done when the cause is measured against the existing host load (no burners), fixed without weakening what the subtests claim, and 5 runs under EV and 5 under Poll pass at that load. Log: scratchpad w-k165/full-EV.log.
+
+Committed as deee02f (Wait on the fetch and the handshake in t/reload.t instead of 10 s and 15 s deadlines a loaded host misses).
