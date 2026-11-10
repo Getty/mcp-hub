@@ -12,7 +12,8 @@ plan skip_all => 'symlink not supported here' unless eval { symlink('', "@{[temp
 # null, [1]. It is skipped, as ClaudeHistory skips it: list_running_sessions
 # still answers, with the text of the other blocks. Each result is compared
 # with the same session written without those blocks, and the last prompt with
-# the text ClaudeHistory gives for the same line.
+# the text ClaudeHistory gives for the same line. A user line of odd blocks
+# alone carries no text, and the prompt is that of the user line before it.
 my @odd = ('x', 1, 1.5, undef, \1, \0, [1], ['text'], [{type => 'text', text => 'inside an array'}]);
 
 my $t = 0;
@@ -48,7 +49,7 @@ my %cases = (
   'only odd blocks' => {
     with    => sub { user(text('first')), user(@odd) },
     without => sub { user(text('first')), user() },
-    prompt  => '',
+    prompt  => 'first',
   },
 );
 
@@ -80,7 +81,8 @@ for my $name (sort keys %cases) {
     is $got->[0]{last_prompt}, $case->{prompt}, 'the last prompt is the text of the other blocks';
 
     my $conv = MCP::Hub::Native::ClaudeHistory->new(root => "$with")->get_conversation({session_id => 'blocks', roles => ['user']});
-    is $got->[0]{last_prompt}, $conv->{entries}[-1]{text}, 'as ClaudeHistory gives it';
+    my ($last) = grep { length $_->{text} } reverse @{$conv->{entries}};
+    is $got->[0]{last_prompt}, $last->{text}, 'as ClaudeHistory gives the last user message with text';
   };
 }
 

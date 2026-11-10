@@ -91,9 +91,13 @@ for my $case (@cases) {
       my $pid  = $proc->child('4242')->make_path;
       $pid->child('comm')->spew("claude\n");
       symlink('/home/tester/vals', $pid->child('cwd')->to_string) or die $!;
-      my $s = MCP::Hub::Native::ClaudeSessions->new(root => "$root", proc_root => "$proc");
-      is $s->list_running_sessions->[0]{last_prompt}, $text, 'ClaudeSessions makes the same text of it';
-      like wire($s, 'list_running_sessions'), qr/"last_prompt":\Q$want\E[,}]/, 'and sends it so as last_prompt';
+      # A user line of no text is no prompt: with both lines so, there is none.
+      my $s      = MCP::Hub::Native::ClaudeSessions->new(root => "$root", proc_root => "$proc");
+      my $prompt = defined $text && length $text ? $text : undef;
+      is $s->list_running_sessions->[0]{last_prompt}, $prompt,
+        defined $prompt ? 'ClaudeSessions makes the same text of it' : 'ClaudeSessions makes no text of it either: no prompt';
+      my $sent = json($prompt);
+      like wire($s, 'list_running_sessions'), qr/"last_prompt":\Q$sent\E[,}]/, 'and sends it so as last_prompt';
     }
   };
 }

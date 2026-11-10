@@ -378,3 +378,5 @@ Revision history for MCP-Hub
     and `"30\n"` no longer passes for 30.
   - list_sessions and the other ClaudeHistory tools now see a session file
     rewritten in place within one second without changing size.
+  - list_running_sessions' last_prompt skips user lines that hold only tool
+    results.

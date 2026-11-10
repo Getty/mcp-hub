@@ -106,6 +106,8 @@ sub _session_file ($self, $cwd) {
 # the last timestamp and user prompt from its tail: read forward until the first
 # three are known, then backward from the end until the last two are, or until
 # the two meet. The result is that of reading every line, whatever the file size.
+# The user prompt is that of the last user line that carries text (see
+# _prompt), so the tail is read back past the tool results of the last turn.
 # A sessionId or timestamp is made into a string by _string, as ClaudeHistory
 # makes it: one that is an object or array counts as absent.
 sub _session_meta ($self, $file) {
@@ -122,7 +124,7 @@ sub _session_meta ($self, $file) {
     $branch     //= $rec->{gitBranch};
     $started    //= $timestamp;
     $last = $timestamp if defined $timestamp;
-    $last_prompt = _text($rec->{message}) if ($rec->{type} // '') eq 'user';
+    $last_prompt = _prompt($rec) // $last_prompt;
     last if defined $session_id && defined $branch && defined $started;
   }
 
@@ -144,8 +146,8 @@ sub _session_meta ($self, $file) {
       my $rec       = _record($line) or next;
       my $timestamp = _string($rec->{timestamp});
       if (!$last_found && defined $timestamp) { $last = $timestamp; $last_found = 1 }
-      if (!$prompt_found && ($rec->{type} // '') eq 'user') {
-        $last_prompt  = _text($rec->{message});
+      if (!$prompt_found && defined(my $prompt = _prompt($rec))) {
+        $last_prompt  = $prompt;
         $prompt_found = 1;
       }
       last if $last_found && $prompt_found;
@@ -166,6 +168,15 @@ sub _session_meta ($self, $file) {
 sub _record ($line) {
   my $rec = eval { decode_json($line) };
   return ref $rec eq 'HASH' ? $rec : undef;
+}
+
+# The text of a user line, if it carries any; undef for any other line, and
+# for a user line whose text is empty: one that holds only tool results, which
+# Claude Code writes as user lines too, or whose content makes no text.
+sub _prompt ($rec) {
+  return undef unless ($rec->{type} // '') eq 'user';
+  my $text = _text($rec->{message});
+  return defined $text && length $text ? $text : undef;
 }
 
 # The text blocks of a message; a block that is not an object ("x", 1, [1]) is
@@ -212,9 +223,13 @@ L<MCP::Hub::Native::ClaudeSessions> is a native Perl replacement for live Claude
 Code session discovery. Its one tool, C<list_running_sessions>, finds the
 C<claude> processes on the machine by the name in their C</proc/PID/comm>,
 reads each one's working directory from C</proc>, matches it to the newest
-session file in the history, and reports the most recent user prompt. Only the
-head and the tail of a session file are read, so the call costs the same for a
-session of any size. It runs no program -- no C<pgrep> -- and starts no process.
+session file in the history, and reports the most recent user prompt: the text
+of the last user line that carries text. A user line that holds only tool
+results, as Claude Code writes them, is passed over; where no user line carries
+text, C<last_prompt> is null. Only the head and the tail of a session file are
+read, the tail back to that prompt, so the call costs what the last turn holds,
+not what the whole session does. It runs no program -- no C<pgrep> -- and starts
+no process.
 
 Linux only: on other systems the tool returns an error result saying so.
 
