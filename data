@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T05:06:50Z
+created: 2026-11-06T03:41:53Z
+id: 79
+priority: low
+started: 2026-11-10T04:02:44Z
+status: done
+tags:
+- security
+- aggregate
+- auth
+title: /all filter handlers fail open without a controller or profile in the stash
+updated: 2026-11-10T05:06:50Z
+---
+
+Noted by mcp-hub-worker during k69/k70 (2026-11-06), pre-existing pattern. The /all tools, prompts and (k70) instructions handlers in MCP::Hub::_build_aggregate return without filtering when the request context has no controller or no mcp.profile in the stash. Not reachable through the auth bridge today, but a new route or transport that forgets to stash the profile would show everything. Decide whether clients mode should fail closed there (empty lists) while open mode keeps showing all; test both.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes. In clients mode the /all tools, prompts and instructions handlers fail closed (empty) without a controller or profile in the stash; open mode keeps showing all. Tests for both.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green under EV and Poll with t/hub.t; combined run of t/reload.t t/shutdown.t t/reload-free.t t/command.t t/cli.t t/aggregate-auth.t t/hub.t passed under both. Apply order k89 patch, then incr.patch of k125, k75, k76, k79, k33 (scratchpad w-kNN/). k79: _aggregate_profile: without a stashed profile, clients mode gets an empty profile (no tools, prompts, instructions; tools/call not found), open mode everything; test in t/aggregate-auth.t.
+
+Committed as b357509 (Fail closed on /all in clients mode when a request carries no profile).
