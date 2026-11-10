@@ -111,7 +111,8 @@ a reload cannot apply -- that needs a restart, and the reload says so.
 On C<SIGINT> or C<SIGTERM> the server stops listening, and then the daemon stops
 every upstream and waits -- up to twenty seconds -- until the stdio servers and
 forked workers the hub started have exited and its containers are stopped and
-removed (see L<MCP::Hub/shutdown_p>). A second signal during that wait ends the
+removed, those of servers a reload just replaced or removed included (see
+L<MCP::Hub/shutdown_p>). A second signal during that wait ends the
 process at once; a C<SIGHUP> or a changed configuration file reloads nothing any
 more.
 

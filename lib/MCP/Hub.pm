@@ -18,7 +18,7 @@ use MCP::Hub::Upstream::Http;
 use JSON::PP     ();
 use Mojo::IOLoop;
 use Mojo::Promise;
-use Scalar::Util qw(blessed);
+use Scalar::Util qw(blessed refaddr);
 use Time::HiRes  qw(stat);
 
 # ABSTRACT: One HTTP MCP server that embeds many, for a lot of MCP on little RAM
@@ -225,7 +225,7 @@ sub _apply_config ($self, $new) {
       }
       else {
         push @{$summary{changed}}, $name;
-        $up->stop;
+        $self->_let_go($up);
         $up = $self->_build_upstream($entry, $new);
         $self->_warm_upstream($up);
       }
@@ -238,7 +238,7 @@ sub _apply_config ($self, $new) {
   for my $name (sort keys %$previous) {
     next if $by{$name};
     push @{$summary{removed}}, $name;
-    $previous->{$name}->stop;
+    $self->_let_go($previous->{$name});
   }
 
   $self->upstreams(\@ups);
@@ -261,6 +261,18 @@ sub _apply_config ($self, $new) {
   $self->log->info('configuration reloaded -- ' . _summary_line($summary));
   $self->log->warn($_) for @warnings;
   return $summary;
+}
+
+# Stop an upstream a reload replaced or removed, and hold on to it until what
+# the stop set in motion is over -- a child given up to seven seconds after its
+# EOF, a container still being removed -- so that shutdown_p waits for it too.
+sub _let_go ($self, $up) {
+  $up->stop;
+  my $key    = refaddr $up;
+  my $forget = sub { delete $self->{leaving}{$key} };
+  $self->{leaving}{$key} = $up;
+  $up->stopped_p->then($forget, $forget);
+  return $self;
 }
 
 sub schedule_reload ($self, $reason = 'a request') {
@@ -533,8 +545,9 @@ sub start_background_fetches ($self) {
 # Stop every upstream, and resolve once what the stops set in motion is over:
 # a stdio child or forked worker exits -- given up to seven seconds after its
 # EOF -- and a container is stopped and removed by the docker CLI after stop
-# returns. The daemon waits for this on its way out, so that nothing it started
-# outlives it.
+# returns -- for the upstreams the hub has and for those a reload let go of
+# (_let_go). The daemon waits for this on its way out, so that nothing it
+# started outlives it.
 #
 # From here on the hub reloads no more: a reload while it waits would build
 # new upstreams -- and start new containers -- behind the ones being stopped.
@@ -545,6 +558,8 @@ sub shutdown_p ($self) {
   $self->stop_config_watch;
   my @ups = @{$self->upstreams};
   $_->stop for @ups;
+  # ...and the ones a reload let go of: stopped already, maybe not gone yet.
+  push @ups, values %{$self->{leaving} // {}};
   return Mojo::Promise->resolve unless @ups;
   return Mojo::Promise->all_settled(map { $_->stopped_p } @ups);
 }
@@ -1010,11 +1025,14 @@ fetch failed -- is left alone; L</refresh_p> is the way back from that.
 
 =back
 
-An upstream that a reload replaced or removed is let go of for good. A start of
-it that was under way, or a refresh, goes on to its end, but what it finds is
-not applied: it goes neither into the manifest cache -- which the new upstream
-shares when only the entry's C<env> changed -- nor to any listener, on the
-server's endpoint or on C</all>.
+An upstream that a reload replaced or removed is let go of for good. It is
+stopped, but what the stop sets in motion may take a while -- a child is given
+up to seven seconds after its EOF, a container is still being removed -- and
+L</shutdown_p> waits for that too, as for the upstreams the hub still has. A
+start of it that was under way, or a refresh, goes on to its end, but what it
+finds is not applied: it goes neither into the manifest cache -- which the new
+upstream shares when only the entry's C<env> changed -- nor to any listener, on
+the server's endpoint or on C</all>.
 
 C<profiles>, C<clients> and C<public_profile> are swapped in one step before any
 of that, so from a request's point of view the new access rules -- including a
@@ -1062,9 +1080,10 @@ C<refresh> never spawn a child just by loading the application.
 
 Stop every upstream and resolve once the stops are over -- once every stdio
 child and forked worker the hub started has exited and every container is
-stopped and removed. The C<daemon> command waits for it, for a bounded time,
-after the server has stopped listening. From then on the hub reloads no more:
-the config watcher stops, and a SIGHUP, a changed file or L</reload> is refused.
+stopped and removed, those of the upstreams a L</reload> replaced or removed
+included. The C<daemon> command waits for it, for a bounded time, after the
+server has stopped listening. From then on the hub reloads no more: the config
+watcher stops, and a SIGHUP, a changed file or L</reload> is refused.
 
 =method start_config_watch
 

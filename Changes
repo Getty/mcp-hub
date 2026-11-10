@@ -390,3 +390,5 @@ Revision history for MCP-Hub
     the last activity of its session.
   - A reload or shutdown that calls off a warming manifest fetch no longer
     logs an error or leaves the upstream failed with "stopped".
+  - A shutdown right after a reload now waits for the children of the servers
+    that reload replaced or removed.

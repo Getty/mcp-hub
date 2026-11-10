@@ -3,6 +3,7 @@ use Mojo::Base -strict, -signatures;
 use Test::More;
 
 use Mojo::File    qw(curfile tempdir);
+use Mojo::JSON    qw(encode_json);
 use Mojo::Log;
 use Mojo::Promise;
 use MCP::Hub;
@@ -76,6 +77,49 @@ for my $round (1 .. 3) {
       is $up->state, 'stopped', "$name is stopped";
       ok !kill(0, $pid{$name}), "$name\'s child is reaped";
     }
+  };
+}
+
+# A reload stops the upstream it removes or replaces, and lets go of it -- but
+# its child is given seven seconds after its EOF, and this one stays on for all
+# of them. A shutdown right after the reload is over once that child is gone
+# too, not merely once the upstreams the hub now has are. The replacement
+# differs from it only in its env, so it shares its manifest and starts lazily,
+# with no child of its own to wait for.
+for my $case (
+  [removes  => removed => {}],
+  [replaces => changed => {stays => {command => $^X, args => ['-Ilib', "$ECHO", '--ignore-eof'], env => {K125 => 1}}}],
+) {
+  my ($what, $key, $servers) = @$case;
+  subtest "a shutdown waits for the child of an upstream a reload $what" => sub {
+    my $dir  = tempdir;
+    my $file = $dir->child('config.json');
+    my $settings = {cache_dir => $dir->child('cache')->to_string};
+    my $inproc = {inproc => {class => 'EchoServer'}};
+    $file->spew(encode_json({
+      mcpServers => {stays => {command => $^X, args => ['-Ilib', "$ECHO", '--ignore-eof']}, %$inproc},
+      hub        => $settings,
+    }));
+    my $hub = MCP::Hub->new(log => quiet_log(), hub_config_input => "$file");
+    my $old = $hub->upstreams_by_name->{stays};
+    my $r   = await_bounded($old->start_p, 30);
+    ok $r->{ok}, 'the upstream started' or diag $r->{err};
+    my $pid = $old->stats->{pid};
+    ok $pid, 'it has a child';
+
+    $file->spew(encode_json({mcpServers => {%$servers, %$inproc}, hub => $settings}));
+    my $summary = $hub->reload;
+    is_deeply $summary->{$key}, ['stays'], "the reload $what it";
+    ok kill(0, $pid), 'its child is still running, after its EOF';
+    if (my $new = $hub->upstreams_by_name->{stays}) {
+      isnt $new, $old, 'a new upstream stands in for it';
+      is $new->stats->{pid}, undef, 'with no child';
+    }
+
+    $r = await_bounded($hub->shutdown_p, 20);
+    ok $r->{ok}, 'the shutdown is over' or diag $r->{err};
+    is $old->stats->{pid}, undef, 'the old upstream has no child by then';
+    ok !kill(0, $pid), 'and its child is reaped';
   };
 }
 
