@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T05:06:34Z
+created: 2026-11-06T03:34:44Z
+id: 76
+priority: low
+started: 2026-11-10T04:02:39Z
+status: done
+tags:
+- cli
+- server
+title: morbo bin/mcp-hub serves the hub without the daemon's background fetches and
+  container cleanup
+updated: 2026-11-10T05:06:34Z
+---
+
+Found by mcp-hub-worker during k62 (2026-11-06), read not run. morbo serves the hub in one process but through a bare Mojo::Server::Daemon: it skips what 'mcp-hub daemon' does around the server (warming fetches, container cleanup on shutdown), and restarts the worker on every watched-file change, orphaning upstreams. Decide: refuse it like hypnotoad (pointing at mcp-hub daemon), or document it as dev-only. Low priority.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: refuse morbo like hypnotoad, pointing at 'mcp-hub daemon', if morbo can be told apart reliably (its worker is a plain Daemon); if not, say in the POD and README troubleshooting that morbo is not supported and why.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green under EV and Poll with t/hub.t; combined run of t/reload.t t/shutdown.t t/reload-free.t t/command.t t/cli.t t/aggregate-auth.t t/hub.t passed under both. Apply order k89 patch, then incr.patch of k125, k75, k76, k79, k33 (scratchpad w-kNN/). k76: morbo is refused ($INC{'Mojo/Server/Morbo.pm'} is set only by the morbo script; its worker is forked from it), pointing at mcp-hub daemon; t/cli.t runs the worker's load_app(...)->server line in a child; checked by hand with a real morbo. README and spec name morbo (main session).
+
+Committed as 7aab570 (Refuse morbo as it starts the hub, pointing at mcp-hub daemon).
