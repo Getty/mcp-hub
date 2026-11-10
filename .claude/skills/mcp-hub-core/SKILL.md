@@ -153,9 +153,10 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   Warming-Fetch, der `always_on`-Start oder ein `refresh` eines Upstreams **ohne**
   Manifest, ist er sofort `failed` (`Hub::_fetch_failed` → `Upstream->fail`, dasselbe
   Flag) — kein Retry, nichts versucht es von selbst wieder; mit Manifest gilt weiter die
-  Crash-Loop-Regel. Sagt ein Stop den Warming-Fetch oder `always_on`-Start ab (ein Reload
-  ersetzt oder entfernt den Upstream, der Shutdown), ist das kein Fehlschlag: kein
-  error-Log, der Upstream bleibt `stopped` (`Hub::_called_off`). Der Warm-up überspringt
+  Crash-Loop-Regel. Sagt ein Stop den Warming-Fetch, den `always_on`-Start oder einen
+  `refresh` ab (ein Reload ersetzt oder entfernt den Upstream, der Shutdown), ist das kein
+  Fehlschlag: kein error-Log, kein `failed`, der Upstream bleibt `stopped`
+  (`Hub::_called_off`, in `_warm_upstream` wie in `refresh_p`). Der Warm-up überspringt
   `failed`.
 - **Die Setup-Seite liest das Token ausschließlich aus `Authorization: Bearer`.** Kein
   `?token=`, kein Form-POST, keine `POST /`-Route; das Login-Formular ist Inline-JS.
@@ -231,20 +232,25 @@ Pfad-`stat`, Intervall = Hub-Attribut `auto_reload_interval`), `POST /_hub/reloa
 - **Diff pro normalisiertem Eintrag.** Unverändert → **selbes Objekt, selber pid, selbe
   Stats, selber Idle-Timer** (`t/reload.t` prüft `refaddr`); nur Timeouts →
   `apply_timeouts` in place. Geändert → nur dieser Upstream neu, Entfernt → `let_go` + 404.
-  Neu → gewärmt wie beim Daemon-Start, d. h. mit gecachtem Manifest **kein Spawn**.
+  Neu → gewärmt wie beim Daemon-Start, d. h. mit gecachtem Manifest **kein Spawn** — erst,
+  wenn `upstreams_by_name` die neue Map hält; vorher gälte er selbst als losgelassen.
 - **Ein ersetzter oder entfernter Upstream wird gehalten, bis sein Stop vorbei ist, und
   wendet nichts mehr an.** `_let_go` ruft sein `let_go` — es stoppt ihn, ein
   In-process-`class` leert dazu tools/prompts/resources seines Servers (nur hier, nie bei
   einem bloßen `stop`: die Instanz bedient danach weiter) — und hält ihn, bis sein
   `stopped_p` sich setzt; `shutdown_p` wartet auch auf ihn (in den 20 s des Daemons). Mit
   ihm geht sein Server: weder Transport noch Listener am Endpunkt halten ihn. Der
-  Nachfolger wartet nicht: altes und neues Kind eines geänderten Servers können sich bis
-  zu ~7 s überlappen.
+  Nachfolger wartet auf ihn: ein stdio-/Fork-Start spawnt erst, wenn `stopped_p` aller
+  `Hub->predecessors(NAME)` (die gleichnamigen in `leaving`) gesetzt ist — bis ~7 s
+  `starting`, Call, Refresh, Warming und `always_on` hängen sich an; der Reload selbst
+  wartet nie, ein `stop` in der Wartezeit (zweiter Reload, Shutdown) sagt den Start ab.
+  Bleibt der Server stdio oder Fork, laufen altes und neues Kind nie nebeneinander.
   Ein Start oder Refresh, der seinen `stop` überlebt, schreibt keinen Cache und
   benachrichtigt niemanden (`Upstream::_dropped`, per `refaddr` gegen `upstreams_by_name`).
-  Ein Refresh, der auf das Ende des alten Kinds wartet, oder ein HTTP-Call, den der Stop
-  überholt hat, startet für ihn nichts mehr: er scheitert als `upstream NAME: stopped` —
-  das Kind oder die Session beendete sonst niemand.
+  Ein Call oder Refresh, der auf das Ende des alten Kinds wartet, oder ein HTTP-Call, den
+  der Stop überholt hat, startet für ihn nichts mehr: er scheitert als
+  `upstream NAME: stopped` — das Kind oder die Session beendete sonst niemand. Bei stdio
+  prüft das `start_p` selbst, für jeden Aufrufer.
 - **profiles/clients/public_profile werden in place getauscht** (`auth->config($new)`);
   `Auth::last_seen` lebt auf `Auth`, nicht auf der Config, dann `notify_list_changed`.
   `/all` bekommt `tools/` **und** `prompts/list_changed`, sobald ein Eintrag added/

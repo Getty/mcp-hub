@@ -57,7 +57,14 @@ scheitert als dessen Exit) und der Stream schriebe ihn endlos gegen den geschlos
 und weiterlebt, wird nach `KILL_GRACE` gekillt. Ab dem Stop, bis der Exit verarbeitet ist,
 steht der Upstream auf `stopping` (`failed` bleibt `failed`), auch nach einem Start, den
 der Stop absagt, solange dessen Kind lebt. Es läuft immer höchstens ein Kind: ein
-Call während eines Stops wartet auf dessen Ende (`_gone_p`) und startet das nächste.
+Call während eines Stops wartet auf dessen Ende (`_gone_p`) und startet das nächste —
+außer ein Reload hat den Upstream inzwischen losgelassen: `start_p` fragt vor jedem Spawn
+`_dropped` und lehnt als `upstream NAME: stopped` ab, für jeden Aufrufer (Call, Refresh,
+Warming, `always_on`). Auch über einen Reload: hält der Hub einen losgelassenen
+gleichnamigen Vorgänger (`Hub->predecessors`), wartet der Start — schon `starting`, in
+`{waiting}` — auf dessen `stopped_p` und spawnt erst dann (`_launch`); ein `stop` in der
+Wartezeit sagt ihn ab (debug `start called off by a stop`). Ohne Hub (die
+Docker-Engine) wartet nichts.
 Was das Kind nicht mehr erreicht (`_refused`: kein Stream — Kind weg oder stdout zu —
 oder EOF geschickt), geht nicht raus und scheitert sofort als `upstream NAME: not
 connected` bzw. `stopped`, statt den Request-Timeout abzuwarten. Ein Stop während des
@@ -69,8 +76,8 @@ trotzdem als `stopped` ab, nicht als `exited (…)`. Nicht gezählt, das Kind bl
 Http), nie als `handshake failed` auf error; Kriterium ist `$child->{eof}`. Fork und
 Docker-stdio erben das mit `start_p` (Docker lehnt einen Start, den ein Stop abbricht, ebenso
 als `upstream NAME: stopped` ab). Der Text ist Vertrag: `Hub::_called_off` erkennt genau
-ihn, und `_warm_upstream` nimmt einen so abgesagten Start nicht als gescheiterten Fetch —
-kein error-Log, kein `failed`.
+ihn, und weder `_warm_upstream` noch `Hub::refresh_p` nimmt einen so abgesagten Start als
+gescheiterten Fetch — kein error-Log, kein `failed`.
 
 Ein Refresh (`refresh_p`, nur bei `ready` mit pid) ist an das Kind gebunden, auf dem er
 begann: `_list_all_p(0, $self->{child})` reicht es als `$on` bis `_request_p`, und jeder
@@ -80,8 +87,8 @@ Exit und einen Call samt neuem Kind abwickeln — ungebunden nähme der Refresh 
 für die alten. Fork und Docker-stdio erben das. Http bindet nicht (unten); die Transporte
 unterscheiden sich vorerst mit Absicht. Trifft ein Refresh `stopping` an, fragt er das
 Kind nichts: er wartet wie ein Call auf `_gone_p` und fragt das nächste, das er dafür
-startet — außer ein Reload hat den Upstream inzwischen losgelassen (`_dropped`), dann
-scheitert er als `upstream NAME: stopped`: das Kind stoppte sonst niemand.
+startet — außer ein Reload hat den Upstream inzwischen losgelassen, dann scheitert er in
+`start_p` als `upstream NAME: stopped` (oben): das Kind stoppte sonst niemand.
 
 ### Http — Streamable HTTP oder HTTP+SSE
 
@@ -310,19 +317,21 @@ scheitern.
 Ein Upstream, den ein Reload ersetzt oder entfernt hat, ist losgelassen (`let_go`:
 gestoppt, ein In-process-`class` mit geleerten Listen) und bleibt gehalten
 (`Hub::_let_go`: in `leaving` per `refaddr`), bis sein `stopped_p` sich setzt — so wartet
-`shutdown_p` auch auf sein Kind oder seinen Container. Der Nachfolger wartet nicht darauf:
-das Kind des alten kann neben dem des neuen bis zu 7 s laufen (`EOF_GRACE` +
-`KILL_GRACE`); nur ein Container-Start wartet auf den vorigen (`%SETTLING`, oben). Ein
+`shutdown_p` auch auf sein Kind oder seinen Container. Darauf wartet auch der Nachfolger:
+ein stdio-/Fork-Start holt die gleichnamigen aus `leaving` (`Hub->predecessors`) und
+spawnt erst nach deren `stopped_p` (bis 7 s, `EOF_GRACE` + `KILL_GRACE`), ein
+Container-Start wartet über `%SETTLING` (oben). Http und Docker/Compose fragen
+`predecessors` nicht — wechselt ein Server von stdio zu http oder docker, überlappen
+altes und neues weiter. Ein
 laufender Start oder Refresh des alten läuft zu Ende — und wendet nichts an:
 `_apply_manifest` (Basis und Fork; die Engine reicht an ihren Owner durch) fragt zuerst
 `_dropped`. Hält
 `upstreams_by_name` unter dem Namen nicht genau dieses Objekt (`refaddr`): kein
 Cache-Write (den der Nachfolger teilen kann, der Hash lässt `env` aus), keine
-Notification, nur ein debug-Log; ohne Hub ist nichts dropped. Sicher, weil `reload` die
-neue Map zwar erst nach `_warm_upstream` setzt, aber synchron, und jedes `_apply_manifest`
-in einem Promise-Callback läuft; der Cache-Load beim Build geht direkt über
-`Facade->apply`. Wer daran dreht, hält `_apply_manifest` aus jedem synchronen Pfad in
-`reload`/`_warm_upstream` heraus — sonst gälte der neue Upstream selbst als dropped.
+Notification, nur ein debug-Log; ohne Hub ist nichts dropped. Deshalb setzt `reload` die
+neue Map, bevor es wärmt (`_apply_config`): vorher gälte der neue Upstream selbst als
+dropped, und `start_p` spawnte für ihn nichts. Der Cache-Load beim Build, noch vor dem
+Tausch, geht direkt über `Facade->apply`, nicht über `_apply_manifest`.
 
 Extras: `title`, `icons` und `_meta` stehen am Manifest-Eintrag. Tool-Extras
 hängen an `Facade::Tool->extra`, Prompt-Extras (nach Name) und Resource-Extras
