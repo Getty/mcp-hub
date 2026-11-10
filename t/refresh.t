@@ -85,6 +85,20 @@ sub await_bounded ($promise, $seconds = 10) {
   return $out;
 }
 
+# A hook for _request_p that sends the request with a short timeout, and puts
+# the upstream's own back: for a list the child never answers, so that the wait
+# for it is short while its initialize and every other request keep the
+# generous one.
+sub short_timeout_for {
+  return sub ($up, $send, @request) {
+    my $timeout = $up->request_timeout;
+    $up->request_timeout(1);
+    my $p = $send->(@request);
+    $up->request_timeout($timeout);
+    return $p;
+  };
+}
+
 sub names ($list) { return [map { $_->name } @$list] }
 
 # The prompts (by name) or the resources (by uri) the facade of $up lists.
@@ -216,29 +230,30 @@ subtest 'a start whose prompts/list or resources/list gets no answer keeps that 
   for my $kind (qw(prompts resources)) {
     my $dir   = tempdir;
     my $plain = upstream(cache_dir => "$dir");
-    is await_bounded($plain->start_p), $plain, "$kind: a start of the child as it is";
+    is await_bounded($plain->start_p, 30), $plain, "$kind: a start of the child as it is";
     $plain->stop;
     await_bounded($plain->stopped_p);
 
     # The same server, its child leaving every $kind/list unanswered -- with
     # the cache the start above stored, under the hash its args give it.
     my $args  = ['-Ilib', "$ECHO", "--no-answer=$kind/list"];
-    # The request timeout ends the list that gets no answer -- and the child's
-    # initialize as well, if the child is slower to come up than that: a few
-    # seconds, not one, on a busy machine.
+    # The child's initialize and its other lists have the generous request
+    # timeout of upstream(); only the list that gets no answer is cut to a
+    # short one (short_timeout_for), as the request is sent.
     my $store = MCP::Hub::Manifest->new(cache_dir => "$dir");
     $store->store({%{cached($plain)}, hash => $store->hash($^X, $args)});
     my @lines;
     my $up = upstream(
       cache_dir       => "$dir",
       config          => {type => 'stdio', command => $^X, args => $args},
-      request_timeout => 3,
       log             => log_to(\@lines),
     );
+    $ON{"$kind/list"} = short_timeout_for();
     is_deeply listed($up, $kind), $expect{$kind}, "$kind: the cache lists them before the start";
 
     @NOTIFIED = ();
-    is await_bounded($up->start_p), $up, "$kind: the start is through";
+    is await_bounded($up->start_p, 30), $up, "$kind: the start is through";
+    is_deeply [sort keys %ON], [], "$kind: the list that gets no answer was asked for" or %ON = ();
     is $up->state, 'ready', "$kind: the upstream is ready";
     is scalar(grep {/^info \[echo\] no answer to \Q$kind\E\/list while starting .*, keeping the cached \Q$kind\E$/} @lines), 1,
       "$kind: the list got no answer" or diag explain \@lines;
@@ -260,16 +275,17 @@ subtest 'a start whose prompts/list or resources/list gets no answer keeps that 
   my @lines;
   my $up = upstream(
     config          => {type => 'stdio', command => $^X, args => ['-Ilib', "$ECHO", '--no-answer=prompts/list']},
-    request_timeout => 3,
     log             => log_to(\@lines),
   );
-  is await_bounded($up->start_p), $up, 'no cache: the start is through';
+  $ON{'prompts/list'} = short_timeout_for();
+  is await_bounded($up->start_p, 30), $up, 'no cache: the start is through';
   is_deeply listed($up, 'prompts'), [], 'no cache: with no prompts';
   is_deeply listed($up, 'resources'), ['echo://readme'], 'no cache: and the resources';
   ok +(grep {/no answer to prompts\/list while starting .*, taking it for an empty list$/} @lines),
     'no cache: the prompts/list got no answer' or diag explain \@lines;
   my $r = await_bounded($up->call_tool('echo', {msg => 'x'}));
   is $r->{content}[0]{text}, 'x', 'no cache: the tools work';
+  is_deeply [sort keys %ON], [], 'no cache: the list that gets no answer was asked for' or %ON = ();
   $up->stop;
   await_bounded($up->stopped_p);
 };
