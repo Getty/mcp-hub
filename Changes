@@ -414,3 +414,5 @@ Revision history for MCP-Hub
     that time waits for the next child.
   - Errors from an HTTP upstream now carry the status code ("500 Internal
     Server Error").
+  - A call to an HTTP upstream that an idle stop overtakes now starts the
+    upstream again instead of failing.

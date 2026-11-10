@@ -699,6 +699,56 @@ subtest 'sse upstream: a request without the stream to answer on is rejected at 
   $fake->{daemon}->stop;
 };
 
+subtest 'sse upstream: a call let through just before a stop goes out once the upstream is started again' => sub {
+  # A call is let through by start_p and sent a tick later. A stop in between
+  # took the stream and the endpoint away, and the call failed at once as "not
+  # connected" -- with no start after the stop, and with one under way, which
+  # over Streamable HTTP it waits for. It is a call on a stopped upstream: it
+  # starts it, or waits for the start under way, and goes out on the stream it
+  # opens.
+  my $handshake = mcp_answer('unused');
+  my $fake      = fake_sse(answer => sub ($req) {
+    return $handshake->($req) unless ($req->{method} // '') eq 'tools/call';
+    return {jsonrpc => '2.0', id => $req->{id}, result => {content => [{type => 'text', text => 'pong'}]}};
+  });
+  my $up = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'sse', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  my @logged;
+  my $log = Mojo::Log->new;
+  $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+  $up->log($log);
+
+  for my $when ('a stop', 'a stop and a start') {
+    is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', "$when: started";
+    my $stream = $fake->{tx};
+    @{$fake->{posts}} = ();
+
+    # In the running loop, as in the daemon (_in_loop).
+    my ($let_through, $call);
+    _await(_in_loop(sub {
+      $let_through = $up->state;
+      $call        = $up->call_tool('ping', {});
+      $up->stop;
+      $up->start_p if $when eq 'a stop and a start';
+      undef;
+    }));
+    is $let_through, 'ready', "$when: the call was let through on the ready upstream";
+    is _error_text(_await_bounded($call, 5)), 'pong', "$when: it is answered" or diag explain \@logged;
+    # (Without the notifications/initialized, which goes on a connection of its
+    # own and may arrive after the requests that follow it.)
+    is_deeply [grep { $_ ne 'notifications/initialized' } map { $_->{method} // 'answer' } @{$fake->{posts}}],
+      ['initialize', 'tools/list', 'tools/call'], "$when: once the upstream is started again";
+    isnt $fake->{tx}, $stream, "$when: on the stream that start opened";
+    is $up->state, 'ready', "$when: which is ready";
+    _stop($up);
+  }
+  is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], 'nothing logged as a failure' or diag explain \@logged;
+  $fake->{daemon}->stop;
+};
+
 subtest 'sse upstream: a POST the remote does not take fails its request at once' => sub {
   # Every request is a POST whose answer comes on the stream. The POST went out
   # with an empty callback, and nobody looked at one that failed -- an error
@@ -1629,6 +1679,79 @@ subtest 'streamable http upstream: a call let through just before a start goes o
     is $gone, undef, "$when: nothing holds the upstream";
     $fake->{daemon}->stop;
   }
+};
+
+subtest 'streamable http upstream: a call let through just before a stop starts the upstream again' => sub {
+  # A call is let through by start_p and sent a tick later. A stop in between,
+  # with no start after it, left it a call on nothing: the stop had ended the
+  # session, and the call failed as stopped. It is a call on a stopped
+  # upstream, which starts it, and it goes out on the session that start opens.
+  my $fake = fake_http(answer => pong_answer());
+  my $up   = MCP::Hub::Upstream::Http->new(
+    name      => 'fake',
+    config    => {type => 'http', url => $fake->{url}, request_timeout => 5},
+    cache_dir => tempdir->to_string,
+  );
+  my @logged;
+  my $log = Mojo::Log->new;
+  $log->unsubscribe('message')->on(message => sub ($l, $level, @lines) { push @logged, "$level: @lines" });
+  $up->log($log);
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  posts_on($fake);
+
+  # In the running loop, as in the daemon (_in_loop).
+  my ($let_through, $call);
+  _await(_in_loop(sub {
+    $let_through = $up->state;
+    $call        = $up->call_tool('ping', {});
+    $up->stop;
+    undef;
+  }));
+  is $let_through, 'ready', 'the call was let through on the ready upstream';
+  is _error_text(_await_bounded($call, 5)), 'pong', 'it is answered' or diag explain \@logged;
+  is_deeply posts_on($fake), ['initialize: none', 'tools/list: s2', 'tools/call: s2'],
+    'once the upstream is started again, on the session that start opened';
+  is $up->state, 'ready', 'which is ready';
+  ok until_true(sub { @{$fake->{deletes}} }), 'the stop ended s1';
+  is_deeply $fake->{deletes}, ['s1'], 'and only s1';
+  is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], 'nothing logged as a failure' or diag explain \@logged;
+
+  _stop($up);
+  weaken(my $gone = $up);
+  undef $up;
+  undef $call;
+  is $gone, undef, 'nothing holds the upstream';
+  $fake->{daemon}->stop;
+};
+
+subtest 'http upstream: a call let through just before a reload lets go of the upstream starts nothing' => sub {
+  # A call on a stopped upstream starts it again -- not on one the hub has let
+  # go of: a start of it would open a session with the entry as it was before
+  # the reload, which nobody would end.
+  my $fake = fake_http(answer => pong_answer());
+  my $dir  = tempdir;
+  my $file = $dir->child('config.json');
+  my $hub_settings = {cache_dir => $dir->child('cache')->to_string};
+  $file->spew(encode_json({mcpServers => {fake => {type => 'http', url => $fake->{url}}}, hub => $hub_settings}));
+  my $hub = MCP::Hub->new(hub_config_input => "$file");
+  $hub->log->level('fatal');
+  my $up = $hub->upstreams_by_name->{fake};
+  is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
+  posts_on($fake);
+
+  $file->spew(encode_json({mcpServers => {}, hub => $hub_settings}));
+  my ($call, $removed);
+  _await(_in_loop(sub {
+    $call    = $up->call_tool('ping', {});
+    $removed = $hub->reload->{removed};
+    undef;
+  }));
+  is_deeply $removed, ['fake'], 'a reload removes it as the call is let through';
+  is _error_text(_await_bounded($call, 5)), 'upstream fake: stopped', 'the call fails as stopped';
+  Mojo::Promise->timer(0.1)->wait;
+  is_deeply posts_on($fake), [], 'and starts nothing: no initialize goes out';
+  is $up->state, 'stopped', 'the upstream stays stopped';
+  $fake->{daemon}->stop;
 };
 
 subtest 'streamable http upstream: a refresh that a stop and a start overtake is no request of that start' => sub {

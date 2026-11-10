@@ -206,6 +206,29 @@ sub _hash ($self) {
 
 # --- transport: request / notify -------------------------------------------
 
+# A call is let through by start_p, and sent a tick later. One that a stop
+# overtook in between is a call on a stopped upstream: it starts it again, as
+# any call does, and goes out once that start is through -- on the session, or
+# the stream, it opens. Sent as it was, it went out on nothing: over Streamable
+# HTTP it failed as stopped, the stop having ended the session; over HTTP+SSE
+# as "not connected", the stop having closed the stream -- and so did one that
+# found the start after such a stop under way. One that finds a start under way
+# waits for it (start_p), on both transports. Not for an upstream a reload has
+# let go of: a start of it would open a session with the entry as it was, that
+# nobody ends. That call fails as stopped.
+sub _forward_p ($self, $method, $params) {
+  return $self->_held_p($self->start_p->then(sub { $self->_forward_ready_p($method, $params) }));
+}
+
+sub _forward_ready_p ($self, $method, $params) {
+  if ($self->state ne 'ready') {
+    return Mojo::Promise->reject("upstream @{[$self->name]}: stopped") if $self->_dropped('the call starts nothing');
+    return $self->start_p->then(sub { $self->_forward_ready_p($method, $params) });
+  }
+  $self->touch;
+  return $self->_request_p($method, $params);
+}
+
 # A refresh is bound to nothing here: one that a stop and a start overtake
 # goes on, on the session the start opens (_http_request_p).
 sub _request_p ($self, $method, $params = {}, $of_start = 0, @) {
@@ -246,18 +269,20 @@ sub _cancel ($self, $id, $method, $reason, $sent = undef) {
 # A request is one of a start's when the start's handshake sends it
 # ($of_start, MCP::Hub::Upstream::_handshake_p). Any other request that finds a
 # start under way waits for it and goes out on the session it opens, as a call
-# made while the upstream starts does (start_p). Such is a call let through just
-# before a start began -- after a stop, or for the new session a 404 asks for
-# (_session_gone) -- and the next page of a refresh that a stop and a start
-# overtook. Sent at once, it would go out in the middle of the handshake, with
-# no session id before the initialize is answered, as a request of the start: a
-# stop would cut it off, and it would keep no session from the stop's DELETE
-# (_http_send_p). A stop that calls the start off fails it as stopped.
+# made while the upstream starts does (start_p). Such is the next page of a
+# refresh that a stop and a start overtook -- a call let through just before a
+# start began, after a stop or for the new session a 404 asks for
+# (_session_gone), waits for it before it gets here (_forward_p). Sent at once,
+# it would go out in the middle of the handshake, with no session id before
+# the initialize is answered, as a request of the start: a stop would cut it
+# off, and it would keep no session from the stop's DELETE (_http_send_p). A
+# stop that calls the start off fails it as stopped.
 #
 # Such a request that finds the upstream stopped, with no start under way, is
 # not sent at all: it fails at once, as stopped. The stop has ended the session
-# and forgotten its id, and the request would go out with none -- the next page
-# of a refresh a stop overtook, say.
+# and forgotten its id, and the request would go out with none. Such is the
+# next page of a refresh a stop overtook; a call starts the upstream again
+# instead (_forward_p).
 #
 # A request that comes back 404 because the remote has ended its session
 # (_session_gone) is sent once more, on the new session -- not again after
@@ -886,11 +911,20 @@ What a stop does to a call in flight depends on the transport. Over HTTP+SSE
 the call fails as stopped: its answer would come on the stream, and the stop
 closes the stream. Over Streamable HTTP a call on a ready upstream is left to
 finish: its answer comes on its own POST, and the remote may already be
-carrying it out. Nor does a call, or the next page of a refresh, go out in the
-middle of a start there: a request that comes upon a start under way, and is
-not one the start's handshake sends, waits for it and goes out on the session
-it opens, or fails with it. One that comes upon the upstream stopped, with no
-start after the stop, is not sent at all: it fails as C<upstream NAME: stopped>.
+carrying it out.
+
+A call let through on a ready upstream just before a stop -- its request not
+sent yet when the stop comes -- is a call on a stopped upstream, on both
+transports: it starts the upstream again, as any call does, and goes out once
+that start is through, on the session or the stream it opens. One that finds a
+start under way waits for it, and goes out on what it opens, or fails with it.
+Not so on an upstream a reload has let go of: that call fails as
+C<upstream NAME: stopped>, and nothing is started for it. Nor does the next
+page of a refresh go out in the middle of a start over Streamable HTTP: a
+request that comes upon a start under way, and is not one the start's
+handshake sends, waits for it and goes out on the session it opens, or fails
+with it. One that comes upon the upstream stopped, with no start after the
+stop, is not sent at all: it fails as C<upstream NAME: stopped>.
 
 Over Streamable HTTP a stop also ends the session. Once no call is left on it,
 one C<DELETE> to the endpoint with its C<Mcp-Session-Id> tells the remote that
