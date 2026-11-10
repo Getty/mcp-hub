@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-10T08:11:57Z
+id: 202
+priority: low
+started: 2026-11-10T16:03:01Z
+status: todo
+tags:
+- http
+- refactor
+title: Move Http's per-caller let-go guard into Http::start_p, as stdio has it since
+  k191
+updated: 2026-11-10T16:03:01Z
+---
+
+Found by mcp-hub-worker during wave C (k185/k191/k187, 2026-11-10). k112 put a _dropped re-check at each Http call path (_forward_p); k191 put stdio's into start_p itself so every path that spawns is covered. Optional refactor for symmetry: one guard in Http::start_p. Behavior unchanged; t/http.t covers it.
