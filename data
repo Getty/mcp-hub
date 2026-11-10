@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T04:19:14Z
+created: 2026-11-07T04:07:02Z
+id: 166
+priority: low
+started: 2026-11-10T04:19:14Z
+status: done
+tags:
+- binary
+- smoke
+- drift
+title: Guard the smoke fork probe's PAR_TEMP prefix check against an unset PAR_TEMP
+updated: 2026-11-10T04:20:16Z
+---
+
+Found by mcp-hub-binary-worker during k162. scripts/smoke-binary.sh:357, the fork probe, checks index($r->{from} // "", "$ENV{PAR_TEMP}/") == 0. If PAR_TEMP were unset, the prefix becomes "/" and the check passes for any absolute path, so a module loaded from a host perl would count as "from the archive". Inside the binary PAR_TEMP is always set, so this does not misfire today. The new JSON check from k162 already guards it with length($par). Done when the fork probe has the same guard (an unset or empty PAR_TEMP fails the check) and smoke-binary.sh still passes on a real build. Lane: mcp-hub-binary-worker.
+
+2026-11-10: folded into k35 (binary form of the [@Author::GETTY] bundle) at the request of hub session perl-developer-95, since smoke-binary.sh is rebuilt there against the bundle's command contracts.
+
+Committed as 46e33fb with k35 (fork probe guards unset/empty PAR_TEMP in scripts/binary-smoke.sh).
+
+46e33fb is now 1235e6d (trailer reworded; tree unchanged).
