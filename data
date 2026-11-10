@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T13:29:31Z
+created: 2026-11-10T12:52:08Z
+id: 207
+priority: medium
+started: 2026-11-10T13:12:12Z
+status: done
+tags:
+- test
+- flaky
+title: 't/refresh.t: k143 no-cache start gives initialize only request_timeout 3,
+  a loaded host misses it'
+updated: 2026-11-10T13:29:31Z
+---
+
+Found by mcp-hub-worker during wave E (2026-11-10). The "no cache" part of the subtest "a start whose prompts/list or resources/list gets no answer keeps that list…" (added in k143, commit 2bd1a5f) gives the child request_timeout => 3, which also bounds its initialize. It failed once in a full `nice prove -lr -j4 t/` run ("no cache: the start is through" got an error) and passed alone under EV and Poll. A fixed deadline a loaded host misses: let initialize have a generous timeout and keep the short one only for the list request that is to go unanswered (or wait on the event). Done: the subtest no longer depends on a 3 s deadline for anything but the timeout under test.
+
+Reproduced 2026-11-10 in the main session's full Poll run on tree 1b0cbdf (wave E): 'error [echo] handshake failed: upstream echo: timed out after 3s' -- the child's initialize missed request_timeout 3 under load (run took 292 s vs 239 s under EV); t/refresh.t passed alone twice under Poll on the same tree. Logs: scratchpad suite-e-poll.log.
+
+Worked by mcp-hub-test-writer: both start subtests keep the generous 30 s request_timeout of upstream(); a %ON hook (short_timeout_for) cuts only the unanswered prompts/list or resources/list to 1 s as it is sent, and an assertion shows the hook was used. Claim unchanged: with lib/ from 2bd1a5f^ the subtest fails (9 assertions) under EV and Poll; green now; 3 loaded -j4 runs with neighbours passed.
+
+Committed as 374dfe2
