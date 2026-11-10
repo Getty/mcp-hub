@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-10T03:57:02Z
+created: 2026-11-07T02:45:37Z
+id: 161
+priority: low
+started: 2026-11-10T02:59:24Z
+status: done
+tags:
+- config
+- drift
+title: 'Decide: should integer config keys accept a JSON string such as "30"?'
+updated: 2026-11-10T03:57:02Z
+---
+
+Found by mcp-hub-worker during k152 (2026-11-07). _int and _positive_int test the value with /^-?\d+$/ and /^\d+$/, so a JSON string "30" (and "30\n", since $ allows a trailing newline) loads as 30 for idle_timeout, port and request_timeout. Maybe intended (env-expanded values arrive as strings?) -- check whether ${VAR} expansion can feed these keys before deciding. Question for the maintainer: accept numeric strings, or require a JSON number? Either way use \z instead of $.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: accept a numeric string only where ${VAR} expansion can feed the key (check it); refuse strings where it cannot. Either way anchor with \z, not $.
+
+Done by mcp-hub-worker in worktree main (uncommitted): ${VAR} never reaches idle_timeout, request_timeout or port (checked: expansion covers command/args/env/cwd/url/headers/docker/volumes/docker_args/compose and hub listen/cache_dir/docker_command/docker_network/tokens), so a string is refused there, "30" included (_is_number via B); integer checks anchored with \z; messages unchanged. Red on HEAD (10 checks), green under EV, Poll and MOJO_NO_JSON_XS=1. Note: a 24-digit number decodes as a string under Cpanel::JSON::XS and is now refused. README and docker spec sentences added by the main session. Patches: w-k161/patch (both cards), w-k161/patch-on-k160.
+
+Committed as a187516 on main (local, not pushed).
