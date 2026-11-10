@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-10T10:21:08Z
+created: 2026-11-10T02:59:30Z
+id: 181
+priority: low
+started: 2026-11-10T08:31:25Z
+status: done
+tags:
+- test
+- flake
+- docker
+title: t/docker.t compose subtests time out at 5 s under load
+updated: 2026-11-10T10:21:08Z
+---
+
+Found by mcp-hub-binary-worker during k35 (2026-11-10). Under host load 18–29, t/docker.t failed twice with lib/, t/, bin/ unchanged from HEAD (dcedd74): first subtests 7, 11, 34 and 36, then 34 and 36 again. 34 is "compose stdio: the image and what the service depends on are ready before the handshake" (line 1171, "upstream pulled: timed out after 5s"), 36 is "compose: what the service waits for is ready before the handshake" (line 1294; "a slow dependency does not count against request_timeout" at 1234, "no MCP answer … within 5s"). Same shape as k165 (t/refresh.t): a fixed request_timeout of 2–5 s that a loaded host misses. Done when the cause is found against the existing host load (no burners), fixed without weakening what the subtests claim, and 5 runs under EV and 5 under Poll pass at that load. Logs: the k35 scratchpad w-k35/prove.log and prove-rerun.log.
+
+2026-11-10, mcp-hub-worker during the Hub.pm wave: t/docker.t test 7 ('a port means HTTP on it, and an HTTP container is stopped and removed') failed once under EV in a -j4 run at low load, passed alone under EV and under Poll; the failing assertion was not captured. Possibly the same timing pattern.
+
+Committed as c3ba0e9 (Give t/docker.t's compose handshake 15s and its slow pull, build and dependencies 2s more, and set the HTTP idle stop after the reads).
