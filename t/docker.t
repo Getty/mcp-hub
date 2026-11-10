@@ -341,7 +341,7 @@ subtest 'the image is pulled only when it is missing' => sub {
 
 subtest 'a port means HTTP on it, and an HTTP container is stopped and removed' => sub {
   my $fake = fake_docker(images => \%IMAGES);
-  my $up   = upstream($fake, {docker => 't/http', port => 8080}, idle_timeout => 1);
+  my $up   = upstream($fake, {docker => 't/http', port => 8080}, idle_timeout => 300);
 
   my ($ok, $err) = await($up->start_p);
   ok $ok, 'started' or diag $err;
@@ -358,6 +358,10 @@ subtest 'a port means HTTP on it, and an HTTP container is stopped and removed' 
   ok grep({ $_ eq "port $id 8080/tcp" } @{commands($fake)}), 'docker port tells where it went';
   ok grep({ $_ eq "wait $id" } @{commands($fake)}),          'and docker wait watches the container';
 
+  # The idle stop is set only now: with idle_timeout 1 from the start, a host slow
+  # enough to take a second over the reads above could have the container
+  # stopped and removed under them.
+  $up->apply_timeouts({idle_timeout => 1});
   ok wait_until(sub { $up->state eq 'stopped' }, 10), 'stopped after idle_timeout';
   ok wait_until(sub { !@{records($fake)} }), 'and the container is gone';
   my @teardown = grep {/^(?:stop|rm) /} @{commands($fake)};
@@ -1131,18 +1135,22 @@ subtest 'compose: a service that already runs is used as it is, and left running
 };
 
 subtest 'compose stdio: the image and what the service depends on are ready before the handshake' => sub {
+  # The handshake may take $TIMEOUT seconds, and the pull and the build each take
+  # longer. $TIMEOUT is not a few seconds: the handshake starts with the
+  # child's perl, and on a loaded host that alone took more than five.
+  my $TIMEOUT = 15;
   my $fake = fake_docker(registry => {'t/tool' => {kind => 'stdio'}});
   my $dir  = compose_project(
-    pulled => {image => 't/tool', 'x-kind' => 'stdio', 'x-pull-delay' => 6,
+    pulled => {image => 't/tool', 'x-kind' => 'stdio', 'x-pull-delay' => $TIMEOUT + 2,
       depends_on => {db => {condition => 'service_started', required => \1}}},
-    built => {build => {context => '.'}, 'x-kind' => 'stdio', 'x-build-delay' => 6},
+    built => {build => {context => '.'}, 'x-kind' => 'stdio', 'x-build-delay' => $TIMEOUT + 2},
     db    => {'x-kind' => 'idle'},
   );
 
-  # A pull and a build that each take longer than the handshake may (6s against
-  # 5s): done inside the handshake, either would time it out.
-  my $pulled = upstream($fake, {compose => $dir, service => 'pulled'}, name => 'pulled', request_timeout => 5);
-  my ($ok, $err) = await($pulled->start_p);
+  # A pull and a build that each take longer than the handshake may: done
+  # inside the handshake, either would time it out.
+  my $pulled = upstream($fake, {compose => $dir, service => 'pulled'}, name => 'pulled', request_timeout => $TIMEOUT);
+  my ($ok, $err) = await($pulled->start_p, 90);
   ok $ok, 'a slow pull does not count against request_timeout' or diag $err;
   ok echo_ok($pulled), 'it answers';
   my @compose = grep {/^compose /} @{commands($fake)};
@@ -1159,8 +1167,8 @@ subtest 'compose stdio: the image and what the service depends on are ready befo
   ok !(grep {/^compose pull/} @{commands($fake, calls_since($fake, $before))}), 'with no pull: the image is there';
   stop_and_settle($pulled);
 
-  my $built = upstream($fake, {compose => $dir, service => 'built'}, name => 'built', request_timeout => 5);
-  ($ok, $err) = await($built->start_p);
+  my $built = upstream($fake, {compose => $dir, service => 'built'}, name => 'built', request_timeout => $TIMEOUT);
+  ($ok, $err) = await($built->start_p, 90);
   ok $ok, 'a slow build does not count against it either' or diag $err;
   ok grep({ $_ eq 'compose build built' } @{commands($fake)}), 'the image was built first';
   stop_and_settle($built);
@@ -1212,6 +1220,9 @@ subtest 'compose: a dependency that exists is never recreated, stopped or restar
 };
 
 subtest 'compose: what the service waits for is ready before the handshake' => sub {
+  # The handshake may take $TIMEOUT seconds, and what the service waits for
+  # longer (see the compose stdio subtest above for the size of it).
+  my $TIMEOUT = 15;
   my @unhandled;
   local $SIG{__WARN__} = sub ($w) { $w =~ /Unhandled rejected promise/ ? push @unhandled, $w : warn $w };
   my $fake  = fake_docker;
@@ -1221,16 +1232,17 @@ subtest 'compose: what the service waits for is ready before the handshake' => s
   my $dir = compose_project(
     tool    => {'x-kind' => 'stdio', depends_on => \%needs},
     mcp     => {'x-kind' => 'http', ports => $port, depends_on => \%needs},
-    db      => {'x-kind' => 'idle', healthcheck => {test => ['CMD', 'true']}, 'x-healthy-after' => 7},
-    migrate => {'x-kind' => 'oneshot', 'x-runtime' => 6},
+    db      => {'x-kind' => 'idle', healthcheck => {test => ['CMD', 'true']}, 'x-healthy-after' => $TIMEOUT + 2},
+    migrate => {'x-kind' => 'oneshot', 'x-runtime' => $TIMEOUT + 1},
   );
 
-  # A database healthy after 7s and a migration done after 6s, against a
-  # handshake that may take 5s: waited for inside it, either times it out.
+  # A database healthy after $TIMEOUT + 2 seconds and a migration done after
+  # $TIMEOUT + 1, against a handshake that may take $TIMEOUT: waited for
+  # inside it, either times it out.
   for my $service (qw(tool mcp)) {
     my $before = scalar @{calls($fake)};
-    my $up = upstream($fake, {compose => $dir, service => $service}, name => $service, request_timeout => 5);
-    my ($ok, $err) = await($up->start_p, 60);
+    my $up = upstream($fake, {compose => $dir, service => $service}, name => $service, request_timeout => $TIMEOUT);
+    my ($ok, $err) = await($up->start_p, 120);
     ok $ok, "$service: a slow dependency does not count against request_timeout" or diag $err;
     ok echo_ok($up), "$service answers";
     stop_and_settle($up);
