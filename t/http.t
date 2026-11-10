@@ -755,8 +755,8 @@ subtest 'sse upstream: a POST the remote does not take fails its request at once
   is _await_bounded($up->start_p, 5), $up, 'started';
 
   for my $case (
-    ['status500', 'upstream fake: Internal Server Error', 'an error status'],
-    ['status400', 'upstream fake: Bad Request',           'a client error status'],
+    ['status500', 'upstream fake: 500 Internal Server Error',   'an error status'],
+    ['status400', 'upstream fake: 400 Bad Request',             'a client error status'],
     ['drop',      'upstream fake: Premature connection close', 'no response'],
   ) {
     my ($name, $reason, $what) = @$case;
@@ -777,7 +777,7 @@ subtest 'sse upstream: a POST the remote does not take fails its request at once
   my $pinged = _await_bounded($up->call_tool('ping_me', {}), 5);
   is _error_text($pinged), 'pinged', 'a failed POST of an answer rejects no request, not one with its id'
     or diag explain $pinged;
-  is scalar(grep {/^debug: \[fake\] POST of the answer to request \d+ failed: Internal Server Error$/} @logged), 1,
+  is scalar(grep {/^debug: \[fake\] POST of the answer to request \d+ failed: 500 Internal Server Error$/} @logged), 1,
     'it is logged at debug' or diag explain \@logged;
 
   # A remote that no longer takes connections -- one that shuts down
@@ -799,12 +799,13 @@ subtest 'sse upstream: a POST the remote does not take fails its request at once
   $init_status = 503;
   for my $n (1 .. 3) {
     my $s = _await_bounded($up->start_p, 5);
-    is ref $s eq 'HASH' ? $s->{err} : 'ready', 'upstream fake: Service Unavailable',
+    is ref $s eq 'HASH' ? $s->{err} : 'ready', 'upstream fake: 503 Service Unavailable',
       "start $n: its initialize not taken, it fails at once";
   }
   is $up->state, 'failed', 'three of them: failed';
   like $up->error, qr/^3 connect failures within 5s/, 'as connect failures';
-  is_deeply [grep {/^error:/} @logged], [('error: [fake] handshake failed: upstream fake: Service Unavailable') x 3],
+  is_deeply [grep {/^error:/} @logged],
+    [('error: [fake] handshake failed: upstream fake: 503 Service Unavailable') x 3],
     'each logged as the failure it is, and the only errors' or diag explain \@logged;
 
   # The POST is looked at, but it holds no upstream: one a reload has dropped
@@ -1088,8 +1089,10 @@ subtest 'streamable http upstream: a start opens a new session, a stop ends the 
     'goes without the id of the failed one';
 
   # A remote that does not let clients end sessions answers 405; one that
-  # drops the DELETE answers nothing. Neither is a failure of the stop.
-  for my $status (405, 'drop') {
+  # drops the DELETE answers nothing. Neither is a failure of the stop. The
+  # debug line says why, an error status with its code.
+  for my $case ([405, '405 Method Not Allowed'], ['drop', 'Premature connection close']) {
+    my ($status, $why) = @$case;
     is $start->(), 'started', "$status: started" unless $up->state eq 'ready';
     @logged = ();
     $fake->{delete_status} = $status;
@@ -1097,6 +1100,9 @@ subtest 'streamable http upstream: a start opens a new session, a stop ends the 
     _stop($up);
     is $up->state, 'stopped', "$status: the stop is done at once";
     ok $until->(sub { grep {/did not end the session/} @logged }), "$status: the DELETE is over";
+    is_deeply [grep {/did not end the session/} @logged], ["debug: [fake] the remote did not end the session: $why"],
+      "$status: logged with its reason"
+      or diag explain \@logged;
     is scalar @{$fake->{deletes}}, $before + 1, "$status: it was sent once";
     is_deeply [grep { !/^(?:trace|debug|info):/ } @logged], [], "$status: logged at debug level only"
       or diag explain \@logged;
@@ -1329,7 +1335,7 @@ subtest 'streamable http upstream: a request goes out once more at most, a reque
   $forget = 1;
   my $r = _await_bounded($up->call_tool('ping', {}), 5);
   ok $r->{isError}, 'a call whose new session ends too is an error result' or diag explain $r;
-  like _error_text($r), qr/^upstream fake: the remote ended the session \(Not Found\)$/, 'that says why';
+  like _error_text($r), qr/^upstream fake: the remote ended the session \(404 Not Found\)$/, 'that says why';
   is_deeply posts_on($fake), ['tools/call: s1', 'initialize: none', 'tools/list: s2', 'tools/call: s2'],
     'it went out once more, on s2, and not again';
   is $up->state, 'stopped', 'the upstream is not left on s2';
@@ -1344,8 +1350,8 @@ subtest 'streamable http upstream: a request goes out once more at most, a reque
   ok until_true(sub { @{$fake->{deletes}} }), 'a stop ends s3';
   $fake->{volatile} = 1;
   my $s = _await_bounded($up->start_p, 5);
-  like $s->{err}, qr/^upstream fake: the remote ended the session \(Not Found\)$/, 'a start whose session ends fails'
-    or diag explain $s;
+  like $s->{err}, qr/^upstream fake: the remote ended the session \(404 Not Found\)$/,
+    'a start whose session ends fails' or diag explain $s;
   is_deeply posts_on($fake), ['initialize: none', 'tools/list: s4'], 'its tools/list is not sent again';
   $up->stop;
   Mojo::Promise->timer(0.1)->wait;
@@ -1374,7 +1380,7 @@ subtest 'streamable http upstream: a 404 on a request without a session id is on
   for my $n (1 .. 2) {
     my $r = _await_bounded($up->call_tool('missing', {}), 5);
     ok $r->{isError}, "call $n: a 404 is an error result";
-    like _error_text($r), qr/^upstream fake: Not Found$/, "call $n: Not Found";
+    like _error_text($r), qr/^upstream fake: 404 Not Found$/, "call $n: Not Found";
     is_deeply posts_on($fake), ['tools/call: none'], "call $n: sent once, and no new session";
     is $up->state, 'ready', "call $n: still ready";
   }
@@ -1388,7 +1394,7 @@ subtest 'streamable http upstream: a 404 on a request without a session id is on
   );
   $other->log->level('fatal');
   my $s = _await_bounded($other->start_p, 5);
-  like $s->{err}, qr/^upstream fake: Not Found$/, 'a wrong url: the start fails with Not Found' or diag explain $s;
+  like $s->{err}, qr/^upstream fake: 404 Not Found$/, 'a wrong url: the start fails with Not Found' or diag explain $s;
   is $other->state, 'stopped', 'stopped';
 
   $up->stop;
@@ -1504,7 +1510,7 @@ subtest 'streamable http upstream: a stop calls off the new session, and opens n
     my $r = _await_bounded($call, 2);
     ok $r->{isError}, "$when: the call is an error result" or diag explain $r;
     like _error_text($r),
-      $when eq 'before the 404' ? qr/^upstream fake: the remote ended the session \(Not Found\)$/ : qr/^upstream fake: stopped$/,
+      $when eq 'before the 404' ? qr/^upstream fake: the remote ended the session \(404 Not Found\)$/ : qr/^upstream fake: stopped$/,
       "$when: that says why";
     is $up->state, 'stopped', "$when: stopped";
     ok until_true(sub { $fake->{cut} > $cut }, 1), "$when: the $held is cut off" if defined $cut;
@@ -1864,7 +1870,7 @@ subtest 'streamable http upstream: a start that fails, or that a stop calls off,
   my @cases = (
     ['a list fails',                       0, qr/^upstream fake: not now$/],
     ['a list fails',                       1, qr/^upstream fake: not now$/],
-    ['the remote ended its session',       0, qr/^upstream fake: the remote ended the session \(Not Found\)$/],
+    ['the remote ended its session',       0, qr/^upstream fake: the remote ended the session \(404 Not Found\)$/],
     ['stopped as the initialize goes out', 0, qr/^upstream fake: stopped$/],
     ['stopped as the initialize goes out', 1, qr/^upstream fake: stopped$/],
     ['stopped during the initialize',      0, qr/^upstream fake: stopped$/],
@@ -1958,14 +1964,14 @@ subtest 'an error reads the same over both transports: no trailing newline' => s
   );
   $up->log->level('fatal');
   is _error_text(_await_bounded($up->call_tool('rpc', {}), 5)), 'upstream fake: nope', 'http: a JSON-RPC error';
-  is _error_text(_await_bounded($up->call_tool('status', {}), 5)), 'upstream fake: Internal Server Error',
+  is _error_text(_await_bounded($up->call_tool('status', {}), 5)), 'upstream fake: 500 Internal Server Error',
     'http: an HTTP error status';
 
   # A remote that ends every session as soon as it gives it: the start fails.
   _stop($up);
   $fake->{volatile} = 1;
   is _error_text(_await_bounded($up->call_tool('ping', {}), 5)),
-    'upstream fake: the remote ended the session (Not Found)', 'http: a session the remote ended';
+    'upstream fake: the remote ended the session (404 Not Found)', 'http: a session the remote ended';
   $up->stop;
 
   (my $wrong = $fake->{url}) =~ s{/mcp$}{/wrong};
@@ -1975,7 +1981,7 @@ subtest 'an error reads the same over both transports: no trailing newline' => s
     cache_dir => tempdir->to_string,
   );
   $other->log->level('fatal');
-  is _await_bounded($other->start_p, 5)->{err}, 'upstream fake: Not Found', 'http: a start that fails';
+  is _await_bounded($other->start_p, 5)->{err}, 'upstream fake: 404 Not Found', 'http: a start that fails';
 
   my $sse = fake_sse(answer => mcp_answer({code => -32000, message => 'nope'}));
   my $sup = MCP::Hub::Upstream::Http->new(
@@ -2217,7 +2223,7 @@ subtest 'streamable http upstream: a notification the remote does not take is lo
   my $failed = sub ($method, $reason) { [grep { $_ eq "debug: [fake] POST of $method failed: $reason" } @logged] };
 
   is _await_bounded($up->start_p->then(sub { 'started' }), 5), 'started', 'started';
-  ok until_true(sub { @{$failed->('notifications/initialized', 'Internal Server Error')} }),
+  ok until_true(sub { @{$failed->('notifications/initialized', '500 Internal Server Error')} }),
     'a notification answered with an error status is logged at debug' or diag explain \@logged;
   is _error_text(_await_bounded($up->call_tool('ping', {}), 5)), 'pong', 'and the upstream answers the next call';
   {

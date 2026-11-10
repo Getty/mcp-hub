@@ -314,9 +314,10 @@ sub _http_send_p ($self, $method, $params, $of_start, $renewed = undef) {
   };
 
   # A request that fails is rejected with its reason after the name of the
-  # upstream -- as over HTTP+SSE, with no newline at its end for the agent to
-  # read. So is one that got no response at all: Mojo rejects start_p itself
-  # then, with its message alone ("Connection refused", "Request timeout"). One
+  # upstream -- an HTTP error status with its code (_http_error) -- as over
+  # HTTP+SSE, with no newline at its end for the agent to read. So is one that
+  # got no response at all: Mojo rejects start_p itself then, with its message
+  # alone ("Connection refused", "Request timeout"). One
   # the remote answers with a JSON-RPC error is rejected with that answer, which
   # reads the same (MCP::Hub::Upstream::_error_answer); an HTTP error status is
   # no answer. One that timed out is cancelled on the remote as well (_cancel).
@@ -339,9 +340,9 @@ sub _http_send_p ($self, $method, $params, $of_start, $renewed = undef) {
       if (!$found && defined $sent && ($err->{code} // 0) == 404) {
         my $renew = $self->_session_gone($sent, $renewed && !$of_start);
         $$renewed = $renew if $renewed;
-        return $fail->('the remote ended the session (' . $self->_error_message($err) . ')');
+        return $fail->('the remote ended the session (' . _http_error($err) . ')');
       }
-      return $fail->($self->_error_message($err)) unless $found;
+      return $fail->(_http_error($err)) unless $found;
     }
     # The session is the one the answer to the initialize names. A later answer
     # that names one too -- the reference server names it on every answer --
@@ -390,7 +391,7 @@ sub _end_session ($self, $sid) {
   $ua->start($tx => sub ($held, $tx) {
     undef $ua;    # held until it is over, not longer
     my $err = $tx->error or return;
-    $log->debug("[$name] the remote did not end the session: $err->{message}");
+    $log->debug("[$name] the remote did not end the session: " . _http_error($err));
   });
   return $self;
 }
@@ -430,7 +431,7 @@ sub _http_post ($self, $obj) {
   weaken(my $weak = $self);
   $self->req_ua->start($tx => sub ($ua, $tx) {
     my $err = $tx->error or return;
-    $weak->log->debug("[@{[$weak->name]}] POST of $obj->{method} failed: " . $weak->_error_message($err)) if $weak;
+    $weak->log->debug("[@{[$weak->name]}] POST of $obj->{method} failed: " . _http_error($err)) if $weak;
   });
   return 1;
 }
@@ -644,7 +645,7 @@ sub _sse_post ($self, $obj) {
   weaken(my $weak = $self);
   $self->req_ua->post($endpoint => {%{$self->{headers}}, 'Content-Type' => 'application/json'} => json => $obj => sub ($ua, $tx) {
     my $err = $tx->error or return;
-    $weak->_sse_post_failed($obj, $weak->_error_message($err)) if $weak;
+    $weak->_sse_post_failed($obj, _http_error($err)) if $weak;
   });
   return 1;
 }
@@ -692,6 +693,17 @@ sub _on_message ($self, $msg) {
 }
 
 # --- helpers ---------------------------------------------------------------
+
+# Why a request to the remote failed, as $tx->error has it, on either
+# transport: an HTTP error status with its code, "500 Internal Server Error" --
+# the reason phrase alone hides it, and a remote may send none -- or, for one
+# that got no response, Mojo's own words ("Connection refused", "Request
+# timeout").
+sub _http_error ($err) {
+  my $message = $err->{message} // '';
+  return $message unless $err->{code};
+  return length $message ? "$err->{code} $message" : "$err->{code}";
+}
 
 sub _fail_pending ($self, $reason) {
   for my $id (keys %{$self->{pending}}) {
@@ -826,8 +838,11 @@ its call: C<upstream NAME: Connection refused> (over HTTP+SSE C<upstream NAME:
 connect failed: Connection refused>), C<upstream NAME: Request timeout> for a
 POST that outlasts the request timeout (over HTTP+SSE C<upstream NAME: timed
 out after 60s> for a request whose answer has not come within it, one whose
-POST the remote holds open as long among them), C<upstream NAME:> and the
-message of a JSON-RPC error the remote answers with.
+POST the remote holds open as long among them), C<upstream NAME: 500 Internal
+Server Error> for an HTTP error status, its code before its reason phrase, and
+C<upstream NAME:> followed by the message of a JSON-RPC error the remote
+answers with. The debug line for a failed POST of a notification, and the one
+for a session C<DELETE> the remote does not take, reads the same.
 
 A request the hub times out is cancelled on the remote, as a stdio child's is:
 the remote would go on with it otherwise, as a dropped connection is no
@@ -847,7 +862,7 @@ does not take, on either transport, it is only logged at debug level.
 Over HTTP+SSE every request is a POST whose answer comes on the stream. A POST
 the remote does not take -- an HTTP error status, no response, a refused
 connection -- fails its request at once, with that reason (C<upstream NAME:
-Internal Server Error>, C<upstream NAME: Connection refused>), as over
+500 Internal Server Error>, C<upstream NAME: Connection refused>), as over
 Streamable HTTP, instead of leaving it to wait out the request timeout. A POST
 the remote holds open until the request timeout cuts it off is the request
 timing out: it fails as C<upstream NAME: timed out after 60s> and is cancelled,

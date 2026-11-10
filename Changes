@@ -412,3 +412,5 @@ Revision history for MCP-Hub
     crash loop, and the error says why.
   - A stdio server shows as stopping while it shuts down, and a refresh in
     that time waits for the next child.
+  - Errors from an HTTP upstream now carry the status code ("500 Internal
+    Server Error").
