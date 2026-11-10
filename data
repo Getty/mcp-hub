@@ -1,0 +1,52 @@
+---
+class: standard
+completed: 2026-11-10T20:26:49Z
+created: 2026-11-10T18:42:14Z
+id: 211
+priority: medium
+started: 2026-11-10T19:29:35Z
+status: done
+tags:
+- binary
+- ci
+title: 'Binary build fails against the bundle''s dzil-binary.yml at main: Cpanel/JSON/XS/Type.pm
+  gets packed'
+updated: 2026-11-10T20:46:44Z
+---
+
+A probe (branch binary-probe, commit 06fb000) pointed .github/workflows/binaries.yml at Getty/p5-dist-zilla-pluginbundle-author-getty/.github/workflows/dzil-binary.yml@main with `bundle_ref: main` instead of @binary-v1. Run 42850082058 (2026-11-10): plan passed, all three builds failed (macos-arm64, linux-arm64, linux-x86_64), smoke and publish skipped.
+
+Every build fails in the verify step with:
+
+    FAIL: left-out modules packed: lib/Cpanel/JSON/XS/Type.pm (binary-pp-args.sh must -X them)
+
+So against the bundle at main the archive holds a module that scripts/loaded-modules.pl --left-out names. A likely trigger is bundle commit ace48ca "Pack the whole namespace for a trailing ::* in binary_modules" together with `binary_require = ... Cpanel::JSON::XS ...` in dist.ini; not confirmed.
+
+The release workflow on main still uses @binary-v1, so nothing is broken today; it breaks when mcp-hub moves to the next bundle binary tag.
+
+Done when: the binary workflow is green against the bundle at main (fix here in binary-pp-args.sh / loaded-modules.pl, or a card on the bundle board if the bundle packs what a dist leaves out). The probe branch is deleted; the diff was:
+
+    -    uses: .../dzil-binary.yml@binary-v1
+    +    uses: .../dzil-binary.yml@main
+    +      bundle_ref: main
+
+Started on branch worktree-k211-verify-anchor (worktree .claude/worktrees/k211-verify-anchor, from main 3cd5c7d). Main agent confirmed the cause by reading: scripts/binary-verify.sh:222 checks a left-out namespace with an unanchored find -path "*/JSON/XS/*", which also matches lib/Cpanel/JSON/XS/Type.pm. Handed to mcp-hub-binary-worker.
+
+binary-worker: started. Plan: red on a constructed archive + real local build of unchanged HEAD, then anchor the left-out leak check, pin it in t/binary.t, green build + verify/smoke + prove -lr.
+
+binary-worker: cause confirmed. Local dzil build of unchanged HEAD 3cd5c7d (bundle 0.328) passes verify ('left-out families absent: OK'): the local pack has lib/Cpanel/JSON/XS.pm but no XS/Type.pm (local after_build passes only binary_modules as -M; the CI pack differs). RED on that real archive + lib/Cpanel/JSON/XS/Type.pm with HEAD's check: 'FAIL: left-out modules packed: lib/Cpanel/JSON/XS/Type.pm (binary-pp-args.sh must -X them)' -- the CI message verbatim. Suffix match is generic: */EV/*, */LWP/*, */URI/* hit lib/Some/EV/Thing.pm etc. too. Fix in progress: verify asks scripts/loaded-modules.pl --leaked (same left_out() as the @INC hook), pinned in t/binary.t.
+
+binary-worker: fixed, tree commit-ready (scripts/binary-verify.sh, scripts/loaded-modules.pl, t/binary.t; no lib/, dist.ini, workflow change).
+CAUSE: binary-verify.sh matched a left-out namespace with find -path "*/$p/*", unanchored: */JSON/XS/* hit lib/Cpanel/JSON/XS/Type.pm (and */EV/*, */LWP/*, */URI/* would hit any lib/X/EV/... etc). binary-pp-args.sh ($dir/$path per @INC dir), left_out() (index==0 / eq) and the smoke's index($f,"$par/")==0 are anchored; no other instance.
+FIX: new scripts/loaded-modules.pl --leaked DIR walks the unpacked archive's lib/ and arch/, names each .pm by its path below that root and judges it with the same left_out() the @INC hook and the loaded set use; verify calls it (error exit fails verify). t/binary.t pins it on a made-up archive.
+RED: real archive of a local HEAD 3cd5c7d build + lib/Cpanel/JSON/XS/Type.pm, HEAD's check -> 'FAIL: left-out modules packed: lib/Cpanel/JSON/XS/Type.pm (binary-pp-args.sh must -X them)' (the CI message). Note: the local HEAD build itself passes verify -- its pack has no Cpanel/JSON/XS/Type.pm; the CI pack at bundle main differs.
+GREEN: same archive, fixed check -> 'left-out families absent: OK'; + lib/JSON/XS/Boolean.pm, + arch/JSON/XS/Boolean.pm, + lib/JSON/XS.pm each -> FAIL naming that file. New subtest red against a suffix-matching --leaked and against HEAD's verify (mutants in scratch), green on the fix.
+BUILD: DZIL_DOCKER_API_SKIP=1 dzil build --in <scratch>/MCP-Hub-0.001 from the worktree = HEAD 3cd5c7d + this diff (tracked files only; bundle 0.328, PAR::Packer 1.064, Module::ScanDeps 1.37): dzil exit 0, verify: OK, smoke: OK. Own runs: scripts/binary-verify.sh -> verify: OK (289 modules, left-out families absent: OK); scripts/binary-smoke.sh -> smoke: OK. lib-gate.pl not run (CI only); a dev-box build links host libssl.so.3/libcrypto.so.3 (+libz, libzstd) in Net/SSLeay/SSLeay.so -- expected, not a pass.
+prove -lr -j4 t/: Files=59, Tests=807, PASS; skipped suites: docker-live.t, npx.t, wiki-live.t (env-gated).
+NOT DONE: 'binary workflow green against bundle at main' needs a workflow run -- maintainer's call. Drift: (1) local after_build and the CI pack differ (Type.pm only in CI), so a local build cannot reproduce CI packing; (2) dzil build also builds the Docker image (the HEAD build retagged local raudssus/mcp-hub:0 and :0.001) unless DZIL_DOCKER_API_SKIP=1; (3) GatherAgentContext ships ignored skilletor-installed rules/skills under misc/agent-context/ in the tarball.
+
+Closed in commit 9a888ee on branch worktree-k211-verify-anchor. RED: HEAD's check on the real archive of a local HEAD build plus lib/Cpanel/JSON/XS/Type.pm -> 'FAIL: left-out modules packed: lib/Cpanel/JSON/XS/Type.pm (binary-pp-args.sh must -X them)' (the CI message verbatim; the local HEAD build alone passes verify because the local pack has no XS/Type.pm, only the CI pack at bundle main does). GREEN: fixed check on the same archive -> 'left-out families absent: OK'; adding lib/JSON/XS/Boolean.pm, arch/JSON/XS/Boolean.pm or lib/JSON/XS.pm each still fails naming that file. Build with verify: OK / smoke: OK. prove -lr: 59 files / 807 tests PASS. Workflow-green against the bundle at main is left to the hub's merge and CI run.
+
+2026-11-10 20:29 Merged as 1b0327a on main and pushed (subject shortened, rebased onto 657b155; 9a888ee was the pre-merge hash).
+
+2026-11-10 20:46 CI probe against the bundle workflow at main (temporary branch k211-ci-probe, run 42895904009): green on all three builds (linux-x86_64, linux-arm64, macos-arm64) and all six smokes; every build logs "left-out families absent: OK"; publish skipped as intended. Probe branch, worktree and remote branch deleted.
