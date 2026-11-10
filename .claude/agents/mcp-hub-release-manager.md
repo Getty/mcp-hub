@@ -59,7 +59,14 @@ code goes back to the worker as a note on its card, not as your own fix. **Never
    dependency set the `cpanfile` declares; flag any registry/tag or dependency
    disagreement between the image and the distribution, but **do not pick a side** —
    report it for the maintainer to decide.
-7. **`dzil build`** — runs clean: no missing files, no warnings.
+7. **`dzil build`** — runs clean: no missing files, no warnings. Audit with
+   `DZIL_DOCKER_API_SKIP=1 dzil build`: `docker_image` builds the `raudssus/mcp-hub`
+   image in an after_build hook on every `dzil build` (an audit build hung there past
+   500 s). Build the image separately (`DOCKER_BUILDKIT=0 docker build`, the README's
+   "Building the image"; this host's `docker` is rootless podman) only when the image is
+   what is being checked. Once dist.ini declares `binary`, `DZIL_BINARY_SKIP=1` likewise
+   skips the local `pp` build and its `binary_verify`/`binary_smoke`; run those only when
+   the binary is what is being checked — a `pp` build takes about 7 minutes.
 8. **`prove -lr t/`** — green (recursive: `t/native/` and `t/upstream/` are subdirs). If
    every file dies with exit 2 and "No plan found", report it as a missing dependency in
    the build environment (`MCP`, `Mojolicious`), not as a test failure.
