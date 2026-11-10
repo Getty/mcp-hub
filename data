@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-11-10T08:11:46Z
+id: 200
+priority: low
+started: 2026-11-10T16:02:49Z
+status: todo
+tags:
+- stdio
+- shutdown
+- lifecycle
+title: A call waiting on the old child during a shutdown spawns a child after the
+  shutdown
+updated: 2026-11-10T16:02:49Z
+---
+
+Found by mcp-hub-worker during wave C (k185/k191/k187, 2026-11-10). A call that waits on _gone_p while the daemon shuts down goes on to start_p once the old child is gone; the hub still holds the upstream, so k191's let-go guard does not apply, and shutdown_p has already resolved -- a child is spawned after the shutdown. Fix: start_p refuses while the hub is shutting down. Test in t/shutdown.t.
