@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T05:06:05Z
+created: 2026-11-06T10:06:38Z
+id: 125
+priority: low
+started: 2026-11-10T04:02:27Z
+status: done
+tags:
+- lifecycle
+- reload
+title: 'A reload''s old child is not waited for: it can overlap the new one and outlive
+  a shutdown'
+updated: 2026-11-10T05:06:05Z
+---
+
+Found during k39/k81 (drift). On reload, removed or changed upstreams are stopped and dropped from upstreams, not waited for. With k39 the old child can run on next to the new one for up to 7 s, and a shutdown right after a reload does not wait for it (shutdown_p only walks upstreams). Options: keep dropped upstreams in a leaving set until stopped_p resolves and include them in shutdown_p.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes. Dropped upstreams stay in a leaving set until their stopped_p resolves, and shutdown_p waits for them too.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green under EV and Poll with t/hub.t; combined run of t/reload.t t/shutdown.t t/reload-free.t t/command.t t/cli.t t/aggregate-auth.t t/hub.t passed under both. Apply order k89 patch, then incr.patch of k125, k75, k76, k79, k33 (scratchpad w-kNN/). k125: _let_go holds replaced/removed upstreams until stopped_p settles; shutdown_p waits for them within 20 s; tests in t/shutdown.t with a child that ignores EOF. Old and new children of a changed server can still overlap up to ~7 s (new card).
+
+Committed as 1b5a422 (Hold the upstreams a reload drops until their stop is over, and wait for them in shutdown_p).
