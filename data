@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-10T13:10:21Z
+created: 2026-11-10T04:53:09Z
+id: 186
+priority: low
+started: 2026-11-10T12:13:03Z
+status: done
+tags:
+- cli
+- drift
+title: mcp-hub refresh and reload exit 0 when no hub answers
+updated: 2026-11-10T13:10:21Z
+---
+
+Found by mcp-hub-worker during k33 (2026-11-10). Since k33, mcp-hub status exits 1 with "hub is not running at …" on stderr when no hub answers. refresh and reload still exit 0 there. Decide whether they follow status (exit 1, message on stderr, via local $! = 1; die, as status.pm does), and test it in t/cli.t.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes: refresh and reload follow status (k33): exit 1 with 'hub is not running at …' on stderr via local $! = 1; die; README/spec rows and t/cli.t.
+
+Worked by mcp-hub-worker (wave E): refresh.pm and reload.pm die with local $! = 1 like status.pm; usage and POD say so; t/cli.t covers status, refresh and reload (exit 1, stderr, empty stdout); t/command.t reads the die. Red on HEAD, green under EV and Poll. README rows, troubleshooting bullet and spec CLI table (with a new reload row) edited by the main session.
+
+Committed as 50b5386
