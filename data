@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T03:59:25Z
+created: 2026-11-09T19:30:02Z
+id: 173
+priority: low
+started: 2026-11-10T02:45:52Z
+status: done
+tags:
+- native
+- decision
+- wire
+title: 'Decide: should list_sessions'' tool description say that first_prompt is cut?'
+updated: 2026-11-10T03:59:25Z
+---
+
+From k170 (2026-11-09). The list_sessions description is still "List conversation sessions, newest first". An agent cannot see from tools/list that first_prompt is cut to 500 characters plus "…", or that get_conversation returns the whole prompt; only the POD says so. Changing the description changes tools/list (and the manifest), so it is the maintainer's call. Done when decided; if yes, the wording and a registration test (lane mcp-hub-worker).
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes. The list_sessions description says first_prompt is cut to 500 characters and get_conversation has the whole text; list_running_sessions' says the same of last_prompt (k172). Unreleased dist, so the manifest change costs nothing.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green with the patch; t/native/ + t/hub.t pass under EV and Poll (22 files, 350 tests) with all six natives cards applied. Apply order k99, k111, k163, k172, k173, k179 (scratchpad w-kNNN/incr.patch each). k173: list_sessions and list_running_sessions descriptions say the prompt is cut and get_conversation has the whole text; new t/native/claude-tool-descriptions.t reads them through tools/list.
+
+Committed as 7a003ad on main (local, not pushed).
