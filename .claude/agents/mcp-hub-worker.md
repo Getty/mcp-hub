@@ -36,36 +36,16 @@ several of its v1 non-goals have since shipped (HTTP upstreams via
 `MCP::Hub::Upstream::Http`, an explicit `daemon` command). When it disagrees with the
 code, the code wins — and fix the spec or file a ticket, don't propagate the stale claim.
 
-Invariants that a change most easily breaks (the reasons are in `mcp-hub-core`, don't
-re-derive them here):
-
-- **One `Mojo::Server::Daemon` process serves HTTP and owns all state — never add a
-  `prefork` path.** Everything shares one IOLoop; a second worker would spawn duplicate
-  children and split the state that the whole design exists to unify. Its child processes
-  are exec'd upstreams or forked class workers (`Upstream::Fork`); a worker never runs the
-  hub's loop, holds none of its fds or signal handlers, and ends with `_exit`.
-- **Lazy start / idle stop is a promise, not an optimisation.** `tools/list` is answered
-  from the cached manifest with no process; only `tools/call` (and `prompts/get` /
-  `resources/read`) spawns. Don't move a spawn into `startup`/config load.
-- **The façade must not drop `extra` fields.** `title`, `icons` and `_meta` ride on
-  `Facade::Tool` and are re-merged by `Facade::Server`'s `tools/list` rendering. Touching
-  either half without carrying `extra` silently strips Claude-Code annotations.
-- **The manifest hash covers `[command, args, cwd]`, never `env`.** A new hashed input is
-  a deliberate cache-invalidation change; adding `env` would leak secret-derived cache
-  keys and thrash the cache.
-- **Config surface stays JSON-expressible.** New knobs go in the `hub`/entry JSON with a
-  clear error and JSON path on bad input — not as `bin/mcp-hub` flags (except the global
-  `--config`).
+The invariants a change most easily breaks are stated once, not here: as rules with
+their reasons under "Core invariants" in `mcp-hub-core` (the full mechanics in its
+`references/`), and as the Hazards in `.claude/rules/mcp-hub-rules.md`. Read the rule
+before you touch the mechanism behind it; don't restate or re-derive it.
 
 ## Verification
 
-`prove -lr t/` is the canonical run — **recursive**, because `t/native/` and `t/upstream/`
-are subdirs that plain `prove -l t/` silently skips; never use the non-recursive form as
-the green signal. `dzil test` is the release-time equivalent. The suite spawns exactly
-one upstream, `t/upstream/echo.pl` (a Perl `MCP::Server::Legacy`) — no node, no network,
-except the opt-in `t/npx.t` (`MCP_HUB_TEST_NPX=1` or `RELEASE_TESTING`);
-extend that fixture rather than reaching for a real server. `t/hub.t` drives the whole
-app with `Test::Mojo` + `MCP::Client` against a temp config and cache dir; the natives run
+The green signal is `prove -lr t/`, never the non-recursive form (`mcp-hub-core`, Tests;
+fixtures and per-unit hooks in `mcp-hub-runtime`, Test-Hooks). Extend the
+`t/upstream/echo.pl` fixture rather than reaching for a real server; the natives run
 against `t/fixtures/claude/projects/` — never against the real `~/.claude`.
 
 Docker work (`Dockerfile`, `docker-compose.yml`, `docker/`) is batteries-included and
