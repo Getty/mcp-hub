@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-10T13:10:57Z
+created: 2026-11-10T03:16:18Z
+id: 183
+priority: low
+started: 2026-11-10T12:13:13Z
+status: done
+tags:
+- config
+- drift
+title: A negative idle_timeout acts like 0 (never stop) and is not documented
+updated: 2026-11-10T13:10:57Z
+---
+
+Found by mcp-hub-worker during k160/k161 (2026-11-10). MCP::Hub::Config::_int accepts a negative idle_timeout (global or hub.idle_timeout), and the idle stop then behaves as with 0: never stop. Neither the POD nor the README table ("Seconds; 0 means never stop") says so; request_timeout already refuses 0 and negatives. Decide: refuse a negative idle_timeout as a config error with its JSON path, or document it. Done when the choice is in Config.pm, POD and README, with a test.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: refuse a negative idle_timeout (global and hub.idle_timeout) as a config error with its JSON path, like request_timeout refuses 0 and negatives; 0 keeps meaning never stop. Config.pm, POD, README table, test.
+
+Worked by mcp-hub-worker (wave E): Config.pm _non_negative_int for hub.idle_timeout and mcpServers.X.hub.idle_timeout; 0 still means never stop. Worker's choice (maintainer may veto): one message for every bad idle_timeout, 'must be 0 or a positive integer' (it replaces 'must be an integer' for strings and booleans too; 5 assertions in t/config.t and t/config-yaml.t reworded, what they check unchanged). New subtest in t/config.t, 30 assertions red on the k186 tree, green under EV and Poll. README and spec rows edited by the main session.
+
+Committed as cf50831
