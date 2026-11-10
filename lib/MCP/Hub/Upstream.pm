@@ -439,7 +439,7 @@ forked from the hub (L<MCP::Hub::Upstream::Fork>), a Docker container started
 from its image (L<MCP::Hub::Upstream::Docker>) and one service of a Compose
 project (L<MCP::Hub::Upstream::Compose>). Each presents its tools, prompts and resources
 through an L<MCP::Server> stored in L</server>, which the hub mounts at
-C</< name >>.
+C<< /<name> >>.
 
 The base class also holds the transport-agnostic MCP client -- the handshake,
 the paginated primitive lists, the manifest and the C<tools/call>,
