@@ -889,7 +889,8 @@ of its own.
 `url`, `headers`, `docker`, `volumes`, `docker_args` and `compose`, and in the
 `hub` block in `listen`, `cache_dir`, `docker_command`, `docker_network` and
 each client's `token`. An unset variable without a default is a config error at
-start.
+start. `idle_timeout`, `request_timeout` and `port` are never expanded and take a
+number: `"30"` is a config error.
 
 ### `hub` block
 

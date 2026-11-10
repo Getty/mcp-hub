@@ -373,3 +373,6 @@ Revision history for MCP-Hub
   - A YAML `true` or `false` is a boolean, as in JSON: `idle_timeout: true`,
     `request_timeout: true` or `port: true` is refused with its path, where it
     used to be read as the number one.
+  - `idle_timeout`, `request_timeout` and `port` take a number and no `${VAR}`
+    reaches them: a string such as `"30"` or `"8080"` is refused with its path,
+    and `"30\n"` no longer passes for 30.

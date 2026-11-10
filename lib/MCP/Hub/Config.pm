@@ -2,6 +2,7 @@ package MCP::Hub::Config;
 our $VERSION = '0.001';
 use Mojo::Base -base, -signatures;
 
+use B          ();
 use Carp       qw(croak);
 use Mojo::File qw(path);
 use Mojo::JSON qw(decode_json);
@@ -470,17 +471,29 @@ sub _default_cache_dir {
   return "$base/mcp-hub";
 }
 
-# A JSON or YAML true is no 1: it would read as one second, or as port 1.
+# A JSON or YAML true is no 1: it would read as one second, or as port 1. Nor
+# is the string "30" a 30: no ${VAR} is expanded in an integer key, so nothing
+# has to arrive as a string, and a string is refused like any other non-number.
 sub _int ($path, $value) {
-  _err($path, 'must be an integer') unless defined $value && !ref $value && $value =~ /^-?\d+$/;
+  _err($path, 'must be an integer') unless _is_number($value) && $value =~ /^-?\d+\z/;
   return $value + 0;
 }
 
 # A request_timeout bounds every request, on every transport alike: 0 or less
 # would bound none, or time each out at once. No upper bound -- a day will do.
 sub _positive_int ($path, $value) {
-  _err($path, 'must be a positive integer') unless defined $value && !ref $value && $value =~ /^\d+$/ && $value > 0;
+  _err($path, 'must be a positive integer') unless _is_number($value) && $value =~ /^\d+\z/ && $value > 0;
   return $value + 0;
+}
+
+# A JSON number decodes to a Perl number, a JSON string -- "30" too -- to a
+# Perl string, and the flags tell them apart as builtin::created_as_number
+# does: a string once used as a number is still a string. (Before perl 5.36 a
+# number once interpolated reads as a string too; a decoded value never was.)
+sub _is_number ($value) {
+  return 0 unless defined $value && !ref $value;
+  my $flags = B::svref_2object(\$value)->FLAGS;
+  return ($flags & (B::SVf_IOK | B::SVf_NOK)) && !($flags & B::SVf_POK) ? 1 : 0;
 }
 
 sub _tilde ($path) {
@@ -579,6 +592,10 @@ C<docker_command>, C<docker_network> and each client's C<token> -- so a deployme
 its tokens and secrets in the environment rather than in the file. A variable
 that is not set and has no default is a configuration error, named with its
 path.
+
+C<idle_timeout>, C<request_timeout> and a container's C<port> are never
+expanded, so they take a JSON number -- C<30>, not C<"30">: a string is a
+configuration error there, a numeric one included, in JSON and in YAML alike.
 
 Every problem is reported with the JSON path where it was found, for example
 C<Invalid configuration at mcpServers.playwright.hub.idle_timeout: must be an

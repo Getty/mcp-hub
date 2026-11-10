@@ -495,4 +495,37 @@ subtest 'request_timeout is a positive integer, with no upper bound' => sub {
     'and so is one second');
 };
 
+# --- integers are JSON numbers ---------------------------------------------
+
+# No ${VAR} reaches these keys -- they are never expanded -- so nothing has to
+# arrive as a string, and the string "30" is no 30: a JSON string is refused
+# like any other non-number, trailing newline or not.
+subtest 'an integer key takes a JSON number, never a numeric string' => sub {
+  my %config = (
+    'hub.idle_timeout'                 => sub ($v) { {mcpServers => {}, hub => {idle_timeout => $v}} },
+    'hub.request_timeout'              => sub ($v) { {mcpServers => {}, hub => {request_timeout => $v}} },
+    'mcpServers.x.hub.idle_timeout'    => sub ($v) { {mcpServers => {x => {command => 'a', hub => {idle_timeout => $v}}}} },
+    'mcpServers.x.hub.request_timeout' => sub ($v) { {mcpServers => {x => {command => 'a', hub => {request_timeout => $v}}}} },
+    'mcpServers.x.port'                => sub ($v) { {mcpServers => {x => {docker => 'mcp/time', port => $v}}} },
+  );
+  my %read = (
+    'hub.idle_timeout'                 => sub ($c) { $c->idle_timeout },
+    'hub.request_timeout'              => sub ($c) { $c->request_timeout },
+    'mcpServers.x.hub.idle_timeout'    => sub ($c) { $c->server('x')->{idle_timeout} },
+    'mcpServers.x.hub.request_timeout' => sub ($c) { $c->server('x')->{request_timeout} },
+    'mcpServers.x.port'                => sub ($c) { $c->server('x')->{port} },
+  );
+
+  for my $path (sort keys %config) {
+    my $integer = $path =~ /request_timeout/ ? 'a positive integer' : 'an integer';
+    for my $string ("30\n", '30', ' 30') {
+      (my $shown = $string) =~ s/\n/\\n/;
+      eval { MCP::Hub::Config->from_data($config{$path}->($string)) };
+      like $@, qr/^Invalid configuration at \Q$path\E: must be \Q$integer\E$/m, qq{$path: the string "$shown" is refused};
+    }
+    my $c = eval { MCP::Hub::Config->from_data($config{$path}->(30)) };
+    is $c ? $read{$path}->($c) : "died: $@", 30, "$path: the number 30 is 30";
+  }
+};
+
 done_testing;

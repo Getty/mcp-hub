@@ -187,6 +187,18 @@ subtest 'a YAML boolean is no integer, as a JSON one is not' => sub {
   }
 };
 
+# A quoted number is a string in YAML as in JSON, and no integer in either.
+subtest 'a quoted number is no integer, in YAML as in JSON' => sub {
+  my $from_json = error_from(write_config('quoted.json', '{"mcpServers": {}, "hub": {"idle_timeout": "30"}}'));
+  like $from_json, qr/^Invalid configuration at hub\.idle_timeout: must be an integer$/m, 'JSON: "30" is refused';
+  for my $quoted (q{"30"}, q{'30'}) {
+    my $from_yaml = error_from(write_config('quoted.yml', "mcpServers: {}\nhub:\n  idle_timeout: $quoted\n"));
+    is $from_yaml, $from_json, "YAML: $quoted is refused, byte for byte as the JSON twin";
+  }
+  my $c = MCP::Hub::Config->from_file(write_config('bare.yml', "mcpServers: {}\nhub:\n  idle_timeout: 30\n"));
+  is $c->idle_timeout, 30, 'YAML: a bare 30 is the number 30';
+};
+
 subtest '${VAR} expansion works in YAML values' => sub {
   local %ENV = %ENV;
   delete $ENV{MCP_HUB_TEST_UNSET};

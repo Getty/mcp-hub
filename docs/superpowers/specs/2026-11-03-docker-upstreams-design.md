@@ -406,7 +406,8 @@ a reload that changes them rebuilds exactly those servers.
 - *Config.* `port` + `url` (compose) and `url` + `"stdio": true` are config
   errors; `env` keys must be valid variable names (they become `-e KEY`). A
   JSON `true` is no integer: `"port": true` is refused (so are the `hub`
-  timeouts). `stdio` stays truthy, like `always_on`.
+  timeouts). Nor is a YAML `true` or a string such as `"8080"`. `stdio` stays
+  truthy, like `always_on`.
 - *Messages.* A missing CLI says "install the Docker CLI or set
   hub.docker_command"; the socket hint goes with the error it belongs to — a
   daemon that cannot be reached ("… mount /var/run/docker.sock into it"). A
