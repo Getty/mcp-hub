@@ -131,7 +131,7 @@ Exactly one of `command`, `class`, `url`, `docker` or `compose` is required; a `
 | `class` | Perl class name, loaded with `Mojo::Loader::load_class`. Must be an `MCP::Server` subclass. |
 | `args` (with `class`) | Hash passed to `new`. If the class has a `hub` attribute, the `MCP::Hub` instance is injected. |
 | `url`, `type: "http"/"sse"`, `headers` | A remote HTTP upstream (`MCP::Hub::Upstream::Http`): Streamable HTTP (`http`, the default) or HTTP+SSE (`sse`); `headers` for auth. Originally rejected in v1, implemented since — see Non-goals. |
-| `hub.idle_timeout` | Seconds. Overrides `hub.idle_timeout`. `0` means never stop. |
+| `hub.idle_timeout` | Seconds. Overrides `hub.idle_timeout`. `0` means never stop. A negative value is a config error. |
 | `hub.always_on` | Boolean. Start at daemon start and never stop. Equivalent to `idle_timeout: 0` plus eager start. |
 | `hub.request_timeout` | Seconds per request. Overrides the global value. |
 
@@ -147,7 +147,7 @@ Server names must match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. `all` and names starting 
 |---|---|---|
 | `listen` | `http://127.0.0.1:3080` | Passed to `Mojo::Server::Daemon`. |
 | `cache_dir` | `$XDG_CACHE_HOME/mcp-hub` or `~/.cache/mcp-hub` | Manifest cache lives in `<cache_dir>/manifests/`. |
-| `idle_timeout` | `300` | Seconds of no requests before a stdio upstream is stopped. |
+| `idle_timeout` | `300` | Seconds of no requests before a stdio upstream is stopped. `0` means never stop; a negative value is a config error. |
 | `request_timeout` | `60` | Seconds to wait for an upstream response. |
 | `profiles` | `{}` | Named sets of permissions, see below. |
 | `clients` | `{}` | `name → { token, profile }`. |

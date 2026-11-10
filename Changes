@@ -430,3 +430,5 @@ Revision history for MCP-Hub
     list instead of storing an empty one and telling listeners it changed.
   - `mcp-hub refresh` and `mcp-hub reload` exit 1 with "hub is not running at
     …" on stderr when no hub answers, as `mcp-hub status` does.
+  - A negative `idle_timeout` (global or per server) is a configuration error
+    naming its JSON path; `0` still means never stop.

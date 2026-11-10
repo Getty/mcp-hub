@@ -172,7 +172,7 @@ subtest 'unknown keys surface with their path' => sub {
       mcpServers => {x => {command => 'a', hub => {idle_timeout => 'soon'}}},
     });
   };
-  like $@, qr/must be an integer/,               'non-integer idle_timeout';
+  like $@, qr/must be 0 or a positive integer/,  'non-integer idle_timeout';
   like $@, qr/mcpServers\.x\.hub\.idle_timeout/, 'nested hub path';
 };
 
@@ -275,7 +275,7 @@ subtest 'docker entry errors name the key' => sub {
   like config_error({docker => 'mcp/time', port => true}), qr/mcpServers\.x\.port: must be an integer/,
     'port: true is not port 1';
   like config_error({command => 'a', hub => {idle_timeout => true}}),
-    qr/mcpServers\.x\.hub\.idle_timeout: must be an integer/, 'nor is idle_timeout: true one second';
+    qr/mcpServers\.x\.hub\.idle_timeout: must be 0 or a positive integer/, 'nor is idle_timeout: true one second';
   like config_error({docker => 'mcp/time', path => 'mcp'}), qr/mcpServers\.x\.path: must be a string starting with '\/'/,
     'path must be absolute';
   like config_error({docker => 'mcp/time', env => {'BAD-NAME' => 1}}),
@@ -495,6 +495,42 @@ subtest 'request_timeout is a positive integer, with no upper bound' => sub {
     'and so is one second');
 };
 
+# --- idle_timeout ------------------------------------------------------------
+
+subtest 'idle_timeout is 0 (never stop) or a positive integer' => sub {
+  # A negative one passed as an integer and then acted like 0: never stop,
+  # documented nowhere (k183). It is a configuration error now, in the hub
+  # block and in an entry's, with the path -- as request_timeout refuses 0 and
+  # negatives -- and so is anything else that is no whole number of seconds.
+  my %entry = (
+    command => sub (%hub) { {command => 'a', hub => {%hub}} },
+    forked  => sub (%hub) { {class => 'X', hub => {fork => true, %hub}} },
+    docker  => sub (%hub) { {docker => 'mcp/time', hub => {%hub}} },
+    compose => sub (%hub) { {compose => '/srv/stack', service => 'mcp', hub => {%hub}} },
+  );
+  my %bad = (negative => -5, 'minus one' => -1, 'a fraction' => 1.5, 'a string' => '30s',
+    'a JSON true' => true, 'null' => undef);
+  for my $what (sort keys %bad) {
+    like config_error({command => 'a'}, {idle_timeout => $bad{$what}}),
+      qr/^Invalid configuration at hub\.idle_timeout: must be 0 or a positive integer$/m,
+      "hub.idle_timeout: $what is refused";
+    for my $kind (sort keys %entry) {
+      like config_error($entry{$kind}->(idle_timeout => $bad{$what})),
+        qr/^Invalid configuration at mcpServers\.x\.hub\.idle_timeout: must be 0 or a positive integer$/m,
+        "hub.idle_timeout of a $kind entry: $what is refused";
+    }
+  }
+
+  for my $seconds (0, 1, 86400) {
+    my $c = MCP::Hub::Config->from_data({
+      mcpServers => {map { $_ => $entry{$_}->(idle_timeout => $seconds) } keys %entry},
+      hub        => {idle_timeout => $seconds},
+    });
+    is $c->idle_timeout, $seconds, "$seconds is an idle_timeout, in the hub block";
+    is $c->server($_)->{idle_timeout}, $seconds, "and in a $_ entry's" for sort keys %entry;
+  }
+};
+
 # --- integers are JSON numbers ---------------------------------------------
 
 # No ${VAR} reaches these keys -- they are never expanded -- so nothing has to
@@ -517,7 +553,9 @@ subtest 'an integer key takes a JSON number, never a numeric string' => sub {
   );
 
   for my $path (sort keys %config) {
-    my $integer = $path =~ /request_timeout/ ? 'a positive integer' : 'an integer';
+    my $integer = $path =~ /request_timeout/ ? 'a positive integer'
+                : $path =~ /idle_timeout/    ? '0 or a positive integer'
+                :                              'an integer';
     for my $string ("30\n", '30', ' 30') {
       (my $shown = $string) =~ s/\n/\\n/;
       eval { MCP::Hub::Config->from_data($config{$path}->($string)) };

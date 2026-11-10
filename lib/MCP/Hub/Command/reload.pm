@@ -87,7 +87,7 @@ for the feedback. If the new configuration does not validate, the running one
 stays fully in effect, the hub answers with the error and its JSON path, and
 this command prints that and exits non-zero:
 
-  Invalid configuration at mcpServers.serper.hub.idle_timeout: must be an integer
+  Invalid configuration at mcpServers.serper.hub.idle_timeout: must be 0 or a positive integer
 
 When no hub answers -- the connection is refused, or no HTTP response comes
 back -- it says "hub is not running at" that base URL on standard error and

@@ -894,7 +894,7 @@ Exactly one of `command`, `class`, `url`, `docker` or `compose` is required.
 | `port` (with `docker`, `compose`) | The container port the server listens on: HTTP on it. Optional when the image `EXPOSE`s (or the service publishes) exactly one. |
 | `stdio` (with `docker`, `compose`) | `true` forces stdio, even when a port would be detected. |
 | `path`, `type`, `headers` (with `docker`, `compose`) | For an HTTP container: the URL path (default `/mcp`), `http` or `sse`, extra headers. |
-| `hub.idle_timeout` | Seconds; `0` means never stop. Overrides the global default (stdio, docker, compose and forked class). |
+| `hub.idle_timeout` | Seconds; `0` means never stop; a negative value is a config error. Overrides the global default (stdio, docker, compose and forked class). |
 | `hub.always_on` | Start at daemon start and never stop. |
 | `hub.request_timeout` | Seconds per request: a positive integer, with no upper bound; `0` or a negative value is a config error. |
 
@@ -923,7 +923,7 @@ number: `"30"` is a config error.
 |---|---|---|
 | `listen` | `http://127.0.0.1:3080` | Listen address. |
 | `cache_dir` | `~/.cache/mcp-hub` | Where manifests are cached. |
-| `idle_timeout` | `300` | Seconds before an idle stdio, docker or compose upstream, or a forked class worker, is stopped. Counted from the last call; a refresh after a `list_changed` notification does not count as one. |
+| `idle_timeout` | `300` | Seconds before an idle stdio, docker or compose upstream, or a forked class worker, is stopped. Counted from the last call; a refresh after a `list_changed` notification does not count as one. `0` means never stop; a negative value is a config error. |
 | `request_timeout` | `60` | Seconds to wait for an upstream response, however long the upstream stays silent before it answers. A positive integer, with no upper bound; `0` or a negative value is a config error. |
 | `profiles` | `{}` | Named permission sets. |
 | `clients` | `{}` | `name → { token, profile }`. |

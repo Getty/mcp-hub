@@ -177,7 +177,9 @@ subtest 'a YAML boolean is no integer, as a JSON one is not' => sub {
   );
 
   for my $path (sort keys %yaml) {
-    my $integer = $path =~ /request_timeout/ ? 'a positive integer' : 'an integer';
+    my $integer = $path =~ /request_timeout/ ? 'a positive integer'
+                : $path =~ /idle_timeout/    ? '0 or a positive integer'
+                :                              'an integer';
     for my $bool (qw(true false)) {
       my $from_yaml = error_from(write_config('bool.yml',  sprintf $yaml{$path}, $bool));
       my $from_json = error_from(write_config('bool.json', sprintf $json{$path}, $bool));
@@ -190,7 +192,8 @@ subtest 'a YAML boolean is no integer, as a JSON one is not' => sub {
 # A quoted number is a string in YAML as in JSON, and no integer in either.
 subtest 'a quoted number is no integer, in YAML as in JSON' => sub {
   my $from_json = error_from(write_config('quoted.json', '{"mcpServers": {}, "hub": {"idle_timeout": "30"}}'));
-  like $from_json, qr/^Invalid configuration at hub\.idle_timeout: must be an integer$/m, 'JSON: "30" is refused';
+  like $from_json, qr/^Invalid configuration at hub\.idle_timeout: must be 0 or a positive integer$/m,
+    'JSON: "30" is refused';
   for my $quoted (q{"30"}, q{'30'}) {
     my $from_yaml = error_from(write_config('quoted.yml', "mcpServers: {}\nhub:\n  idle_timeout: $quoted\n"));
     is $from_yaml, $from_json, "YAML: $quoted is refused, byte for byte as the JSON twin";
@@ -253,7 +256,7 @@ YAML
   my $from_json = error_from($json);
 
   like $from_yaml, qr/mcpServers\.playwright\.hub\.idle_timeout/, 'dotted path in the YAML error';
-  like $from_yaml, qr/must be an integer/,                        'same complaint';
+  like $from_yaml, qr/must be 0 or a positive integer/,           'same complaint';
   is $from_yaml, $from_json, 'byte for byte the message the JSON twin produces';
 };
 

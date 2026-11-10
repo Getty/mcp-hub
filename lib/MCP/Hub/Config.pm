@@ -368,7 +368,8 @@ sub _parse_entry_hub ($self, $path, $hub) {
   for my $key (sort keys %$hub) {
     _err("$path.hub.$key", "unknown key '$key'") unless $ENTRY_HUB_KEYS{$key};
   }
-  $out{idle_timeout}    = _int("$path.hub.idle_timeout",    $hub->{idle_timeout})    if exists $hub->{idle_timeout};
+  $out{idle_timeout}    = _non_negative_int("$path.hub.idle_timeout", $hub->{idle_timeout})
+    if exists $hub->{idle_timeout};
   $out{request_timeout} = _positive_int("$path.hub.request_timeout", $hub->{request_timeout})
     if exists $hub->{request_timeout};
   $out{always_on}       = $hub->{always_on} ? 1 : 0                                  if exists $hub->{always_on};
@@ -384,7 +385,8 @@ sub _parse_hub ($self, $hub) {
   $self->listen($self->_expand($hub->{listen}, 'hub.listen')) if defined $hub->{listen};
   $self->cache_dir(_tilde($self->_expand($hub->{cache_dir}, 'hub.cache_dir')))
     if defined $hub->{cache_dir};
-  $self->idle_timeout(_int('hub.idle_timeout', $hub->{idle_timeout}))       if exists $hub->{idle_timeout};
+  $self->idle_timeout(_non_negative_int('hub.idle_timeout', $hub->{idle_timeout}))
+    if exists $hub->{idle_timeout};
   $self->request_timeout(_positive_int('hub.request_timeout', $hub->{request_timeout}))
     if exists $hub->{request_timeout};
   $self->auto_reload($hub->{auto_reload} ? 1 : 0)                          if exists $hub->{auto_reload};
@@ -483,6 +485,14 @@ sub _int ($path, $value) {
 # would bound none, or time each out at once. No upper bound -- a day will do.
 sub _positive_int ($path, $value) {
   _err($path, 'must be a positive integer') unless _is_number($value) && $value =~ /^\d+\z/ && $value > 0;
+  return $value + 0;
+}
+
+# An idle_timeout of 0 means never stop. A negative one acted the same, said so
+# nowhere, and read like a typo: it is refused, as request_timeout refuses its
+# 0 and negatives.
+sub _non_negative_int ($path, $value) {
+  _err($path, 'must be 0 or a positive integer') unless _is_number($value) && $value =~ /^\d+\z/;
   return $value + 0;
 }
 
@@ -598,8 +608,8 @@ expanded, so they take a JSON number -- C<30>, not C<"30">: a string is a
 configuration error there, a numeric one included, in JSON and in YAML alike.
 
 Every problem is reported with the JSON path where it was found, for example
-C<Invalid configuration at mcpServers.playwright.hub.idle_timeout: must be an
-integer>, so a typo surfaces at start-up instead of hours later.
+C<Invalid configuration at mcpServers.playwright.hub.idle_timeout: must be 0 or
+a positive integer>, so a typo surfaces at start-up instead of hours later.
 
 =head1 ATTRIBUTES
 
@@ -640,8 +650,10 @@ container: see L<MCP::Hub::Upstream::Docker>.
 
 =attr idle_timeout
 
-Seconds of no requests before a stdio upstream -- or a container -- is stopped.
-Defaults to C<300>.
+Seconds of no requests before a stdio upstream -- or a container -- is stopped,
+from C<hub.idle_timeout>: C<0> or a positive integer, where C<0> means never
+stop. Defaults to C<300>. A negative value is a configuration error, here and
+in an entry's C<hub> block.
 
 =attr listen
 
