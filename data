@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-11-10T13:11:24Z
+created: 2026-11-03T07:43:45Z
+id: 27
+priority: medium
+started: 2026-11-10T12:13:24Z
+status: done
+tags:
+- docker
+- compose
+- design
+title: 'compose: waiting for depends_on conditions has no upper bound'
+updated: 2026-11-10T13:11:24Z
+---
+
+Found during k21 (2026-11-03). Before the handshake, a compose stdio start polls `compose ps -a --format json DEPS` until the `service_healthy` dependencies are healthy and the `service_completed_successfully` ones have exited 0. There is no timeout, because compose has none, so a stop is the only way out.
+
+Rootless Podman on the maintainer's machine never runs healthchecks, so a `service_healthy` dependency waits forever there. The tool call that triggered the start hangs with no error.
+
+Decide with the maintainer: an upper bound (a new per-entry `hub.start_timeout`? or reuse something), or at least a warning in the log/status after N seconds that names the dependency and its health state. The image pull has no timeout either, but it shows progress and ends.
+
+## Done
+- A start that waits on a dependency condition either ends with an error that names the dependency, or is visibly reported as waiting (log + status) -- never a silent hang.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: no new config key. While a compose start waits on depends_on conditions, the hub logs at warn after 30 s, and every 60 s after, naming each dependency it still waits for and its state/health; the status report shows the same while it is starting. Still no upper bound: compose has none, and a stop ends the wait.
+
+Worked by mcp-hub-worker (wave E): Compose.pm attributes depends_warn_after (30) and depends_warn_interval (60), checked on each ps round, no extra timers; warn names each dependency with state and health; status row waiting_for, shown from the first ps answer on (worker's reading of 'the same while starting'), MESSAGE column 'waiting for …' in mcp-hub status; a stop is checked after each ps answer. Stdio compose starts only: an HTTP compose start can still hang silently inside 'compose up' (k206). Test in t/docker.t (healthy on demand via fake-compose.json, no deadline) and t/command.t; red on the k183 tree, green under EV and Poll. README, troubleshooting bullet and docker spec edited by the main session.
+
+Committed as 446050a
