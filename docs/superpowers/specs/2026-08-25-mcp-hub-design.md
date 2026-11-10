@@ -178,7 +178,7 @@ Tokens are compared in constant time (`Crypt::Misc::slow_eq`, already a dependen
 
 | Route | Handler | Notes |
 |---|---|---|
-| `POST /<name>` | that upstream's `server->to_action({streaming => 1})` | Tool names unchanged. `streaming` enables `subscriptions/listen`, which Claude Code's v2 runtime holds open to receive `notifications/tools/list_changed` after a manifest refresh; it is per-process state, which is fine in the single daemon process. |
+| `POST /<name>` | `MCP::Hub::Endpoint->action($up->server)`: MCP's HTTP transport with streaming on, holding the server only weakly (it goes with its upstream on a reload), and streaming every call, so an in-process answer outlasts the inactivity timeout | Tool names unchanged. `streaming` enables `subscriptions/listen`, which Claude Code's v2 runtime holds open to receive `notifications/tools/list_changed` after a manifest refresh; it is per-process state, which is fine in the single daemon process. |
 | `POST /all` | `MCP::Hub::Aggregate` | Tools and prompts of all servers the client may see, as `<name>__<tool>`. Resources are not aggregated (URIs are opaque and would collide); use the per-server endpoint. `instructions` is the concatenation `## <name>\n<instructions>` of the upstreams that have any; `server/discover` shows only the sections of servers the profile may see (`cacheScope: private`), and its tools/prompts capabilities — like the legacy `initialize`'s — follow the profile too. |
 | `GET /_hub/status` | admin | JSON: per upstream `name, type, state, pid, rss_kb, manifest_fetched_at, last_used, calls, errors`; clients currently known (name, last seen). |
 | `POST /_hub/refresh` | admin | Body `{"name": "context7"}` or empty for all. Re-fetches manifests; returns the new tool counts. |

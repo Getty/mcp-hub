@@ -6,6 +6,7 @@ use MCP::Hub::Aggregate;
 use MCP::Hub::Auth;
 use MCP::Hub::Commands;
 use MCP::Hub::Config;
+use MCP::Hub::Endpoint;
 use MCP::Hub::Facade::Server;
 use MCP::Hub::Help;
 use MCP::Hub::Upstream;
@@ -538,7 +539,7 @@ sub _setup_routes ($self) {
   $under->post('/_hub/refresh' => sub ($c) { $self->_route_refresh($c) });
   $under->post('/_hub/reload'  => sub ($c) { $self->_route_reload($c) });
 
-  my $aggregate_action = $self->aggregate->to_action({streaming => 1});
+  my $aggregate_action = MCP::Hub::Endpoint->action($self->aggregate);
   $under->post('/all' => sub ($c) {
     my $profile = $c->stash('mcp.profile');
     return $c->render(json => {error => 'Not found'}, status => 404)

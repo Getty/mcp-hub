@@ -13,6 +13,7 @@ my @modules = qw(
   MCP::Hub::Facade::Server
   MCP::Hub::Facade::Tool
   MCP::Hub::Aggregate
+  MCP::Hub::Endpoint
   MCP::Hub::Upstream
   MCP::Hub::Upstream::Perl
   MCP::Hub::Upstream::Fork

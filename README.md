@@ -487,8 +487,9 @@ them in-process.
 Any `MCP::Server` subclass — or a class with a `server` method that returns
 one — can be mounted in-process with a `class` entry: `MCP::Run`, `MCP::K8s`, or
 your own, with no subprocess at all. Its tools run inside the hub's event loop,
-so a slow one holds up every other server while it runs; for a class like that,
-see [forked class workers](#forked-class-workers).
+so a slow one holds up every other server while it runs (its answer still
+arrives, however long it takes); for a class like that, see
+[forked class workers](#forked-class-workers).
 
 ```json
 { "run": { "class": "MCP::Run", "args": { "allowed_commands": ["ls", "cat", "grep"] } } }

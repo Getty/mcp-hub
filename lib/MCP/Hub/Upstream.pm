@@ -2,6 +2,7 @@ package MCP::Hub::Upstream;
 our $VERSION = '0.001';
 use Mojo::Base 'Mojo::EventEmitter', -signatures;
 
+use MCP::Hub::Endpoint;
 use MCP::Hub::Facade;
 use MCP::Hub::Facade::Server;
 use MCP::Hub::Upstream::ErrorAnswer;
@@ -11,7 +12,7 @@ use Mojo::JSON   qw(encode_json);
 use Mojo::Loader qw(load_class);
 use Mojo::Log;
 use Mojo::Promise;
-use Scalar::Util qw(blessed refaddr weaken);
+use Scalar::Util qw(blessed refaddr);
 
 # ABSTRACT: Base class for an upstream MCP server mounted in the hub
 
@@ -19,20 +20,10 @@ has 'name';
 # The Mojolicious action this upstream is served by, built once and kept: the
 # router holds one dynamic route and looks the upstream up per request, so the
 # action must live with the object it serves, not with the route. Building it
-# twice would replace the MCP::Server transport and drop its subscriptions.
-#
-# MCP's to_action gives the server a transport that holds the server, and the
-# server holds the transport: a cycle that kept every server ever served on its
-# endpoint -- a facade with its manifest, an in-process class instance -- alive
-# after a reload had let go of its upstream. The upstream holds its server and
-# the action the transport, so the transport's hold is made weak: while the
-# upstream is there, so is its server.
-has action => sub ($self) {
-  my $server = $self->server;
-  my $action = $server->to_action({streaming => 1});
-  weaken $server->transport->{server};
-  return $action;
-};
+# twice would replace the MCP::Server transport and drop its subscriptions. The
+# transport, an MCP::Hub::Endpoint, holds the server only weakly: the upstream
+# holds it.
+has action    => sub ($self) { MCP::Hub::Endpoint->action($self->server) };
 has 'config';
 has 'error';
 has 'hub';
@@ -473,10 +464,10 @@ the name per request, so the action belongs to the upstream rather than to a
 route; keeping it also keeps the L<MCP::Server> transport, and with it any open
 streaming subscription.
 
-The transport holds the server only weakly. L<MCP::Server/to_action> has server
-and transport hold each other, so any server once served on its endpoint
-outlived its upstream; held by the upstream alone, the server goes with it when
-a reload replaces or removes the entry.
+The transport is an L<MCP::Hub::Endpoint>. It holds the server only weakly --
+held by the upstream alone, the server goes with it when a reload replaces or
+removes the entry -- and streams the answer of every call, so a long call to an
+in-process class does not lose it to the connection's inactivity timeout.
 
 =attr config
 

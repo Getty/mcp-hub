@@ -405,3 +405,6 @@ Revision history for MCP-Hub
     one served on its endpoint stayed in memory for the life of the daemon.
   - A reload also frees the instance of an in-process class whose tools close
     over it; a class that is only stopped keeps serving all its tools.
+  - A call to an in-process class that holds the hub longer than the
+    inactivity timeout (30 s) no longer loses its answer under EV; such
+    answers now come as an event stream, as every other upstream's do.

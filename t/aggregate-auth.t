@@ -3,6 +3,7 @@ use Mojo::Base -strict, -signatures;
 use Test::More;
 use Test::Mojo;
 use Mojo::File qw(curfile tempdir);
+use Mojo::JSON qw(decode_json);
 use MCP::Constants qw(META_CLIENT_CAPABILITIES META_PROTOCOL_VERSION PROTOCOL_VERSION);
 use MCP::Hub;
 use MCP::Server::Context;
@@ -34,12 +35,20 @@ sub hub ($hub = {}) {
   });
 }
 
-# One JSON-RPC request, answered in full: the status and the body.
+# One JSON-RPC request, answered in full: the status and the body -- or, for a
+# call the hub streamed, as it streams every call to an in-process class
+# (MCP::Hub::Endpoint), the message in its last event.
 sub rpc ($t, $path, $token, $method, $params = {}) {
+  my @events;
+  $t->ua->once(start => sub ($ua, $tx) {
+    $tx->res->content->on(sse => sub ($content, $event = undef) {
+      push @events, $event->{text} if defined $event->{text};
+    });
+  });
   my $headers = defined $token ? {Authorization => "Bearer $token"} : {};
   my $res = $t->post_ok($path => $headers => json => {jsonrpc => '2.0', id => 1, method => $method, params => $params})
     ->tx->res;
-  return {status => $res->code, %{$res->json // {}}};
+  return {status => $res->code, %{(@events ? decode_json($events[-1]) : $res->json) // {}}};
 }
 
 sub names ($result, $kind) { return [sort map { $_->{name} } @{$result->{result}{$kind} // []}] }

@@ -3,6 +3,7 @@ use Mojo::Base -strict, -signatures;
 use Test::More;
 use Test::Mojo;
 use Mojo::File qw(curfile tempdir);
+use Mojo::JSON qw(decode_json);
 use MCP::Hub;
 
 use lib curfile->sibling('lib')->to_string;
@@ -82,11 +83,19 @@ sub hub ($servers) {
 
 sub echo_hub () { return hub({p => {class => 'EchoServer'}, p__x => {class => 'EchoServer'}}) }
 
-# One JSON-RPC request, answered in full: the status and the body.
+# One JSON-RPC request, answered in full: the status and the body -- or, for a
+# call the hub streamed, as it streams every call to an in-process class
+# (MCP::Hub::Endpoint), the message in its last event.
 sub rpc ($t, $path, $token, $method, $params = {}) {
+  my @events;
+  $t->ua->once(start => sub ($ua, $tx) {
+    $tx->res->content->on(sse => sub ($content, $event = undef) {
+      push @events, $event->{text} if defined $event->{text};
+    });
+  });
   my $res = $t->post_ok($path => {Authorization => "Bearer $token"}
       => json => {jsonrpc => '2.0', id => 1, method => $method, params => $params})->tx->res;
-  return {status => $res->code, %{$res->json // {}}};
+  return {status => $res->code, %{(@events ? decode_json($events[-1]) : $res->json) // {}}};
 }
 
 sub names ($t, $token, $kind) {
