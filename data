@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-10T17:43:31Z
+id: 210
+priority: low
+status: backlog
+tags:
+- skills
+title: mcp-hub-core and mcp-hub-runtime descriptions summarize content instead of
+  naming triggers
+updated: 2026-11-10T17:43:31Z
+---
+
+Found by mcp-hub-worker during k208 (descriptions left unchanged there on purpose). skill-authoring advises a description that names when to load the skill, not a summary of its content; both project skills summarize. Also, since k208 the core description's last sentence "The mechanics behind them are in mcp-hub-runtime" is only half true: core's own `references/` (invariants.md, config-cli.md, reload.md) now hold the invariant, config and reload mechanics. Rework both descriptions per skill-authoring; mind that the description drives triggering for agents without briefing.
