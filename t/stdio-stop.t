@@ -84,6 +84,18 @@ sub await_bounded ($promise, $seconds) {
 
 sub settle ($seconds) { Mojo::Promise->timer($seconds)->wait }
 
+# Whether a process has ended: it is gone, or it is a zombie. A process the
+# child leaves behind is no child of the test's; once it exits, whatever it was
+# handed to reaps it. Where that is a PID 1 that reaps nothing -- a container
+# with no init, such as the GitHub Actions job container, whose PID 1 is
+# `tail -f /dev/null` -- it stays a zombie, and kill 0 still finds it.
+sub ended ($pid) {
+  return 1 unless CORE::kill(0, $pid);
+  open my $fh, '<', "/proc/$pid/stat" or return 0;
+  my ($state) = (do { local $/; <$fh> } // '') =~ /.*\) (\S)/s;
+  return ($state // '') =~ /^[ZX]$/ ? 1 : 0;
+}
+
 # An echo.pl child that writes its SIGTERMs to a file of its own, and the file.
 sub upstream (@flags) {
   my $dir     = tempdir;
@@ -525,8 +537,8 @@ subtest 'a child reaped before its grace is over gets no signal' => sub {
   ok $sitter, 'the socket was held';
   CORE::kill('KILL', $sitter) if $sitter;
   $deadline = Time::HiRes::time() + 10;
-  settle(0.05) while $sitter && CORE::kill(0, $sitter) && Time::HiRes::time() < $deadline;
-  ok !($sitter && CORE::kill(0, $sitter)), 'and is gone';
+  settle(0.05) while $sitter && !ended($sitter) && Time::HiRes::time() < $deadline;
+  ok !($sitter && !ended($sitter)), 'and has ended';
 };
 
 subtest 'a shutdown waits for a child that stays on after its EOF' => sub {

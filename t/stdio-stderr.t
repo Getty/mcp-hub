@@ -61,6 +61,18 @@ sub wait_until ($cond, $seconds) {
   return $cond->();
 }
 
+# Whether a process has ended: it is gone, or it is a zombie. A process the
+# child leaves behind is no child of the test's; once it exits, whatever it was
+# handed to reaps it. Where that is a PID 1 that reaps nothing -- a container
+# with no init, such as the GitHub Actions job container, whose PID 1 is
+# `tail -f /dev/null` -- it stays a zombie, and kill 0 still finds it.
+sub ended ($pid) {
+  return 1 unless kill 0, $pid;
+  open my $fh, '<', "/proc/$pid/stat" or return 0;
+  my ($state) = (do { local $/; <$fh> } // '') =~ /.*\) (\S)/s;
+  return ($state // '') =~ /^[ZX]$/ ? 1 : 0;
+}
+
 sub index_of ($lines, $re) {
   for my $i (0 .. $#$lines) { return $i if $lines->[$i] =~ $re }
   return -1;
@@ -118,9 +130,9 @@ subtest 'a process that writes on to the pipe is not waited for' => sub {
   is $up->state, 'stopped', 'stopped';
 
   if ($writer) {
-    ok wait_until(sub { !kill 0, $writer }, 10), 'the writer ends once the pipe is gone';
-    kill 'KILL', $writer if kill 0, $writer;
-    ok wait_until(sub { !kill 0, $writer }, 10), 'and is gone';
+    ok wait_until(sub { ended($writer) }, 10), 'the writer ends once the pipe is gone';
+    kill 'KILL', $writer unless ended($writer);
+    ok wait_until(sub { ended($writer) }, 10), 'and has ended';
   }
 };
 

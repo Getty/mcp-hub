@@ -51,6 +51,18 @@ sub _error_text ($result) {
 
 sub settle ($seconds = 0.2) { Mojo::Promise->timer($seconds)->wait }
 
+# Whether a process has ended: it is gone, or it is a zombie. A process the
+# child leaves behind is no child of the test's; once it exits, whatever it was
+# handed to reaps it. Where that is a PID 1 that reaps nothing -- a container
+# with no init, such as the GitHub Actions job container, whose PID 1 is
+# `tail -f /dev/null` -- it stays a zombie, and kill 0 still finds it.
+sub ended ($pid) {
+  return 1 unless kill 0, $pid;
+  open my $fh, '<', "/proc/$pid/stat" or return 0;
+  my ($state) = (do { local $/; <$fh> } // '') =~ /.*\) (\S)/s;
+  return ($state // '') =~ /^[ZX]$/ ? 1 : 0;
+}
+
 # A log that keeps its lines, "level message", instead of printing them.
 sub log_to ($lines) {
   my $log = Mojo::Log->new;
@@ -521,8 +533,8 @@ subtest 'a stop ends even while a process the child started holds its socket' =>
   ok $sitter, 'the socket was held';
   kill 'KILL', $sitter if $sitter;
   $deadline = time + 10;
-  settle(0.05) while $sitter && kill(0, $sitter) && time < $deadline;
-  ok !($sitter && kill(0, $sitter)), 'and the process that held it is gone';
+  settle(0.05) while $sitter && !ended($sitter) && time < $deadline;
+  ok !($sitter && !ended($sitter)), 'and the process that held it has ended';
 };
 
 subtest 'a call while the child is stopped starts the next one' => sub {
