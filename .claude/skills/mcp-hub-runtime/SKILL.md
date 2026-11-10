@@ -157,10 +157,15 @@ wenn die Klasse ein `hub`-Attribut hat (`$class->can('hub')`). Die Instanz
 **ist** der `server` — oder hat eine `server`-Methode, die einen liefert
 (Option (a), wie `MCP::Wiki::Server`; geteilt in `Upstream::_load_class` /
 `_server_of`) — und beantwortet `tools/list` selbst: kein Manifest, kein
-Cache. State immer `ready`; `stop` und `refresh_p` sind No-ops. Eine Klasse, die
+Cache. State immer `ready`; `stop` und `refresh_p` sind No-ops — eine gestoppte
+Instanz bedient weiter, mit allen Tools. Erst `let_go` (ein Reload hat den Eintrag
+ersetzt oder entfernt) leert tools/prompts/resources ihres Servers: Closures über die
+Instanz sind ein Zyklus durch ihren Server, wie bei der Wegwerf-Instanz von Fork; ein
+laufender Call hält, was er ausführt, und antwortet noch. Eine Klasse, die
 nicht ladbar ist oder weder `MCP::Server` ist noch `server` hat, lässt den
 Konstruktor sterben — der Hub macht daraus einen `failed`-Upstream mit Begründung.
-Ein langsames Tool blockiert hier die ganze IOLoop.
+Ein langsames Tool blockiert hier die ganze IOLoop; seine Antwort kommt trotzdem an,
+gestreamt (`MCP::Hub::Endpoint`, unter Routing).
 
 ### Fork — `class` mit `"hub": {"fork": true}`
 
@@ -260,6 +265,8 @@ unverändert zurück. Jede Primitive hält ihren Upstream **schwach** (Upstream 
 Primitive → Upstream wäre ein Zyklus, ein per Reload ersetzter Upstream würde nie frei);
 die Upstream-Liste des Hubs (nach einem Reload `leaving`, bis sein Stop vorbei ist) und
 ein laufender Call halten ihn. Ist er weg, antwortet die Primitive mit einem Error-Result.
+Den Server hält allein sein Upstream — der Transport des Endpunkts nur schwach (unter
+Routing).
 
 Ein neues Manifest (Start oder Refresh, `Upstream::_show_manifest`) vergleicht
 das eigene Rendering der drei Listen vorher/nachher: der eigene Endpunkt bekommt
@@ -279,7 +286,8 @@ beides als leer — offene Maintainer-Entscheidung (k143); nur ein stdio-Kind, d
 Ende des Handshakes weg ist, lässt ihn scheitern. Ein Fehler auf `tools/list` lässt beide
 scheitern.
 
-Ein Upstream, den ein Reload ersetzt oder entfernt hat, ist gestoppt und bleibt gehalten
+Ein Upstream, den ein Reload ersetzt oder entfernt hat, ist losgelassen (`let_go`:
+gestoppt, ein In-process-`class` mit geleerten Listen) und bleibt gehalten
 (`Hub::_let_go`: in `leaving` per `refaddr`), bis sein `stopped_p` sich setzt — so wartet
 `shutdown_p` auch auf sein Kind oder seinen Container. Der Nachfolger wartet nicht darauf:
 das Kind des alten kann neben dem des neuen bis zu 7 s laufen (`EOF_GRACE` +
@@ -428,9 +436,26 @@ Stat-Attribut am Upstream — es steckt im Status-Report.
 ## Routing zur Laufzeit
 
 Eine einzige Route `POST /#name`, registriert **nach** `/all` und `/_hub/*`. Der
-Upstream wird pro Request nachgeschlagen; `to_action` hängt am Upstream-Objekt
+Upstream wird pro Request nachgeschlagen; die Action hängt am Upstream-Objekt
 (`$up->action`) und wird also nur einmal gebaut. Ein unbekannter Name und ein
 Server außerhalb des Profils liefern **byte-identisch** dasselbe 404.
+
+Gebaut wird sie, wie die von `/all` in `_setup_routes`, von `MCP::Hub::Endpoint->action`
+statt `to_action`: der HTTP-Transport von MCP 0.15 mit zwei Abweichungen. Er hält seinen
+Server **schwach** — bei `to_action` halten Server und Transport einander, und jeder je
+servierte Server (Façade samt Manifest, Class-Instanz) überlebte den Reload, der seinen
+Upstream verwarf; den Server hält der Upstream, für `/all` der Hub. Und `_handle`
+(überschreibt eine private Methode von MCP) reicht die sofortige Antwort eines
+`tools/call`/`prompts/get`/`resources/read` als Promise weiter, so dass MCP sie als
+Event-Stream schickt und dabei den Inactivity-Timeout der Verbindung abschaltet — wie bei
+jedem Upstream außerhalb des Hubs. Direkt gerendert verlor ein In-process-Call, der die
+Loop länger hielt, unter EV seine Antwort: `Mojo::IOLoop::Stream` setzt den Timer nach
+dem Handler mit libevs gecachter Zeit von vor dem Call neu, er feuert vor dem Write
+(unter Poll nicht; Binary und Docker-Image laufen auf Poll). Fehler-Antworten, alles mit
+eigenem Status und die Listen gehen unverändert als JSON; ein Tool, das nach langem
+Blockieren stirbt, verliert seine 500 unter EV weiterhin. Für Tests heißt das: die
+Antwort eines In-process-Calls ist `text/event-stream`, `->json` ist leer — die
+`sse`-Events vor dem Request abonnieren (`rpc` in `t/aggregate-auth.t`).
 
 Die Setup-Seite (`GET /`) ist eine Inline-JS-Seite: der Login holt das Token per
 `fetch` mit Authorization-Header und ersetzt das Dokument.

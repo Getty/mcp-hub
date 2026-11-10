@@ -17,7 +17,9 @@ Die agentenseitige Sicht ist unverändert: jeder Upstream behält seine Tool-Nam
 (`mcp__context7__resolve-library-id`), bestehende Permission-Regeln greifen weiter. Das
 gelingt, weil jeder Upstream über eine **eigene `MCP::Server`-Instanz** (die Façade)
 präsentiert wird — Protokoll-, Header-, SSE- und Auth-Schicht bleiben `MCP` 0.15 wie
-ausgeliefert; der Hub liefert nur den Upstream-Client und den Klebstoff.
+ausgeliefert, bis auf zwei Abweichungen im HTTP-Transport jedes Endpunkts
+(`MCP::Hub::Endpoint`: Server schwach gehalten, jeder Call gestreamt); der Hub liefert
+nur den Upstream-Client und den Klebstoff.
 
 ## Vocabulary
 
@@ -41,7 +43,7 @@ lib/MCP/Hub.pm                  # Die Mojolicious-App: startup lädt Config, bau
 lib/MCP/Hub/Config.pm           # JSON/YAML laden, validieren, ${VAR} expandieren, Defaults, Mode ableiten. Reine Daten
 lib/MCP/Hub/Auth.pm             # Authorization-Header → client → profile; der `under`-Handler + Tool-Filter
 lib/MCP/Hub/Manifest.pm         # Manifest-Cache lesen/schreiben, Hash, Freshness
-lib/MCP/Hub/Upstream.pm         # Basisklasse: state, server, start_p, stop, refresh_p, touch, stats
+lib/MCP/Hub/Upstream.pm         # Basisklasse: state, server, start_p, stop, let_go, refresh_p, touch, stats
 lib/MCP/Hub/Upstream/Stdio.pm   # Kindprozess (fork/exec, Socket-Pair + stderr-Pipe) + Legacy-JSON-RPC-Client
 lib/MCP/Hub/Upstream/Http.pm    # Remote-HTTP-Upstream: Streamable HTTP oder HTTP+SSE
 lib/MCP/Hub/Upstream/Perl.pm    # `class` einmal instanziieren; die Instanz IST der server oder hat `->server` (Option (a))
@@ -57,6 +59,7 @@ lib/MCP/Hub/Facade.pm           # baut die MCP::Server-Façade aus einem Manifes
 lib/MCP/Hub/Facade/Tool.pm      # MCP::Tool-Subklasse: validate_input aus, `extra`-Hash für Rendering
 lib/MCP/Hub/Facade/Server.pm    # MCP::Server-Subklasse: rendert die `extra`-Felder in tools/list mit
 lib/MCP/Hub/Aggregate.pm        # der /all-Server
+lib/MCP/Hub/Endpoint.pm         # HTTP-Transport jedes Endpunkts und von /all: hält den Server schwach, streamt jeden Call
 lib/MCP/Hub/Native/*.pm         # ClaudeHistory, ClaudeSessions, Status
 lib/MCP/Hub/Help.pm             # die HTML-Setup-Seite an GET / (token-gated in clients mode)
 lib/MCP/Hub/Commands.pm         # Mojolicious::Commands-Subklasse: eigene Commands zuerst, prefork/cgi/psgi/hypnotoad/morbo verweigert
@@ -80,7 +83,10 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   bewacht es). Alles andere (Kinder, Idle-Timer, Manifeste, In-process-Server) lebt in
   der einen IOLoop; Tool-Calls sind non-blocking Promises, damit ein langsamer Upstream
   die anderen nicht blockiert — außer einem In-process-`class`-Eintrag: dessen Tools
-  laufen in der Loop, ein langsames hält den ganzen Hub an.
+  laufen in der Loop, ein langsames hält den ganzen Hub an. Seine Antwort geht trotzdem
+  gestreamt hinaus (`Endpoint::_handle` reicht sie als Promise weiter); direkt gerendert
+  verlor ein Call, der die Loop länger als den Inactivity-Timeout (30 s) hielt, unter EV
+  seine Antwort.
 - **Kein Kindprozess darf die Loop blockieren.** Der docker-CLI läuft nur über
   `MCP::Hub::Docker->run_p` (fork/exec, nie `system`/Backticks), jeder Kind-Exit kommt
   über `MCP::Hub::Child::watch_exit` (nie ein blockierendes `waitpid`). Unter EV reapt
@@ -221,12 +227,16 @@ Pfad-`stat`, Intervall = Hub-Attribut `auto_reload_interval`), `POST /_hub/reloa
   Fehler geloggt und zurückgegeben. Nie halb anwenden, nie den Daemon beenden.
 - **Diff pro normalisiertem Eintrag.** Unverändert → **selbes Objekt, selber pid, selbe
   Stats, selber Idle-Timer** (`t/reload.t` prüft `refaddr`); nur Timeouts →
-  `apply_timeouts` in place. Geändert → nur dieser Upstream neu, Entfernt → `stop` + 404.
+  `apply_timeouts` in place. Geändert → nur dieser Upstream neu, Entfernt → `let_go` + 404.
   Neu → gewärmt wie beim Daemon-Start, d. h. mit gecachtem Manifest **kein Spawn**.
 - **Ein ersetzter oder entfernter Upstream wird gehalten, bis sein Stop vorbei ist, und
-  wendet nichts mehr an.** `_let_go` stoppt ihn und hält ihn, bis sein `stopped_p` sich
-  setzt; `shutdown_p` wartet auch auf ihn (in den 20 s des Daemons). Der Nachfolger wartet
-  nicht: altes und neues Kind eines geänderten Servers können sich bis zu ~7 s überlappen.
+  wendet nichts mehr an.** `_let_go` ruft sein `let_go` — es stoppt ihn, ein
+  In-process-`class` leert dazu tools/prompts/resources seines Servers (nur hier, nie bei
+  einem bloßen `stop`: die Instanz bedient danach weiter) — und hält ihn, bis sein
+  `stopped_p` sich setzt; `shutdown_p` wartet auch auf ihn (in den 20 s des Daemons). Mit
+  ihm geht sein Server: weder Transport noch Listener am Endpunkt halten ihn. Der
+  Nachfolger wartet nicht: altes und neues Kind eines geänderten Servers können sich bis
+  zu ~7 s überlappen.
   Ein Start oder Refresh, der seinen `stop` überlebt, schreibt keinen Cache und
   benachrichtigt niemanden (`Upstream::_dropped`, per `refaddr` gegen `upstreams_by_name`).
 - **profiles/clients/public_profile werden in place getauscht** (`auth->config($new)`);
