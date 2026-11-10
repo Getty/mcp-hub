@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-10T03:59:45Z
+created: 2026-11-09T22:17:36Z
+id: 179
+priority: low
+started: 2026-11-10T02:45:58Z
+status: done
+tags:
+- native
+- decision
+- wire
+title: 'Decide: should search_conversations filter matches by their own time, not
+  by the session''s last_activity?'
+updated: 2026-11-10T03:59:45Z
+---
+
+From k176 (2026-11-09). search_conversations applies since/until to the session's last_activity and then returns all matches of the sessions it keeps. So a session active after since returns its older matches too, and a session that ended before until but had matches before since returns those. Filtering each match by its own timestamp would make since/until mean "matches in this time range". Its since/until inputs also have no description in tools/list. It changes an existing tool's output, so it is the maintainer's call. Lane if yes: mcp-hub-worker.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes. since/until filter each match by its own timestamp (one without a time passes, as elsewhere), so they mean 'matches in this range'; the inputs get descriptions in tools/list.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green with the patch; t/native/ + t/hub.t pass under EV and Poll (22 files, 350 tests) with all six natives cards applied. Apply order k99, k111, k163, k172, k173, k179 (scratchpad w-kNNN/incr.patch each). k179: search_conversations keeps each match by its own timestamp (_filtered/_iso_ms); sessions are no longer skipped by last_activity (it is the last time in file order, not the newest, and until cannot skip either), so with since every session is read until the limit; a match without a valid time passes, as in list_sessions/list_prompts. since/until got descriptions. New t/native/claude-history-search-time.t.
+
+Committed as cc4f2a9 on main (local, not pushed).
