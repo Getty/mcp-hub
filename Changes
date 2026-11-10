@@ -395,3 +395,5 @@ Revision history for MCP-Hub
   - A script that hands the hub to Mojo::Server::Prefork, CGI, PSGI or a
     daemon subclass is refused as that server starts, pointing at
     `mcp-hub daemon`.
+  - `morbo bin/mcp-hub` is refused: its worker restarts on every file change
+    without waiting for the upstreams it started.

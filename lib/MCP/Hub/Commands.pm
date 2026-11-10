@@ -52,8 +52,11 @@ my %REFUSED = (
 my %DETECTED_BY = (cgi => [qw(PATH_INFO GATEWAY_INTERFACE)], psgi => ['PLACK_ENV']);
 
 # The servers that are no command but load mcp-hub as an app to serve it in
-# more than one process, and why each cannot.
-my %UNDER = (hypnotoad => 'hypnotoad serves it from pre-forked workers, and each would start its own upstreams and keep its own state');
+# more than one process, or one after another, and why each cannot.
+my %UNDER = (
+  hypnotoad => 'hypnotoad serves it from pre-forked workers, and each would start its own upstreams and keep its own state',
+  morbo     => 'morbo ends its worker and starts another on every file change, without the wait for the upstreams the old one started, the background fetches and the reloads of the daemon command',
+);
 
 # Why any other server cannot: it is neither the one process nor one we know.
 my $NOT_PLAIN = 'only a plain Mojo::Server::Daemon serves it as that one process';
@@ -87,6 +90,10 @@ sub run ($self, $name = undef, @args) {
 # run: a script of its own that hands the hub to a pre-forking server.
 sub server_refusal ($self, $server) {
   my $class = ref $server;
+
+  # morbo's worker serves the app from a plain daemon. Only the morbo script
+  # loads Mojo::Server::Morbo, and its worker is forked from it.
+  return $self->_refusal('morbo', under => 1) if $class eq 'Mojo::Server::Daemon' && $INC{'Mojo/Server/Morbo.pm'};
   return undef if $class eq 'Mojo::Server::Daemon';
   my $name
     = $server->isa('Mojo::Server::Prefork') ? ($INC{'Mojo/Server/Hypnotoad.pm'} ? 'hypnotoad' : 'prefork')
@@ -177,8 +184,8 @@ the script as an app (L<Mojo::Server/load_app>) and serves it from pre-forked
 workers, each of which would start its own upstreams and keep its own state. So
 when C<mcp-hub> is loaded as an app while C<HYPNOTOAD_APP> is set or
 L<Mojo::Server::Hypnotoad> is loaded, it dies instead of handing the app over.
-Any other loader -- L<Test::Mojo/new> with the script, morbo -- still gets the
-app, and a command line with C<HYPNOTOAD_APP> in its environment runs as ever.
+Any other loader -- L<Test::Mojo/new> with the script, say -- still gets the app,
+and a command line with C<HYPNOTOAD_APP> in its environment runs as ever.
 
 A script of its own that hands the hub to a server never comes past L</run>,
 so the hub asks again as any server starts it (C<before_server_start> in
@@ -186,6 +193,14 @@ L<MCP::Hub>): anything but a plain L<Mojo::Server::Daemon> -- a
 L<Mojo::Server::Prefork>, built by hand or by hypnotoad, a L<Mojo::Server::CGI>
 or L<Mojo::Server::PSGI>, a subclass of the daemon -- is refused there, before it
 listens or forks, in the same words (L</server_refusal>).
+
+So is morbo (C<morbo bin/mcp-hub>). It gets the app, and its worker serves it
+from a plain daemon -- but with L<Mojo::Server::Morbo> loaded, which nothing
+but morbo loads. It ends that worker and starts another on every file change,
+without the wait for the upstreams the old one started, and it serves without
+the background manifest fetches and the reloads that C<mcp-hub daemon> adds
+around the server. The worker dies with the refusal; morbo goes on watching
+files, serving nothing.
 
 The author tools of L<Mojolicious::Command::Author> -- C<generate>, C<inflate>,
 C<cpanify> -- are not searched; C<get>, C<routes>, C<eval> and C<version> stay.
@@ -224,7 +239,8 @@ of the command list.
 
 Why C<$server> cannot serve the hub -- the reason and the pointer to C<mcp-hub
 daemon> a refused command gets -- or C<undef> when it can, when it is a plain
-L<Mojo::Server::Daemon>. L<MCP::Hub> dies with it as that server starts it.
+L<Mojo::Server::Daemon> and not morbo's. L<MCP::Hub> dies with it as that server
+starts it.
 
 =head1 SEE ALSO
 

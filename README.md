@@ -351,7 +351,9 @@ file for every command. It goes before the command name (`mcp-hub -c PATH status
 after it, every option belongs to the command.
 
 The hub serves as one process, under `mcp-hub daemon`: the Mojolicious `prefork`,
-`cgi` and `psgi` commands are refused, and so is `hypnotoad bin/mcp-hub`.
+`cgi` and `psgi` commands are refused, and so are `hypnotoad bin/mcp-hub`,
+`morbo bin/mcp-hub` and any server but a plain `Mojo::Server::Daemon` that a
+script hands the hub to.
 
 `status`, `refresh` and `reload` talk to the running daemon at the config's `listen`
 address (a wildcard such as `0.0.0.0` or `[::]` is reached over loopback, and
@@ -808,10 +810,10 @@ A stdio upstream is spawned on the first `tools/call`, its handshake and tool
 list cached as a manifest, and it is terminated again after an idle timeout.
 
 The hub runs as **one process** that serves HTTP and owns all state (never
-hypnotoad or a pre-forking server: every worker would spawn its own children
-and hold its own state, which defeats the purpose). Its child processes are
-exec'd upstreams or [forked class workers](#forked-class-workers); a worker
-never runs the hub's event loop, holds none of its fds or signal handlers, and
+hypnotoad, morbo or a pre-forking server: every worker would spawn its own
+children and hold its own state, which defeats the purpose). Its child
+processes are exec'd upstreams or [forked class workers](#forked-class-workers);
+a worker never runs the hub's event loop, holds none of its fds or signal handlers, and
 ends with `_exit`. Child processes, idle timers, manifests and in-process
 servers all live in that one event loop, and tool calls are non-blocking, so one
 slow upstream never blocks the others — except a tool of an in-process `class`,

@@ -59,7 +59,7 @@ GET  /_hub/status ────────▶        │             ─▶ admi
 
 ### Process model
 
-`mcp-hub daemon` runs a single `Mojo::Server::Daemon` process. It must not run under hypnotoad or prefork: every worker would spawn its own children and hold its own state, which defeats the purpose. Everything — child processes, idle timers, manifests, in-process servers — lives in this one event loop. Tool calls are non-blocking promises, so one slow upstream does not block the others.
+`mcp-hub daemon` runs a single `Mojo::Server::Daemon` process. It must not run under hypnotoad, prefork or morbo: every worker would spawn its own children and hold its own state, which defeats the purpose. A `before_server_start` hook refuses morbo and any server that is not a plain `Mojo::Server::Daemon`. Everything — child processes, idle timers, manifests, in-process servers — lives in this one event loop. Tool calls are non-blocking promises, so one slow upstream does not block the others.
 
 Default listen address is `http://127.0.0.1:3080`. The daemon runs in the foreground; the README ships a systemd user unit.
 

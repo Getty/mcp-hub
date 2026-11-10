@@ -118,8 +118,9 @@ subtest 'hypnotoad cannot load mcp-hub to serve it pre-forked' => sub {
   like $r->{err}, $refused, '...refused';
   is $r->{out}, '',         '...and no app';
 
-  # Neither: a one-process loader (Test::Mojo->new($script), morbo) still gets
-  # the app, and HYPNOTOAD_APP inherited by a command line stops nothing.
+  # Neither: a one-process loader (Test::Mojo->new($script), morbo's worker)
+  # still gets the app, and HYPNOTOAD_APP inherited by a command line stops
+  # nothing.
   $r = perl_child('-MMojo::Server', '-e', $load, $BIN);
   is $r->{exit}, 0, 'loaded as an app without hypnotoad: works' or diag $r->{err};
   is $r->{out}, 'MCP::Hub', '...and hands over the hub';
@@ -128,6 +129,26 @@ subtest 'hypnotoad cannot load mcp-hub to serve it pre-forked' => sub {
   $r = mcp_hub('config');
   is $r->{exit}, 0, 'mcp-hub config with HYPNOTOAD_APP set but not loaded as an app: works' or diag $r->{err};
   is_deeply servers($r), ['alpha'], '...and prints the configuration';
+};
+
+subtest 'morbo cannot serve mcp-hub' => sub {
+  # What morbo's worker does with "morbo bin/mcp-hub" (Mojo::Server::Morbo's
+  # _spawn): load the script as an app and start it on a plain daemon. The app
+  # is handed over, and refused as that daemon starts it -- before it listens.
+  delete local @ENV{grep {/^HYPNOTOAD_/} keys %ENV};
+  local $ENV{MCP_HUB_CONFIG} = $config{alpha};
+  my $worker = 'my $d = Mojo::Server::Morbo->new->daemon; $d->load_app(shift)->server($d); print "served"';
+  my $r      = perl_child('-MMojo::Server::Morbo', '-e', $worker, $BIN);
+  isnt $r->{exit}, 0, "morbo's worker fails";
+  like $r->{err}, qr/mcp-hub refuses to run under morbo: the hub is one process that owns every upstream and all state; /,
+    '...refused, saying why';
+  like $r->{err}, qr/Run "mcp-hub daemon" instead\.\n\z/, '...and pointing at mcp-hub daemon';
+  is $r->{out}, '', '...and it never served';
+
+  # The same daemon, without morbo loaded, is how the daemon command serves.
+  $r = perl_child('-MMojo::Server::Daemon', '-e', 'my $d = Mojo::Server::Daemon->new; $d->load_app(shift)->server($d); print "served"', $BIN);
+  is $r->{exit}, 0, 'a plain daemon of its own starts it' or diag $r->{err};
+  is $r->{out}, 'served', '...and serves';
 };
 
 subtest "after the command, -c is the command's own option" => sub {
