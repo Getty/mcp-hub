@@ -7,7 +7,10 @@
 # tool alive for the life of the daemon. A call in flight when the reload drops
 # its upstream settles with an error result, and only then is the upstream freed.
 # The instance of a class entry is freed with it: the natives' tools, and the
-# test EchoServer's, reach their own server weakly.
+# test EchoServer's, reach their own server weakly. And so is the server of an
+# upstream served on its own endpoint: the transport the endpoint's action
+# gives it holds it only weakly (MCP::Hub::Upstream/action) -- MCP's to_action
+# makes server and transport hold each other.
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use Test::Mojo;
@@ -104,6 +107,13 @@ sub weak_refs ($app, @names) {
   return \%weak;
 }
 
+# The servers of those upstreams, the MCP::Server each endpoint is served by.
+sub weak_servers ($app, @names) {
+  my %weak;
+  weaken($weak{$_} = $app->upstreams_by_name->{$_}->server) for @names;
+  return \%weak;
+}
+
 # Which of them are still alive after the loop ran for at most $timeout
 # seconds -- a child has to be gone before its upstream can be.
 sub alive_after ($weak, $timeout = 5) {
@@ -148,11 +158,13 @@ subtest 'a reload frees every upstream it removes' => sub {
   serve_all($t, @TYPES);
 
   my $weak    = weak_refs($app, @TYPES, 'keep');
+  my $servers = weak_servers($app, @TYPES);
   my $summary = write_config($dir, {keep => {class => 'EchoServer'}}) && $app->reload;
   is_deeply [sort @{$summary->{removed}}], [sort @TYPES], 'every one of them was removed';
 
   my $keep = delete $weak->{keep};
   is_deeply alive_after($weak), [], 'and every one of them is freed';
+  is_deeply alive_after($servers), [], 'and so is the server each was served by on its endpoint';
   ok $keep, 'the one still configured is kept';
   ok client($t, '/all')->list_tools, '/all still answers';
 };
@@ -164,13 +176,44 @@ subtest 'a reload frees every upstream it replaces' => sub {
   serve_all($t, @TYPES);
 
   my $weak    = weak_refs($app, @TYPES);
+  my $servers = weak_servers($app, @TYPES);
   my $summary = write_config($dir, entries($dir, 2)) && $app->reload;
   is_deeply [sort @{$summary->{changed}}], [sort @TYPES], 'every one of them was replaced';
   is_deeply alive_after($weak), [], 'and every old one is freed';
+  is_deeply alive_after($servers), [], 'and so is the server each was served by on its endpoint';
 
   # The replacements are the ones served now, extras and all.
   serve_all($t, @TYPES);
   is $app->upstreams_by_name->{stdio}->stats->{pid}, undef, 'and still nothing was spawned';
+};
+
+# A listener on an endpoint -- the longest-lived thing one hands out -- keeps
+# neither its upstream nor its server: the stream sits in the transport, which
+# only the server holds. Its connection stays open, and quiet, until the agent
+# hangs up.
+subtest 'a listener on its endpoint keeps neither upstream nor server' => sub {
+  for my $type (qw(stdio perl)) {
+    my $dir = tempdir;
+    my $app = hub_for($dir, {$type => entries($dir)->{$type}});
+    my $t   = Test::Mojo->new($app);
+    $t->ua->inactivity_timeout(2);    # the quiet stream then ends the listen
+
+    my ($upstream, $server, $alive);
+    client($t, "/$type")->listen({toolsListChanged => \1}, sub ($message) {
+      return 1 unless ($message->{method} // '') eq 'notifications/subscriptions/acknowledged';
+      $upstream = weak_refs($app, $type);
+      $server   = weak_servers($app, $type);
+      write_config($dir, {});
+      $app->reload;
+      Mojo::IOLoop->timer(0.5 => sub {
+        $alive = [($upstream->{$type} ? 'upstream' : ()), ($server->{$type} ? 'server' : ())];
+      });
+      return 1;
+    });
+    is_deeply $alive, [], "$type: both were gone while the listener was still connected";
+    is_deeply alive_after($upstream), [], "$type: the upstream is freed";
+    is_deeply alive_after($server),   [], "$type: and so is its server";
+  }
 };
 
 subtest 'an upstream whose child is running is freed once the child is gone' => sub {
@@ -182,10 +225,12 @@ subtest 'an upstream whose child is running is freed once the child is gone' => 
   my %pid = map { $_ => $app->upstreams_by_name->{$_}->stats->{pid} } qw(stdio fork);
   ok $pid{stdio} && $pid{fork}, 'a child and a worker are running';
 
-  my $weak = weak_refs($app, qw(stdio fork));
+  my $weak    = weak_refs($app, qw(stdio fork));
+  my $servers = weak_servers($app, qw(stdio fork));
   write_config($dir, {});
   is_deeply [sort @{$app->reload->{removed}}], [qw(fork stdio)], 'both were removed';
   is_deeply alive_after($weak, 15), [], 'and both are freed once their processes are gone';
+  is_deeply alive_after($servers), [], 'and so are the servers their calls were served by';
   ok !kill(0, $pid{$_}), "the $_ process is gone" for qw(stdio fork);
 };
 
@@ -205,7 +250,8 @@ subtest 'a call in flight when a reload drops its upstream' => sub {
     my $t       = Test::Mojo->new($app);
 
     is client($t, '/echo')->call_tool('echo', {msg => 'warm'})->{content}[0]{text}, 'warm', 'the child is running';
-    my $weak = weak_refs($app, 'echo');
+    my $weak   = weak_refs($app, 'echo');
+    my $server = weak_servers($app, 'echo');
 
     my $summary;
     Mojo::IOLoop->timer(0.5 => sub {
@@ -221,6 +267,7 @@ subtest 'a call in flight when a reload drops its upstream' => sub {
     like $result->{content}[0]{text}, qr/^upstream echo: /, "$case->{path}: which names the upstream";
     cmp_ok time - $started, '<', 20, "$case->{path}: as soon as the child is gone, not when the tool would be done";
     is_deeply alive_after($weak, 15), [], "$case->{path}: and then the upstream is freed";
+    is_deeply alive_after($server), [], "$case->{path}: and its server with it";
 
     if ($case->{how} eq 'replaced') {
       is client($t, '/all')->call_tool('echo__echo', {msg => 'new'})->{content}[0]{text}, 'new',
@@ -260,8 +307,8 @@ subtest 'a primitive whose upstream is gone answers with an error result' => sub
 # it registers on itself reach it weakly -- the natives' and EchoServer's do --,
 # where a closure over it would be a cycle through its own server. Each of these
 # classes is an MCP::Server, so its instance is the upstream's server. Their
-# tools run through /all; served on its own endpoint, a server is also held by
-# the transport its action builds, and that transport by it (MCP 0.15).
+# tools run on their own endpoints and through /all: the transport an
+# endpoint's action builds holds its server only weakly.
 subtest 'a reload frees the instance of a class entry it removes' => sub {
   my $dir     = tempdir;
   my $claude  = $dir->child('claude')->make_path->to_string;
@@ -275,11 +322,14 @@ subtest 'a reload frees the instance of a class entry it removes' => sub {
   my $app = hub_for($dir, {%classes, keep => {class => 'EchoServer'}});
   my $t   = Test::Mojo->new($app);
 
-  my $all = client($t, '/all');
-  for my $tool (qw(history__list_projects sessions__list_running_sessions status__hub_status)) {
-    ok !$all->call_tool($tool, {})->{isError}, "$tool answers";
+  my %tool = (history => 'list_projects', sessions => 'list_running_sessions', status => 'hub_status');
+  my $all  = client($t, '/all');
+  for my $name (sort keys %tool) {
+    ok !client($t, "/$name")->call_tool($tool{$name}, {})->{isError}, "/$name: $tool{$name} answers";
+    ok !$all->call_tool("${name}__$tool{$name}", {})->{isError}, "/all: ${name}__$tool{$name} answers";
   }
-  is $all->call_tool('echo__echo', {msg => 'hi'})->{content}[0]{text}, 'hi', 'echo__echo answers';
+  is client($t, '/echo')->call_tool('echo', {msg => 'hi'})->{content}[0]{text}, 'hi', '/echo: echo answers';
+  is $all->call_tool('echo__echo', {msg => 'hi'})->{content}[0]{text}, 'hi', '/all: echo__echo answers';
 
   my $upstreams = weak_refs($app, keys %classes);
   my %instances;

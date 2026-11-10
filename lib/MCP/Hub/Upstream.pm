@@ -11,7 +11,7 @@ use Mojo::JSON   qw(encode_json);
 use Mojo::Loader qw(load_class);
 use Mojo::Log;
 use Mojo::Promise;
-use Scalar::Util qw(blessed refaddr);
+use Scalar::Util qw(blessed refaddr weaken);
 
 # ABSTRACT: Base class for an upstream MCP server mounted in the hub
 
@@ -20,7 +20,19 @@ has 'name';
 # router holds one dynamic route and looks the upstream up per request, so the
 # action must live with the object it serves, not with the route. Building it
 # twice would replace the MCP::Server transport and drop its subscriptions.
-has action    => sub ($self) { $self->server->to_action({streaming => 1}) };
+#
+# MCP's to_action gives the server a transport that holds the server, and the
+# server holds the transport: a cycle that kept every server ever served on its
+# endpoint -- a facade with its manifest, an in-process class instance -- alive
+# after a reload had let go of its upstream. The upstream holds its server and
+# the action the transport, so the transport's hold is made weak: while the
+# upstream is there, so is its server.
+has action => sub ($self) {
+  my $server = $self->server;
+  my $action = $server->to_action({streaming => 1});
+  weaken $server->transport->{server};
+  return $action;
+};
 has 'config';
 has 'error';
 has 'hub';
@@ -455,6 +467,11 @@ and then kept. The hub mounts one dynamic route for all upstreams and resolves
 the name per request, so the action belongs to the upstream rather than to a
 route; keeping it also keeps the L<MCP::Server> transport, and with it any open
 streaming subscription.
+
+The transport holds the server only weakly. L<MCP::Server/to_action> has server
+and transport hold each other, so any server once served on its endpoint
+outlived its upstream; held by the upstream alone, the server goes with it when
+a reload replaces or removes the entry.
 
 =attr config
 
