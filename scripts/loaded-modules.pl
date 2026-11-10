@@ -4,10 +4,11 @@
 #
 #   perl -Ilib scripts/loaded-modules.pl              # the loaded set
 #   perl -Ilib scripts/loaded-modules.pl --left-out   # the families left out
+#   perl scripts/loaded-modules.pl --leaked DIR       # their files in an unpacked archive
 #
 # binary-pp-args.sh turns the loaded set into pp -M options and the left-out families
 # into -X options; binary-verify.sh requires every loaded module inside the packed
-# archive and no file of a left-out family. One source, so the three cannot drift.
+# archive and no file of a left-out family (--leaked). One source, so the three cannot drift.
 # The list goes to STDOUT, problems to STDERR.
 #
 # pp's scanner reads source and misses whatever loads by name, which in mcp-hub is a
@@ -69,6 +70,31 @@ sub left_out {
     return 1 if $spec =~ /::\z/ ? index( $m, $spec ) == 0 : $m eq $spec;
   }
   return 0;
+}
+
+# --leaked DIR: every file of a left-out family inside DIR, an unpacked PAR archive,
+# one per line (lib/JSON/XS/Boolean.pm) -- what binary-verify.sh rejects. A file's
+# module is its path below lib/ or arch/, judged by left_out() like everything else
+# here, so a family matches from that root only: lib/Cpanel/JSON/XS/Type.pm is
+# Cpanel::JSON::XS::Type, packed on purpose, and no file of JSON::XS::.
+BEGIN {
+  if ( ( $ARGV[0] // '' ) eq '--leaked' ) {
+    my $dir = $ARGV[1] // die "usage: loaded-modules.pl --leaked <unpacked archive>\n";
+    -d $dir or die "loaded-modules: no directory $dir\n";
+    require File::Find;
+    my @leaked;
+    for my $top ( grep { -d "$dir/$_" } qw( lib arch ) ) {
+      File::Find::find( { no_chdir => 1, wanted => sub {
+        return unless /\.pm\z/ && -f;
+        my $rel = substr $_, length("$dir/$top") + 1;
+        ( my $m = $rel ) =~ s{/}{::}g;
+        $m =~ s/\.pm\z//;
+        push @leaked, "$top/$rel" if left_out($m);
+      } }, "$dir/$top" );
+    }
+    print "$_\n" for sort @leaked;
+    exit 0;
+  }
 }
 
 my $root;

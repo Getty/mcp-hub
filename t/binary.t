@@ -5,7 +5,9 @@
 # -- a stdio MCP server in POSIX sh, for hosts without Perl -- as the upstream it
 # starts on tools/call, the TLS checks of both (and scripts/loaded-modules.pl)
 # serve https with t/fixtures/binary/tls/server.crt, trusting tls/ca.crt, and the
-# smoke verifies tls/le-r11.crt against the binary's trust store.
+# smoke verifies tls/le-r11.crt against the binary's trust store. The verify's
+# left-out check is scripts/loaded-modules.pl --leaked, pinned here on an archive
+# made up in a temp dir.
 use Mojo::Base -strict, -signatures;
 use Test::More;
 use Mojo::File qw(curfile tempdir);
@@ -145,6 +147,37 @@ subtest 'tls/le-r11.crt chains to a root in Mozilla::CA' => sub {
   };
   is $verify_at->(1735689600), 'verified', 'verified at 2025-01-01, the time the smoke checks at';
   like $verify_at->(1900000000), qr/expired/, 'refused after its expiry: the fixed time is what passes it';
+};
+
+# binary-verify.sh rejects an archive that holds a file of a left-out family, through
+# scripts/loaded-modules.pl --leaked. A family counts from lib/ or arch/ only, never as
+# the tail of a longer name: Cpanel::JSON::XS::Type comes with Cpanel::JSON::XS, which
+# is packed on purpose, and a */JSON/XS/* glob once took it for JSON::XS:: (k211).
+subtest 'loaded-modules.pl --leaked names left-out files from the archive root only' => sub {
+  my $scripts = curfile->dirname->sibling('scripts');
+  my $archive = tempdir;
+  my @leaked  = qw(
+    arch/JSON/XS/Boolean.pm lib/EV.pm lib/JSON.pm lib/JSON/XS.pm lib/JSON/XS/Boolean.pm
+    lib/Mojo/Reactor/EV.pm lib/Net/IDN/Encode.pm lib/URI/http.pm
+  );
+  my @packed = qw(
+    lib/Cpanel/JSON/XS.pm lib/Cpanel/JSON/XS/Type.pm arch/Cpanel/JSON/XS/Boolean.pm
+    lib/JSON/PP.pm lib/Mojo/JSON.pm lib/Foo/EV/Bar.pm lib/Foo/URI/Bar.pm lib/Foo/LWP/Bar.pm
+  );
+  for my $rel (@leaked, @packed) {
+    my $file = $archive->child(split m{/}, $rel);
+    $file->dirname->make_path;
+    $file->spew("1;\n");
+  }
+  open my $ph, '-|', $^X, $scripts->child('loaded-modules.pl')->to_string, '--leaked', "$archive"
+    or die "cannot run loaded-modules.pl: $!";
+  chomp(my @got = <$ph>);
+  close $ph;
+  is $?, 0, '--leaked exits 0';
+  is_deeply \@got, [sort @leaked], 'the left-out files and nothing that only ends like a family'
+    or diag explain \@got;
+  ok $scripts->child('binary-verify.sh')->slurp =~ m{loaded-modules\.pl" --leaked "\$work/archive"},
+    'binary-verify.sh takes its left-out check from --leaked';
 };
 
 done_testing;

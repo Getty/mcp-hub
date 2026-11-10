@@ -215,16 +215,11 @@ done
 echo "packed module set: OK ($nloaded modules)"
 
 # The left-out families must not be in the archive, whatever this host has installed.
-leaked=
-for spec in $(perl "$root/scripts/loaded-modules.pl" --left-out); do
-  p=$(echo "${spec%::}" | sed 's#::#/#g')
-  case "$spec" in
-    *::) hit=$(cd "$work/archive" && { find lib arch -path "*/$p/*" -name '*.pm' 2>/dev/null || true; } | head -n 1) ;;
-    *)   hit=$(cd "$work/archive" && { ls "lib/$p.pm" "arch/$p.pm" 2>/dev/null || true; } | head -n 1) ;;
-  esac
-  [ -z "$hit" ] || leaked="$leaked $hit"
-done
-[ -z "$leaked" ] || fail "left-out modules packed:$leaked (binary-pp-args.sh must -X them)"
+# scripts/loaded-modules.pl --leaked names their files, a module by its path below lib/
+# or arch/ (lib/Cpanel/JSON/XS/Type.pm is no JSON::XS; t/binary.t pins that).
+leaked=$(perl "$root/scripts/loaded-modules.pl" --leaked "$work/archive" 2>"$work/leaked.err") \
+  || fail "scripts/loaded-modules.pl --leaked failed: $(cat "$work/leaked.err")"
+[ -z "$leaked" ] || fail "left-out modules packed: ${leaked//$'\n'/ } (binary-pp-args.sh must -X them)"
 echo "left-out families absent: OK"
 
 # Files read from a path next to a module: Mojolicious' templates (next to
