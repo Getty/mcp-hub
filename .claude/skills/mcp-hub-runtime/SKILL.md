@@ -257,8 +257,13 @@ wait`, Fehler mit dem Ende von `docker logs`) oder nach `request_timeout`; kam d
 aus `EXPOSE`/`ports:`, rät der Fehler zu `"stdio": true`. Compose übernimmt einen schon
 laufenden Service (kein `up`, nie gestoppt), sonst `up -d --no-recreate SERVICE` und beim
 Stop `compose stop SERVICE`. Für stdio vorher Pull/Build, `up -d --no-recreate` der
-`depends_on` und deren Bedingungen (Poll auf `ps -a`). Compose stoppt nie eine
-Abhängigkeit und recreatet nie, was existiert; Compose ≥ 2, kein podman-compose.
+`depends_on` und deren Bedingungen (Poll auf `ps -a`, ohne Obergrenze — compose hat
+keine, ein Stop beendet es). Das Warten sagt, worauf: `waiting_for` in der Status-Zeile ab
+der ersten Antwort (jede noch offene Abhängigkeit mit State/Health ihrer Container), `warn`
+im Log nach `depends_warn_after` (30 s), dann alle `depends_warn_interval` (60 s) —
+Attribute, keine Config. Ein HTTP-Start wartet in `up` selbst; das sagt nichts. Compose
+stoppt nie eine Abhängigkeit und recreatet nie, was existiert; Compose ≥ 2, kein
+podman-compose.
 
 **Was dem Hub gehört, sagen nur die Labels.** Name `mcp-hub-<name>`, Labels
 `mcp-hub.server`, `mcp-hub.owner` (Zufalls-Id in `<cache_dir>/docker-owner` — ohne sie
@@ -271,7 +276,8 @@ des Servers weg ist. Stop: stdio wie jedes Stdio-Kind, danach der Container per
 beim Shutdown. `env` geht als nacktes `-e KEY`, der Wert nur über die Umgebung des
 CLI-Prozesses. Fehlertexte tragen nur stderr (`stderr_tail`), nie stdout — `compose
 config` liefert das ganze Projekt samt Secrets. Status-Zeile: `container` und `mode`
-(compose: `compose`, `service`), `pid`/`rss_kb` bleiben `undef`.
+(compose: `compose`, `service`, beim Warten auf `depends_on` `waiting_for`), `pid`/`rss_kb`
+bleiben `undef`.
 
 ## Der Manifest-Cache
 

@@ -218,11 +218,12 @@ Unbekannte Keys sind ein Fehler — mit JSON-Pfad in der Meldung.
 
 `daemon` (Vordergrund, single daemon), `config [--client NAME] [--all] [--url BASE]`
 (druckt `{"mcpServers": …}`; in clients mode ist `--client` nötig und fügt den Bearer
-hinzu), `status` (ruft `GET /_hub/status`; antwortet dort kein Hub, Exit 1 mit `hub is
-not running at …` auf stderr), `refresh [NAME]` (`POST /_hub/refresh`; auch der einzige
-Weg aus `failed`), `reload` (`POST /_hub/reload`, druckt die Diff-Summary,
+hinzu), `status` (ruft `GET /_hub/status`), `refresh [NAME]` (`POST /_hub/refresh`; auch
+der einzige Weg aus `failed`), `reload` (`POST /_hub/reload`, druckt die Diff-Summary,
 Exit ≠ 0 bei abgelehnter Config), `token` (32 Zufallsbytes base64url, fasst die Config
-nie an). `status`/`refresh`/`reload` nehmen `--client NAME` und `--url BASE`.
+nie an). `status`/`refresh`/`reload` nehmen `--client NAME` und `--url BASE`; antwortet
+dort kein Hub, enden alle drei mit Exit 1 und `hub is not running at …` auf stderr
+(`local $! = 1; die`), nie mit Exit 0.
 
 ## Reload
 
