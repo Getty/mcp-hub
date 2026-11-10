@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-10T12:12:22Z
+created: 2026-11-06T14:41:30Z
+id: 143
+priority: medium
+started: 2026-11-10T11:08:13Z
+status: done
+tags:
+- decision
+- manifest
+title: 'Decide: what should a start do when prompts/list or resources/list gets no
+  answer?'
+updated: 2026-11-10T12:12:22Z
+---
+
+From k130. Since k130 a refresh that gets no answer to prompts/list or resources/list fails and keeps the manifest; a start still takes no answer for an empty list, stores it over a good cache and notifies listeners. Options: (1) leave the start lenient (current): no call fails because of a list, the next refresh repairs it; (2) make the start strict: the call fails and counts toward the crash loop, so a slow prompts/list makes the tools unusable too; (3) on no answer during a start, keep the cached prompts/resources: the cache stays good, at the price of possibly stale lists and a little more code. Maintainer call.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: (3). On no answer to prompts/list or resources/list during a start, the start keeps the cached prompts/resources and does not notify listeners of a change; the next refresh repairs them.
+
+Committed as 2bd1a5f
