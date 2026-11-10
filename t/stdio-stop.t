@@ -234,10 +234,20 @@ subtest 'a child being stopped is stopping until it is gone' => sub {
   is $up->status_row->{pid}, undef, 'with no pid';
 
   # A start the stop called off: the child is still there after the start
-  # failed, and stopping until it is gone.
+  # failed, and stopping until it is gone. The stop comes as the start asks
+  # for the tools (as in 'a stop during the start'): the child has answered
+  # its initialize by then, so how long perl took to start it does not decide
+  # whether it is still there. A stop sent right after the spawn reached a
+  # child that was not up yet, and on a loaded host it got its SIGTERM
+  # (EOF_GRACE) before it answered and was gone before the test looked.
+  no warnings 'redefine';
+  my $request = \&MCP::Hub::Upstream::Stdio::_request_p;
+  local *MCP::Hub::Upstream::Stdio::_request_p = sub ($self, $method, @rest) {
+    $self->stop if $method eq 'tools/list';
+    return $request->($self, $method, @rest);
+  };
   my $start = $up->start_p;
   ok $up->stats->{pid}, 'the next child is there';
-  $up->stop;
   my $r = await_bounded($start, 20);
   is ref $r eq 'HASH' ? $r->{err} : 'ready', 'upstream echo: stopped', 'a start the stop called off fails as stopped';
   is $up->state, 'stopping', 'and its child is stopping';
