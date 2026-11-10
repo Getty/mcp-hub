@@ -3,6 +3,7 @@ use Mojo::Base -strict, -signatures;
 use Test::More;
 use Mojo::File qw(path tempdir);
 use Mojo::JSON qw(decode_json encode_json);
+use Time::HiRes ();
 use MCP::Hub::Native::ClaudeHistory;
 
 # ClaudeHistory reads session files a line at a time and keeps, per file, where
@@ -119,6 +120,34 @@ utime time + 5, time + 5, "$file";
 is length $rewritten, length $before, 'same size';
 same 'the file was rewritten without growing';
 is $h->list_sessions->[0]{first_prompt}, 'REPLACED', 'rewritten content is read';
+
+# The mtime is compared to the fraction of a second the filesystem keeps, so a
+# rewrite in place that keeps the device, inode, size and whole second of the
+# mtime is read again too. The mtimes are set, not waited for.
+subtest 'a rewrite of the same size within the same second' => sub {
+  plan skip_all => 'no sub-second stat or utime here' unless Time::HiRes::d_hires_stat() && Time::HiRes::d_hires_utime();
+  my $other  = tempdir;
+  my $quick  = $other->child('projects', '-home-tester-quick')->make_path->child('quick.jsonl');
+  my $line   = sub ($text) {
+    encode_json({type => 'user', sessionId => 'quick', cwd => '/home/tester/quick', uuid => 'q1',
+      timestamp => '2026-10-02T09:00:00Z', message => {role => 'user', content => $text}}) . "\n";
+  };
+  my $second = int time;
+  $quick->spew($line->('first draft'));
+  Time::HiRes::utime($second + 0.25, $second + 0.25, "$quick") or die "utime: $!";
+  plan skip_all => 'this filesystem keeps no fraction of a second' if (Time::HiRes::stat("$quick"))[9] == $second;
+
+  my $q = MCP::Hub::Native::ClaudeHistory->new(root => "$other");
+  is $q->list_sessions->[0]{first_prompt}, 'first draft', 'read';
+  my @before = stat "$quick";
+  $quick->spew($line->('FIRST DRAFT'));
+  Time::HiRes::utime($second + 0.75, $second + 0.75, "$quick") or die "utime: $!";
+  my @after = stat "$quick";
+  is_deeply [@after[0, 1, 7, 9]], [@before[0, 1, 7, 9]], 'the same device, inode, size and second';
+  is $q->list_sessions->[0]{first_prompt}, 'FIRST DRAFT', 'the rewrite is read';
+  is_deeply $q->list_sessions, MCP::Hub::Native::ClaudeHistory->new(root => "$other")->list_sessions,
+    'as a fresh instance';
+};
 
 subtest 'search after an append' => sub {
   append(user('more') . "\n");

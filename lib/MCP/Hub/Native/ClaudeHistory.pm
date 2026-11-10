@@ -6,6 +6,7 @@ use JSON::MaybeXS ();
 use Mojo::File qw(path);
 use Mojo::JSON qw(encode_json to_json);
 use Scalar::Util qw(weaken);
+use Time::HiRes ();
 use Time::Local qw(timegm);
 
 # ABSTRACT: Native MCP server for browsing the local Claude Code history
@@ -446,7 +447,9 @@ sub _meta ($self, $file, $run = 0) {
 # scan's state at that offset, and, as ms, the started_at and last_activity of
 # the metadata in epoch milliseconds (see _timed). A file that only grew is read
 # from that offset on; a new one, or one that shrank, was replaced (another
-# inode) or changed without growing, is read from the start. With $visit, a
+# inode) or changed without growing, is read from the start. The mtime is taken
+# to the fraction of a second the filesystem keeps (Time::HiRes::stat), so a
+# rewrite in place that keeps the size within one second is seen. With $visit, a
 # file that has to be read at all is read from the start, and $visit sees every
 # record of it -- lines before the offset only if the raw test $skip lets them
 # through. With $run, $file is a subagent run, whose first prompt the cache
@@ -456,7 +459,7 @@ sub _meta ($self, $file, $run = 0) {
 sub _refresh ($self, $file, $skip = undef, $visit = undef, $run = 0) {
   my $old  = $self->meta_cache->{"$file"};
   my $same = sub (@stat) { $old && @stat && $old->{dev} == $stat[0] && $old->{ino} == $stat[1] };
-  my @stat = stat "$file";
+  my @stat = Time::HiRes::stat("$file");
   return 0 if $same->(@stat) && $old->{size} == $stat[7] && $old->{mtime} == $stat[9];
 
   # Whether the file only grew is decided on the handle read, not the path.
@@ -481,7 +484,7 @@ sub _refresh ($self, $file, $skip = undef, $visit = undef, $run = 0) {
     $visit->($rec) if $visit;
   });
 
-  @fstat = stat $fh;
+  @fstat = Time::HiRes::stat($fh);
   my $meta = $self->_summary($file, $tail // \%state);
   $self->meta_cache->{"$file"} = {
     dev    => $fstat[0],
@@ -813,10 +816,11 @@ C<history.jsonl> beside C<projects/>; it offers six tools. A run is no session
 of its own: C<list_sessions> and C<list_projects> do not count it.
 
 Session files are read a line at a time. Per-session metadata is cached in
-memory together with the file's device, inode, size, modification time and the
-offset its scan reached: an unchanged file is not read again, a file that grew
-is read only from that offset on, and a file that shrank, was replaced or was
-rewritten without growing is read again from the start. A search reads a file
+memory together with the file's device, inode, size, modification time (to the
+fraction of a second the filesystem keeps) and the offset its scan reached: an
+unchanged file is not read again, a file that grew is read only from that
+offset on, and a file that shrank, was replaced or was rewritten without
+growing, within the same second too, is read again from the start. A search reads a file
 whose metadata is out of date only once, for both. C<get_conversation> reads
 the file named after the session (C<< <session_id>.jsonl >>, as Claude Code
 names it) first, and the others only if that one does not hold the session;

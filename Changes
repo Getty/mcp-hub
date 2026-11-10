@@ -376,3 +376,5 @@ Revision history for MCP-Hub
   - `idle_timeout`, `request_timeout` and `port` take a number and no `${VAR}`
     reaches them: a string such as `"30"` or `"8080"` is refused with its path,
     and `"30\n"` no longer passes for 30.
+  - list_sessions and the other ClaudeHistory tools now see a session file
+    rewritten in place within one second without changing size.
