@@ -420,3 +420,5 @@ Revision history for MCP-Hub
     server failed with "stopped".
   - A call or refresh during a server's stop no longer starts an orphan child
     when a reload removes or replaces the server meanwhile.
+  - After a reload, a changed server's new stdio process or forked worker
+    starts only once the old one has exited, so the two never run side by side.

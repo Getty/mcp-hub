@@ -372,7 +372,8 @@ design.
 - **Unchanged entry:** the upstream and its running worker stay, as today.
 - **Changed entry** (`class`, `args` or `hub.*`): the old upstream is stopped (the
   worker gets EOF, TERM after the grace) and a new one is built. That means a new throwaway
-  instance and a new manifest, and no worker until the next call.
+  instance and a new manifest, and no worker until the next call; that worker starts only
+  once the old one has exited.
 - **Added entry:** its class is loaded at that point.
 - **Class code is never reloaded.** `require` of an already-loaded module does
   nothing, so a newer mcp-wiki installed on disk reaches the hub and its workers

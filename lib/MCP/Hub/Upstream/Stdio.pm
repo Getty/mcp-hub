@@ -73,6 +73,34 @@ sub start_p ($self) {
   my $done = Mojo::Promise->new;
   $self->{start_promise} = $done;
 
+  # The upstream a reload replaced -- or removed, before the server came back
+  # -- is let go of, but its child is given its stop: up to seven seconds after
+  # its EOF. A child started now ran beside it, and a server holding a lock or
+  # a file met itself. So the start waits until the child is gone
+  # (MCP::Hub/predecessors), a call or a refresh in the meantime joins it, and
+  # a stop calls it off before it starts anything (stop).
+  my @before = $self->_predecessors;
+  return $self->_launch($done) unless @before;
+  $self->{waiting} = $done;
+  Mojo::Promise->all_settled(map { $_->stopped_p } @before)->then(sub {
+    return unless ($self->{waiting} // 0) == $done;
+    delete $self->{waiting};
+    $self->_launch($done);
+    return;    # $done is the caller's: a failed start is no rejection here
+  });
+  return $done;
+}
+
+# The upstreams of this server's name that a reload let go of, still on their
+# way out. An upstream with no hub -- the engine of a container -- has none.
+sub _predecessors ($self) {
+  my $hub = $self->hub;
+  return () unless $hub && $hub->can('predecessors');
+  return $hub->predecessors($self->name);
+}
+
+# Spawn the child, and the handshake with it, for the start that is $done.
+sub _launch ($self, $done) {
   my $pid;
   unless (eval { $pid = $self->_spawn; 1 }) {
     my $err = $@ =~ s/\n\z//r;
@@ -150,6 +178,15 @@ sub start_p ($self) {
 # A stop already under way is neither started over nor hurried, and a child
 # being killed needs none.
 sub stop ($self) {
+  # A start still waiting for the child of the upstream a reload let go of
+  # (start_p) has started nothing: it is called off, as one in its handshake is.
+  if (my $waiting = delete $self->{waiting}) {
+    delete $self->{start_promise};
+    $self->state('stopped');
+    $self->log->debug("[@{[$self->name]}] start called off by a stop");
+    $waiting->reject("upstream @{[$self->name]}: stopped");
+    return $self;
+  }
   return $self unless $self->{pid};
   my $child = $self->{child};
   $self->{stopping} = 1;
@@ -678,6 +715,12 @@ resolves once it is gone, and the daemon waits for that on shutdown. A child
 that closes its stdout but goes on running can never answer again, and is
 killed after five seconds. Its exit status is collected without blocking the
 event loop, under L<Mojo::Reactor::EV> too (L<MCP::Hub::Child/watch_exit>).
+
+One child at a time holds across a reload as well. The upstream a reload builds
+for a changed server -- or for one removed and added again -- starts its child
+only once the child of the one it replaced is gone (L<MCP::Hub/predecessors>):
+until then its start is C<starting>, a call or a refresh joins it, and a stop
+calls it off before it spawns anything, as C<upstream NAME: stopped>.
 
 A request that can no longer reach the child -- a call let through just before
 a stop sent it EOF, or one after its stdout closed -- is not sent: it fails at

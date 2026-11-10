@@ -35,6 +35,10 @@ my $EOF_GRACE  = MCP::Hub::Upstream::Stdio->EOF_GRACE;
 my $KILL_GRACE = MCP::Hub::Upstream::Stdio->KILL_GRACE;
 my $SLACK      = 0.1;    # timer against clock, parent against child
 
+# Every spawn and every exit handled, as "spawn PID" and "exit PID", in order:
+# which of two children of a server ran when.
+my @EVENTS;
+
 # The status of every exit the upstream handles, by pid -- a deliberate one is
 # not logged.
 my %STATUS;
@@ -44,6 +48,7 @@ my %STATUS;
   *MCP::Hub::Upstream::Stdio::_on_exit = sub {
     my ($self, $status) = @_;
     $STATUS{$self->{pid}} = $status if $self->{pid};
+    push @EVENTS, "exit $self->{pid}" if $self->{pid};
     goto &$on_exit;
   };
 }
@@ -57,6 +62,7 @@ my %SPAWNED;
   my $attach = \&MCP::Hub::Upstream::Stdio::_attach;
   *MCP::Hub::Upstream::Stdio::_attach = sub {
     $SPAWNED{$_[1]} = 1;
+    push @EVENTS, "spawn $_[1]";
     goto &$attach;
   };
 }
@@ -597,6 +603,81 @@ subtest 'a call waiting on the child of an upstream a reload lets go of starts n
   is scalar(grep {/started/} @logged), 1, 'none at all' or diag explain [grep {/started/} @logged];
   ok +(grep { $_ eq 'debug [goes] no longer mounted, it starts no child' } @logged), 'it says why, at debug';
   await_bounded($hub->shutdown_p, 20);
+};
+
+# A reload stops the upstream it replaces, and its child is given seven seconds
+# after its EOF -- this one stays on for the first two, until its SIGTERM. Its
+# successor's child started at once, and the two ran side by side; it starts
+# once the old one is gone, however its start comes: a call (only the env
+# changed, so the manifest is shared and nothing is warmed), an always_on start,
+# or the warming fetch of an entry with no manifest of its own yet.
+for my $case (
+  [call      => {env  => {K187 => 1}}],
+  [always_on => {hub  => {always_on => \1}}],
+  [warming   => {args => ['-Ilib', "$ECHO"]}],
+) {
+  my ($how, $change) = @$case;
+  subtest "after a reload the child of a changed server starts once the old one is gone ($how)" => sub {
+    my $dir      = tempdir;
+    my $file     = $dir->child('config.json');
+    my $signals  = $dir->child('signals');
+    my $settings = {cache_dir => $dir->child('cache')->to_string};
+    my $entry    = {command => $^X, args => ['-Ilib', "$ECHO", "--signals=$signals", '--ignore-eof']};
+    $file->spew(encode_json({mcpServers => {stays => $entry}, hub => $settings}));
+    my $hub = MCP::Hub->new(log => log_to([]), hub_config_input => "$file");
+    my $old = $hub->upstreams_by_name->{stays};
+    my $mark = @EVENTS;
+    my $r    = await_bounded($old->start_p, 30);
+    ok !(ref $r eq 'HASH' && $r->{err}), 'the upstream started' or diag $r->{err};
+    my $pid = $old->stats->{pid};
+
+    $file->spew(encode_json({mcpServers => {stays => {%$entry, %$change}}, hub => $settings}));
+    my $t0 = Time::HiRes::time();
+    is_deeply $hub->reload->{changed}, ['stays'], 'a reload replaces it';
+    my $new = $hub->upstreams_by_name->{stays};
+    ok kill(0, $pid), 'its child is still running, after its EOF';
+    my $start = $how eq 'call' ? $new->call_tool('echo', {msg => 'the new child'}) : $new->start_p;
+    is $new->stats->{pid}, undef, 'the new upstream has no child yet';
+    is $new->state, 'starting', 'it is starting';
+
+    $r = await_bounded($start, 30);
+    if ($how eq 'call') { is $r->{content}[0]{text}, 'the new child', 'the call is answered' or diag explain $r }
+    else                { ok !(ref $r eq 'HASH' && $r->{err}), 'it is started' or diag explain $r }
+    my %who  = ($pid => 'old');
+    my @seen = map { my ($what, $p) = split / /; "$what " . ($who{$p} //= 'new') } @EVENTS[$mark .. $#EVENTS];
+    is_deeply [@seen[0 .. 2]], ['spawn old', 'exit old', 'spawn new'], 'by the old child, once it was gone'
+      or diag explain \@seen;
+    is scalar(grep {/^spawn/} @seen), 2, 'and by that one alone' or diag explain \@seen;
+    is scalar(terms($signals, $t0)), 1, 'which ended on its SIGTERM, as before';
+    await_bounded($hub->shutdown_p, 20);
+  };
+}
+
+subtest 'a start that waited for the old child and then fails leaves no rejection unhandled' => sub {
+  # The start's promise is its callers'. The wait handed it on to a promise of
+  # its own that no one held, and Mojo::Promise carped about that one as an
+  # unhandled rejection, on every start that failed after its wait.
+  my @warned;
+  local $SIG{__WARN__} = sub { push @warned, @_ };
+  my $dir      = tempdir;
+  my $file     = $dir->child('config.json');
+  my $settings = {cache_dir => $dir->child('cache')->to_string};
+  $file->spew(encode_json({
+    mcpServers => {stays => {command => $^X, args => ['-Ilib', "$ECHO", '--ignore-eof']}},
+    hub        => $settings,
+  }));
+  my $hub = MCP::Hub->new(log => log_to([]), hub_config_input => "$file");
+  my $old = $hub->upstreams_by_name->{stays};
+  my $r   = await_bounded($old->start_p, 30);
+  ok !(ref $r eq 'HASH' && $r->{err}), 'the upstream started' or diag $r->{err};
+
+  $file->spew(encode_json({mcpServers => {stays => {command => $^X, args => ['-e', 'exit 3']}}, hub => $settings}));
+  is_deeply $hub->reload->{changed}, ['stays'], 'a reload replaces it with one that cannot start';
+  $r = await_bounded($hub->upstreams_by_name->{stays}->start_p, 30);
+  ok ref $r eq 'HASH' && $r->{err}, 'whose start fails, once the old child is gone' or diag explain $r;
+  await_bounded($hub->shutdown_p, 20);
+  is_deeply [grep {/Unhandled rejected promise/} @warned], [], 'and no rejection is left unhandled'
+    or diag explain \@warned;
 };
 
 done_testing;

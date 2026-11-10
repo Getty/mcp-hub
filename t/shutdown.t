@@ -156,4 +156,49 @@ subtest 'a shutdown during a refresh calls the fetch off, it does not fail it' =
   is_deeply [grep { /^(?:warn|error|fatal) / } @logged], [], 'nor logged as a failure' or diag explain \@logged;
 };
 
+# A reload replaces an upstream whose child stays on after its EOF with an
+# always_on one, whose start waits for that child to be gone
+# (MCP::Hub/predecessors). A shutdown stops it meanwhile -- or a second reload
+# removes it: the start is called off and starts nothing, no child that
+# outlives the hub or that no one stops.
+for my $how (qw(shutdown reload)) {
+  subtest "a $how calls off a start waiting for the child of the upstream a reload replaced" => sub {
+    my $dir      = tempdir;
+    my $file     = $dir->child('config.json');
+    my $settings = {cache_dir => $dir->child('cache')->to_string};
+    my $entry    = {command => $^X, args => ['-Ilib', "$ECHO", '--ignore-eof']};
+    $file->spew(encode_json({mcpServers => {stays => $entry}, hub => $settings}));
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message');
+    $log->on(message => sub ($l, $level, @msg) { push @logged, "$level @msg" });
+    my $hub = MCP::Hub->new(log => $log, hub_config_input => "$file");
+    my $old = $hub->upstreams_by_name->{stays};
+    my $r   = await_bounded($old->start_p, 30);
+    ok $r->{ok}, 'the upstream started' or diag $r->{err};
+    my $pid = $old->stats->{pid};
+
+    $file->spew(encode_json({mcpServers => {stays => {%$entry, hub => {always_on => \1}}}, hub => $settings}));
+    is_deeply $hub->reload->{changed}, ['stays'], 'a reload replaces it';
+    my $new = $hub->upstreams_by_name->{stays};
+    my $start;
+    $new->start_p->then(sub { $start = 'started' }, sub ($err) { $start = $err });
+    is $new->state, 'starting', 'and the new upstream starts';
+    is $new->stats->{pid}, undef, 'once the old child is gone';
+
+    if ($how eq 'reload') {
+      $file->spew(encode_json({mcpServers => {}, hub => $settings}));
+      is_deeply $hub->reload->{removed}, ['stays'], 'a second reload removes it';
+    }
+    $r = await_bounded($hub->shutdown_p, 20);
+    ok $r->{ok}, 'the shutdown is over' or diag $r->{err};
+    ok !kill(0, $pid), 'the old child is reaped';
+    is $start, 'upstream stays: stopped', 'the start is called off';
+    is $new->state, 'stopped', 'the new upstream is stopped';
+    is $new->stats->{pid}, undef, 'with no child';
+    is scalar(grep {/\] started /} @logged), 1, 'none was started for it' or diag explain \@logged;
+    is_deeply [grep { /^(?:warn|error|fatal) / } @logged], [], 'nor is a failure logged' or diag explain \@logged;
+  };
+}
+
 done_testing;

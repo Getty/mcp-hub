@@ -289,7 +289,7 @@ sub _apply_config ($self, $new) {
 # it is stopped, and an in-process class empties its server's lists), and hold
 # on to it until what the stop set in motion is over -- a child given up to
 # seven seconds after its EOF, a container still being removed -- so that
-# shutdown_p waits for it too.
+# shutdown_p waits for it too, and the new start of the server (predecessors).
 sub _let_go ($self, $up) {
   $up->let_go;
   my $key    = refaddr $up;
@@ -297,6 +297,10 @@ sub _let_go ($self, $up) {
   $self->{leaving}{$key} = $up;
   $up->stopped_p->then($forget, $forget);
   return $self;
+}
+
+sub predecessors ($self, $name) {
+  return grep { $_->name eq $name } values %{$self->{leaving} // {}};
 }
 
 sub schedule_reload ($self, $reason = 'a request') {
@@ -987,6 +991,16 @@ needed and silent where it is not (see L</cli>).
 The C<< {mcpServers => {...}} >> structure an agent needs, one HTTP entry per
 server the profile allows. Behind C<mcp-hub config>.
 
+=method predecessors
+
+  my @old = $hub->predecessors('wiki');
+
+The upstreams of that name a L</reload> replaced or removed whose stop is not
+over yet: their L<MCP::Hub::Upstream/stopped_p> has not settled. The start of a
+stdio or forked upstream of the same name waits for them
+(L<MCP::Hub::Upstream::Stdio>), so that the old child and the new never run
+side by side.
+
 =method refresh_p
 
   $hub->refresh_p->then(sub ($counts) { ... });
@@ -1076,6 +1090,14 @@ C<upstream NAME: stopped> and starts no child. An in-process class entry's
 server has its tools, prompts and resources emptied
 (L<MCP::Hub::Upstream/let_go>), so that an instance whose tools close over it
 is freed; a stop alone never does that.
+
+The new upstream of a changed server -- or of one removed and added again --
+starts its stdio child or forked worker only once that stop is over: its
+warming fetch, its C<always_on> start, a call or a refresh waits for it, up to
+those seven seconds, so that the old child and the new never run side by side
+(L</predecessors>). The reload itself waits for nothing. A stop -- another
+reload, or L</shutdown_p> -- calls such a waiting start off, and it starts
+nothing.
 
 C<profiles>, C<clients> and C<public_profile> are swapped in one step before any
 of that, so from a request's point of view the new access rules -- including a
