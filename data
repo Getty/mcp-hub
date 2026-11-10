@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-10T05:58:15Z
+id: 188
+priority: low
+started: 2026-11-10T16:01:53Z
+status: todo
+tags:
+- reload
+- lifecycle
+title: A reload leaves clients listening on a dropped endpoint connected, receiving
+  only keepalives
+updated: 2026-11-10T16:01:53Z
+---
+
+Found by mcp-hub-worker during k92/k104 (2026-11-10). A client holding subscriptions/listen open on the endpoint of an upstream that a reload replaced or removed stays connected until it hangs up; it gets heartbeats only, never a list_changed from the successor. Upstream::let_go (k104) is the seam where its transport's subscriptions could be closed, so the client reconnects to the new server. Done when a reload closes them, with a test.
