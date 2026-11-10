@@ -123,7 +123,7 @@ One JSON file. Location: `--config PATH`, else `$MCP_HUB_CONFIG`, else `~/.confi
 
 ### `mcpServers` entries
 
-Exactly one of `command`, `class` or `url` is required.
+Exactly one of `command`, `class`, `url`, `docker` or `compose` is required; a `compose` entry may also carry `url`, as its address. A key that does not apply to the entry's kind is refused with its JSON path (`'args' does not apply to a 'url' entry, …`), and so is `hub.fork` on anything but a `class` entry.
 
 | Key | Meaning |
 |---|---|
@@ -185,7 +185,7 @@ Tokens are compared in constant time (`Crypt::Misc::slow_eq`, already a dependen
 
 All MCP routes sit under one `under` that runs `MCP::Hub::Auth`: it resolves the profile, stores it in the stash, answers 401/404, and passes through otherwise.
 
-An upstream whose manifest is not available yet (still fetching at startup) or that is `failed` answers **503** with `{"error": "…"}` so that `claude mcp list` shows the failure with the URL instead of a server with zero tools.
+An upstream whose manifest is not available yet (still fetching at startup, or no tool list yet: the answer says to run `mcp-hub refresh <name>`) or that is `failed` (the answer carries the reason) answers **503** with `{"error": "…"}` so that `claude mcp list` shows the failure with the URL instead of a server with zero tools.
 
 ## Upstreams
 
@@ -234,9 +234,9 @@ stopped ──start_p──▶ starting ──handshake ok──▶ ready ──
 
 - **Lazy start.** At daemon start a stdio upstream with a fresh cached manifest is `stopped` with a façade built from the cache; nothing is spawned. Without a cached manifest (or with a stale one, see below) it is started once in the background to fetch it; the daemon does not wait for that.
 - **On demand.** The first `tools/call`, `prompts/get` or `resources/read` calls `start_p` and queues behind it; further calls during `starting` queue on the same promise.
-- **Idle.** Every request calls `touch`. When the timer fires: close stdin, `SIGTERM`, after 5 s `SIGKILL`, reap with `waitpid`. `always_on` upstreams are started at daemon start and have no idle timer.
-- **Crash.** On unexpected exit all pending promises are rejected (the façade turns that into an error result for the agent), state becomes `stopped`, and the next call starts the process again. Three exits within 5 s of their start mark the upstream `failed`; its endpoint answers 503 until `refresh` succeeds.
-- **Shutdown.** `SIGINT`/`SIGTERM` to the daemon stops every child the same way before exiting.
+- **Idle.** Every request calls `touch`. When the timer fires: close stdin and give the child 2 s to exit on that EOF, then `SIGTERM`, and `SIGKILL` 5 s after that; reap with `waitpid`. `always_on` upstreams are started at daemon start and have no idle timer.
+- **Crash.** On unexpected exit all pending promises are rejected (the façade turns that into an error result for the agent), state becomes `stopped`, and the next call starts the process again. Three exits within 5 s of their start mark the upstream `failed`; its endpoint answers 503 until `refresh` succeeds. A first manifest fetch that fails (no cached manifest to fall back on) marks it `failed` at once, with the reason.
+- **Shutdown.** `SIGINT`/`SIGTERM` to the daemon stops every upstream the same way and waits, at most 20 s, for its stdio children and forked workers to exit and its containers to be removed before exiting.
 
 ### `MCP::Hub::Upstream::Perl`
 
@@ -306,7 +306,7 @@ Dates are ISO 8601; `since`/`until` accept `YYYY-MM-DD` or a full timestamp, and
 |---|---|
 | `list_running_sessions` | `[{pid, cwd, project, session_id, started_at, last_activity, last_prompt, git_branch}]` |
 
-Process discovery: `/proc/*/comm` equal to `claude` (or `pgrep -x claude` as fallback), `cwd` from `/proc/<pid>/cwd`. The session is the newest `.jsonl` in the project directory matching that `cwd`; `last_prompt` is the most recent `user` line's text. Linux only; on other systems the tool returns an error result saying so.
+Process discovery: `/proc/*/comm` equal to `claude` (no `pgrep`: it reads the same names), `cwd` from `/proc/<pid>/cwd`. The session is the newest `.jsonl` in the project directory matching that `cwd`; `last_prompt` is the most recent `user` line's text. Linux only; on other systems the tool returns an error result saying so.
 
 ### `MCP::Hub::Native::Status`
 
@@ -337,12 +337,12 @@ Mojolicious commands; `--config` and `MCP_HUB_CONFIG` apply to all of them.
 |---|---|---|
 | Unknown path / server not in profile | 404 | — |
 | Missing or wrong token (clients mode) | 401 + `WWW-Authenticate: Bearer` | log at `info` |
-| Upstream still fetching its first manifest, or `failed` | 503 `{"error": …}` | — |
+| Upstream still fetching its first manifest, `failed` (with the reason), or with no tool list yet (`run 'mcp-hub refresh <name>'`) | 503 `{"error": …}` | — |
 | Tool denied by profile | "Tool not found" (`-32602`, as for any unknown tool) | — |
 | Upstream returns JSON-RPC error | error result: `upstream <name>: <message>` | count in `errors` |
 | Upstream timeout | error result: `upstream <name>: timed out after <n>s` | `notifications/cancelled`, count |
 | Upstream crashes mid-call | error result: `upstream <name>: exited (<signal or code>)` | `stopped`, restart on next call |
-| Upstream cannot start (exec fails, handshake error) | error result / 503 | log at `error`, `failed` after 3 quick exits |
+| Upstream cannot start (exec fails, handshake error) | error result / 503 | log at `error`; `failed` after 3 quick exits, or at once with the reason when it was the first manifest fetch |
 | Config invalid | daemon refuses to start with the message and the JSON path (`mcpServers.playwright.hub.idle_timeout`) | — |
 
 Secrets stay out of the log: `env` values are never logged and tokens are never echoed; the `config` command is the one place that prints a token, by design.

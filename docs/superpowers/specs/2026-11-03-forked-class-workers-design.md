@@ -335,8 +335,8 @@ cannot detect that, so the POD has to say it.
 
 All of this works as for stdio:
 
-- **Idle stop.** Idle leads to `stop`: the worker gets EOF and TERM, then KILL after
-  `KILL_GRACE`.
+- **Idle stop.** Idle leads to `stop`: the worker gets EOF, TERM if it has not exited
+  `EOF_GRACE` (2 s) later, then KILL after `KILL_GRACE` (5 s).
 - **Next call.** The next call forks a new worker from the hub as it is at that
   moment. That also resets the worker's copy-on-write erosion.
 - **Crash loop.** Three exits within `fail_window` make the upstream `failed`, which
@@ -346,8 +346,9 @@ All of this works as for stdio:
 
 ### Shutdown and SIGTERM
 
-**Normal shutdown.** `shutdown_p` stops every upstream, and a worker gets EOF and
-TERM. In the prototype the worker was gone in 51–53 ms, even in the middle of a
+**Normal shutdown.** `shutdown_p` stops every upstream, a worker as in an idle stop
+(EOF, TERM after the grace), and waits for the workers to exit, bounded by the
+daemon's 20 s. In the prototype, which sent EOF and TERM together, the worker was gone in 51–53 ms, even in the middle of a
 1.5 s libgit2 call. Without the signal reset it took 1247 ms: the inherited Mojo TERM
 handler runs at Perl level and is deferred until the XS call returns.
 
@@ -356,7 +357,8 @@ worker reads EOF after its current call and exits. That follows from the transpo
 read loop; it was not measured. The worker's stderr pipe then has no reader, and
 because SIGPIPE is ignored, a write to it fails instead of killing the worker.
 
-**A risk to fix separately.** Today's `stop` sends TERM together with EOF. For a
+**A risk, fixed since (k39).** `stop` now sends EOF first and TERM only after a 2 s
+grace, for every child. Before that, as this section was written: `stop` sent TERM together with EOF. For a
 worker, and equally for a stdio mcp-wiki, that can kill a git commit halfway. It may
 then leave `.git/index.lock` behind, after which every write fails until the file is
 removed. That is libgit2's lock-file behaviour; it was not reproduced here, and the
@@ -369,7 +371,7 @@ design.
 - **The worker ignores HUP**; only the hub reloads.
 - **Unchanged entry:** the upstream and its running worker stay, as today.
 - **Changed entry** (`class`, `args` or `hub.*`): the old upstream is stopped (the
-  worker gets EOF and TERM) and a new one is built. That means a new throwaway
+  worker gets EOF, TERM after the grace) and a new one is built. That means a new throwaway
   instance and a new manifest, and no worker until the next call.
 - **Added entry:** its class is loaded at that point.
 - **Class code is never reloaded.** `require` of an already-loaded module does
@@ -765,9 +767,9 @@ All six questions were answered with the recommendation:
   class from the packed binary, check that a lazy `require` in the worker reads the
   archive through its reopened fds, and check that the hub's offset is unmoved
   (premise corrected in **The packed binary**).
-- **Stop children with EOF first, TERM after a grace.** Today's `stop` sends TERM
-  together with EOF and can kill a git commit halfway (`index.lock` left behind).
-  This applies to stdio as much as to fork.
+- **Stop children with EOF first, TERM after a grace.** Done with k39: `stop` sends
+  EOF, TERM 2 s later, KILL 5 s after that, for stdio as much as for fork. Before, TERM
+  came together with EOF and could kill a git commit halfway (`index.lock` left behind).
 - **Research: `Native::ClaudeHistory` as a fork candidate.** Its synchronous
   slurp and search run in the hub's loop. Measure the stall on a large history, then
   decide.

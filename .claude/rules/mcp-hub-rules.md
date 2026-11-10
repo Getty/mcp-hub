@@ -47,8 +47,8 @@ release.
 - **The façade must not drop `extra`.** `title`/`icons`/`_meta` ride on `Facade::Tool` and are
   re-merged by `Facade::Server`.
 - **Manifest hash covers `[command, args, cwd]`, never `env`.** HTTP upstreams hash `[url, type]`.
-- **404 / 401 / 503 carry meaning** (server-not-in-profile / bad-token / still-fetching) — never
-  collapse them to an empty tool list.
+- **404 / 401 / 503 carry meaning** (server-not-in-profile / bad-token / still-fetching, failed
+  with its reason, or no tool list yet) — never collapse them to an empty tool list.
 - **Config surface stays JSON-expressible** — new knobs go in the `hub`/entry JSON with a clear
   error and JSON path, not as `bin/mcp-hub` flags (except global `--config`).
 - **`prove -l t/` is non-recursive** and silently skips `t/native/` and `t/upstream/` — the green
