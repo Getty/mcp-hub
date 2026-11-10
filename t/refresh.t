@@ -60,13 +60,17 @@ sub log_to ($lines) {
   return $log;
 }
 
+# The request timeout only bounds a request that never ends: on a loaded host
+# the child's perl start alone takes seconds before it answers its initialize,
+# and a start -- or a call that starts the next child -- that a short timeout
+# cut off failed where no test meant it to. A child's start is awaited as long.
 sub upstream (%attr) {
   my $dir = tempdir;
   return MCP::Hub::Upstream::Stdio->new(
     name            => 'echo',
     config          => {type => 'stdio', command => $^X, args => ['-Ilib', "$ECHO"]},
     cache_dir       => "$dir",
-    request_timeout => 2,
+    request_timeout => 30,
     log             => log_to([]),
     %attr,
   );
@@ -96,20 +100,24 @@ subtest 'a refresh cut short keeps the manifest, an error answer is an empty lis
     # The server's answer: an error, for a method it does not know.
     'the child answers with an error' => sub ($up, $send, $method, @rest) { $send->('prompts/nope', @rest) },
     'the child is stopped'            => sub ($up, $send, @request) { $up->stop; $send->(@request) },
-    'the prompts/list times out'      => sub ($up, $send, @request) {
-      my $timeout = $up->request_timeout;
-      $up->request_timeout(0.2);    # the child takes 0.5 s over each list
+    # The child is held (SIGSTOP) until its prompts/list has timed out: it
+    # cannot answer in time, however late a loaded host lets the loop get to the
+    # timeout. One that was only slower than the timeout had its answer in by
+    # then, and Mojo::Reactor::Poll reads an answer before it runs a timer.
+    'the prompts/list times out' => sub ($up, $send, @request) {
+      my ($pid, $timeout) = ($up->{pid}, $up->request_timeout);
+      kill 'STOP', $pid;
+      $up->request_timeout(0.2);
       my $p = $send->(@request);
       $up->request_timeout($timeout);
-      return $p;
+      return $p->finally(sub { kill 'CONT', $pid });
     },
   );
   for my $how (sort keys %how) {
     my $answered = $how eq 'the child answers with an error';
     my $up       = upstream;
-    is await_bounded($up->start_p), $up, "$how: started";
+    is await_bounded($up->start_p, 30), $up, "$how: started";
     is_deeply names($up->server->prompts), ['greet'], "$how: the prompts are listed";
-    await_bounded($up->call_tool('slow_lists', {seconds => 0.5})) if $how =~ /times out/;
 
     # A tool the refresh is to find, and the hook for its prompts/list.
     await_bounded($up->call_tool('notify', {what => 'tools', quiet => \1}));
@@ -153,8 +161,8 @@ subtest 'a refresh is bound to the child it began on' => sub {
   # request waited out the request timeout. It fails at once instead, once the
   # child it began on is gone.
   for my $how ('a call starts the next child', 'nothing follows') {
-    my $up = upstream(request_timeout => 5);
-    is await_bounded($up->start_p), $up, "$how: started";
+    my $up = upstream;
+    is await_bounded($up->start_p, 30), $up, "$how: started";
     my $first = $up->{pid};
 
     # The refresh's tools/list is answered; the answer is held back.
@@ -174,7 +182,7 @@ subtest 'a refresh is bound to the child it began on' => sub {
     await_bounded($up->stopped_p);
     ok !$up->{pid}, "$how: the child it began on is gone";
     if ($how eq 'a call starts the next child') {
-      my $res = await_bounded($up->call_tool('notify', {what => 'prompts', quiet => \1}));
+      my $res = await_bounded($up->call_tool('notify', {what => 'prompts', quiet => \1}), 30);
       is $res->{content}[0]{text}, 'notified', "$how: a call is answered";
       ok $up->{pid} && $up->{pid} != $first, "$how: by a new child";
     }
