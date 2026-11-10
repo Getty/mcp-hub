@@ -403,3 +403,5 @@ Revision history for MCP-Hub
     hub answers.
   - A reload frees the server of every upstream it replaces or removes; each
     one served on its endpoint stayed in memory for the life of the daemon.
+  - A reload also frees the instance of an in-process class whose tools close
+    over it; a class that is only stopped keeps serving all its tools.

@@ -33,6 +33,54 @@ use lib curfile->sibling('lib')->to_string;
 
 my $ECHO = curfile->sibling('upstream', 'echo.pl')->to_string;
 
+# In-process classes written the usual way: each tool, prompt and resource
+# closes over the instance -- a cycle through its own server. One is the server
+# itself, the other holds it (option (a)). Their tool `later` answers after
+# `seconds`, from the loop.
+package ClosingServer {
+  use Mojo::Base 'MCP::Server', -signatures;
+
+  sub new ($class, @args) {
+    my $self = $class->SUPER::new(name => 'closing-server', @args);
+    ClosingHolder::register($self, $self);
+    return $self;
+  }
+}
+
+package ClosingHolder {
+  use Mojo::Base -base, -signatures;
+  use Mojo::IOLoop;
+  use Mojo::Promise;
+
+  has server => sub ($self) {
+    my $server = MCP::Server->new(name => 'closing-holder');
+    register($server, $self);
+    return $server;
+  };
+
+  sub register ($server, $self) {
+    $server->tool(
+      name         => 'whoami',
+      description  => 'Name the instance',
+      input_schema => {type => 'object'},
+      code         => sub ($tool, $args) { return $tool->text_result(ref $self) },
+    );
+    $server->tool(
+      name         => 'later',
+      description  => 'Name the instance after a while',
+      input_schema => {type => 'object', properties => {seconds => {type => 'number'}}},
+      code         => sub ($tool, $args) {
+        my $promise = Mojo::Promise->new;
+        Mojo::IOLoop->timer($args->{seconds} // 0 => sub { $promise->resolve($tool->text_result(ref $self)) });
+        return $promise;
+      },
+    );
+    $server->prompt(name => 'hello', code => sub ($prompt, $args) { return $prompt->text_prompt('Hello from ' . ref $self) });
+    $server->resource(uri => 'closing://me', name => 'me', code => sub ($resource) { return $resource->text_resource(ref $self) });
+    return $server;
+  }
+}
+
 # What every cached manifest lists: a tool, a prompt and a resource -- each
 # with the extras the facade must carry -- named as the echo server names them,
 # so that a call started from it reaches a real child.
@@ -338,6 +386,73 @@ subtest 'a reload frees the instance of a class entry it removes' => sub {
   is_deeply [sort @{$app->reload->{removed}}], [sort keys %classes], 'every one of them was removed';
   is_deeply alive_after($upstreams), [], 'their upstreams are freed';
   is_deeply alive_after(\%instances), [], 'and so are their instances';
+};
+
+# A class whose tools close over its instance would keep it alive for good: a
+# reload that drops its entry empties its server's lists, which breaks the
+# cycle. A call already under way finishes, and its answer comes from the
+# instance it began on. The replacement is a new instance, with all of its own.
+subtest 'a reload frees a class entry whose tools close over its instance' => sub {
+  for my $how (qw(removed replaced)) {
+    my $dir     = tempdir;
+    my %classes = (server => {class => 'ClosingServer'}, holder => {class => 'ClosingHolder'});
+    my %changed = map { $_ => {%{$classes{$_}}, args => {version => '2'}} } keys %classes;
+    my $app     = hub_for($dir, \%classes);
+    my $t       = Test::Mojo->new($app);
+
+    my $all = client($t, '/all');
+    for my $name (sort keys %classes) {
+      my $class = $classes{$name}{class};
+      is client($t, "/$name")->call_tool('whoami')->{content}[0]{text}, $class, "$how: /$name answers";
+      is $all->call_tool("${name}__whoami")->{content}[0]{text}, $class, "$how: /all answers for $name";
+      is client($t, "/$name")->get_prompt('hello')->{messages}[0]{content}{text}, "Hello from $class",
+        "$how: /$name gives its prompt";
+      is client($t, "/$name")->read_resource('closing://me')->{contents}[0]{text}, $class,
+        "$how: /$name reads its resource";
+    }
+
+    my $upstreams = weak_refs($app, keys %classes);
+    my %instances;
+    weaken($instances{$_} = $app->upstreams_by_name->{$_}{instance}) for keys %classes;
+
+    my $summary;
+    Mojo::IOLoop->timer(0.3 => sub {
+      write_config($dir, $how eq 'removed' ? {} : \%changed);
+      $summary = $app->reload;
+    });
+    my $result = client($t, '/server')->call_tool('later', {seconds => 1});
+    is_deeply [sort @{$summary->{$how eq 'removed' ? 'removed' : 'changed'}}], [sort keys %classes],
+      "$how: both were $how while a call ran";
+    is $result->{content}[0]{text}, 'ClosingServer', "$how: the call under way still answered";
+
+    is_deeply alive_after($upstreams), [], "$how: their upstreams are freed";
+    is_deeply alive_after(\%instances), [], "$how: and so are their instances";
+
+    next unless $how eq 'replaced';
+    for my $name (sort keys %classes) {
+      is client($t, "/$name")->call_tool('whoami')->{content}[0]{text}, $classes{$name}{class},
+        "/$name: the replacement serves its own tools";
+    }
+  }
+};
+
+# Only a reload lets go of an in-process class, never a stop. It has no idle
+# timer of its own -- the stop here is the one a forked class's timer sends --
+# and a stop leaves it serving everything it has.
+subtest 'an in-process class that is stopped keeps its tools' => sub {
+  my $dir = tempdir;
+  my $app = hub_for($dir, {server => {class => 'ClosingServer'}});
+  my $t   = Test::Mojo->new($app);
+  my $up  = $app->upstreams_by_name->{server};
+
+  $up->stop;
+  $up->stopped_p->wait;
+  is $up->state, 'ready', 'it is still ready';
+  is scalar @{$up->server->tools}, 2, 'with both of its tools';
+  is client($t, '/server')->call_tool('whoami')->{content}[0]{text}, 'ClosingServer', 'the next call is answered';
+  is client($t, '/all')->call_tool('server__whoami')->{content}[0]{text}, 'ClosingServer', 'on /all too';
+  is client($t, '/server')->read_resource('closing://me')->{contents}[0]{text}, 'ClosingServer',
+    'and its resource is read';
 };
 
 # What a native's tool answers when it outlived its server -- something held on

@@ -71,6 +71,11 @@ sub start_p ($self) {
 sub stop      ($self) { return $self }
 sub refresh_p ($self) { return Mojo::Promise->resolve($self) }
 
+# The hub lets go of this upstream for good: a reload replaced it or removed its
+# entry (MCP::Hub::_let_go). It is stopped. A stop alone is never that -- the
+# idle timer's, say, which the next call starts the upstream again from.
+sub let_go ($self) { return $self->stop }
+
 # A failure the hub decided on from outside: a fetch that left the upstream
 # with no manifest. It goes into the flag the lifecycle subclasses keep their
 # own crash-loop verdict in, so their later state changes -- the exit of a child
@@ -581,6 +586,15 @@ crash loop, L</start_p> then rejects and only L</refresh_p> clears it.
   my $promise = $up->get_prompt($name, $args);
 
 Forward a C<prompts/get>, starting the upstream if needed.
+
+=method let_go
+
+  $up->let_go;
+
+What L<MCP::Hub/reload> does to an upstream it replaced or removed: let go of
+it for good. Here that is L</stop>; L<MCP::Hub::Upstream::Perl/let_go> also
+empties the lists of its class's server. A stop alone -- the idle timer's, which
+the next call starts the upstream again from -- is never a C<let_go>.
 
 =method manifest_fetched_at
 

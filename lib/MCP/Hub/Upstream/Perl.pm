@@ -16,6 +16,18 @@ sub start_p   ($self) { return Mojo::Promise->resolve($self) }
 sub stop      ($self) { return $self }
 sub refresh_p ($self) { return Mojo::Promise->resolve($self) }
 
+# A class's tools, prompts and resources commonly close over its instance -- a
+# cycle through its own server, which would keep the instance alive after a
+# reload dropped its entry. So letting go of it empties the server's lists, as
+# Upstream::Fork does for its throwaway manifest instance. Only then: a stop is
+# no reason, the instance serves on after one. A call under way holds what it
+# runs, and finishes.
+sub let_go ($self) {
+  $self->SUPER::let_go;
+  $self->server->$_([]) for qw(tools prompts resources);
+  return $self;
+}
+
 sub _load ($self) {
   my $target = $self->_load_class;
 
@@ -69,11 +81,21 @@ If the class has a C<hub> attribute -- as L<MCP::Hub::Native::Status> does -- th
 L<MCP::Hub> instance is injected into its constructor.
 
 The state is always C<ready>; L<MCP::Hub::Upstream/stop> and
-L<MCP::Hub::Upstream/refresh_p> are no-ops.
+L<MCP::Hub::Upstream/refresh_p> are no-ops. A stopped instance serves on with
+all its tools.
 
 =head1 METHODS
 
 L<MCP::Hub::Upstream::Perl> inherits all methods from L<MCP::Hub::Upstream>.
+
+=method let_go
+
+Called when a reload replaced or removed the entry: empties the server's
+tools, prompts and resources, so it serves nothing from then on. Tools that
+close over their instance -- the usual way to write one -- are a cycle through
+the server, which kept the instance alive after the reload; emptying the lists
+breaks it, as L<MCP::Hub::Upstream::Fork> does for its manifest instance. A call
+already under way finishes. Only a reload does this, never a stop.
 
 =method start_p
 

@@ -273,11 +273,13 @@ sub _apply_config ($self, $new) {
   return $summary;
 }
 
-# Stop an upstream a reload replaced or removed, and hold on to it until what
-# the stop set in motion is over -- a child given up to seven seconds after its
-# EOF, a container still being removed -- so that shutdown_p waits for it too.
+# Let go of an upstream a reload replaced or removed (MCP::Hub::Upstream/let_go:
+# it is stopped, and an in-process class empties its server's lists), and hold
+# on to it until what the stop set in motion is over -- a child given up to
+# seven seconds after its EOF, a container still being removed -- so that
+# shutdown_p waits for it too.
 sub _let_go ($self, $up) {
-  $up->stop;
+  $up->let_go;
   my $key    = refaddr $up;
   my $forget = sub { delete $self->{leaving}{$key} };
   $self->{leaving}{$key} = $up;
@@ -1054,7 +1056,9 @@ L</shutdown_p> waits for that too, as for the upstreams the hub still has. A
 start of it that was under way, or a refresh, goes on to its end, but what it
 finds is not applied: it goes neither into the manifest cache -- which the new
 upstream shares when only the entry's C<env> changed -- nor to any listener, on
-the server's endpoint or on C</all>.
+the server's endpoint or on C</all>. An in-process class entry's server has its
+tools, prompts and resources emptied (L<MCP::Hub::Upstream/let_go>), so that an
+instance whose tools close over it is freed; a stop alone never does that.
 
 C<profiles>, C<clients> and C<public_profile> are swapped in one step before any
 of that, so from a request's point of view the new access rules -- including a

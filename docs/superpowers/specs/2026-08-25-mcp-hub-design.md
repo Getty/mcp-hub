@@ -240,7 +240,7 @@ stopped ──start_p──▶ starting ──handshake ok──▶ ready ──
 
 ### `MCP::Hub::Upstream::Perl`
 
-Loads `class`, calls `new(%$args)` (plus `hub => $hub` when `$class->can('hub')`), stores the instance as `server`. State is always `ready`; `stop` and `refresh_p` are no-ops. There is no manifest because the instance answers `tools/list` itself.
+Loads `class`, calls `new(%$args)` (plus `hub => $hub` when `$class->can('hub')`), stores the instance as `server`. State is always `ready`; `stop` and `refresh_p` are no-ops. A reload that replaces or removes the entry calls `let_go`, which also empties the server's tools, prompts and resources, so an instance whose tools close over it is freed. There is no manifest because the instance answers `tools/list` itself.
 
 ## Manifest cache
 
