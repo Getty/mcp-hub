@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-11-10T04:19:02Z
+created: 2026-11-03T18:39:47Z
+id: 35
+priority: high
+started: 2026-11-10T02:05:39Z
+status: done
+tags:
+- release
+- binary
+- docs
+title: 'Release gate: README ''Standalone binary'' promises assets only dzil-binary@v1
+  delivers'
+updated: 2026-11-10T13:55:21Z
+---
+
+The README section added with k28 promises the install.sh one-liner, per-platform assets, SHA256SUMS and the glibc 2.28 floor. All of these exist only once the [@Author::GETTY] bundle ships dzil-binary@v1 (with an AlmaLinux-8-based packing perl) and mcp-hub sets 'binary = mcp-hub'. No mcp-hub release before that, or the section must be cut back first. The release-manager's pre-release audit checks this.
+
+Committed as 46e33fb on binary-form (local, not pushed, not merged). Built against bundle 0.328/ace48ca (k32): verify OK, smoke OK. Before a release: the bundle's binary-v1 ref must exist (binaries.yml pins @binary-v1), binaries.yml must reach the default branch for a probe run; lib-gate.pl passes only on the leg build (dev-box build: libcrypt, system libssl/libz/libzstd, glibc 2.38); macOS and AlmaLinux smokes untested.
+
+46e33fb is now 1235e6d (trailer reworded to the brief's Opus 5.5 line; tree, author and dates unchanged; backup refs/backup/k35-sonnet-5d2b342).
+
+2026-11-10: binary-form rebased onto main 93dede9 (backup refs/backup/binary-form-pre-rebase-8722d92): k35 is affdaed, k54 fde9565. mcp-hub-binary-worker rebuilt on bundle 0.328: 289 -M, binary 14,557,465 bytes, verify OK, smoke OK (also in debian:trixie-slim without perl); lib/MCP/Hub/Endpoint.pm (k88) is the only new packed module; in-process and forked calls answer text/event-stream packed. lib-gate.pl fails on the dev-box build as at k35 (system libssl/libcrypto/libz/libzstd/libcrypt, glibc 2.38 vs floor 2.28) -- expected there, not a pass. Still untested: macOS and AlmaLinux smokes, the CI leg's lib-gate.
+
+binary-form after the rebase: doc fixes committed as 2c51979 (spec) and 9d2b518 (skill, agent)
