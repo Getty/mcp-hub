@@ -557,7 +557,8 @@ entry exactly as to a `class` entry.
 - **Size:** about +3.8 MB on the 13.2 MB binary (Raw.so is 3.5 MB deflated, plus
   0.3 MB of `.pm` files).
 - **A different libgit2:** the CPAN build of Git::Raw links libssh2 and
-  `libcrypto.so.3`, which fails `scripts/check-binary-libs.sh`. Packing would need a
+  `libcrypto.so.3`, which fails the binary's runtime-lib check (then
+  `scripts/check-binary-libs.sh`, now the bundle's `lib-gate.pl`). Packing would need a
   static libgit2 without SSL.
 - **Release coupling:** each hub release would carry a pinned mcp-wiki, so every
   mcp-wiki fix would need a hub release.
