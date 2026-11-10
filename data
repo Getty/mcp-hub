@@ -1,0 +1,18 @@
+---
+class: standard
+created: 2026-11-10T05:58:21Z
+id: 189
+priority: low
+started: 2026-11-10T16:01:58Z
+status: todo
+tags:
+- transport
+- ev
+title: A tool that dies after blocking past the inactivity timeout still loses its
+  answer under EV
+updated: 2026-11-10T16:01:58Z
+---
+
+Found by mcp-hub-worker during k88 (2026-11-10). k88 streams an in-process call's result, which turns off the inactivity timeout; an error answer with its own status (a tool that dies, 500) still goes out as rendered JSON, so under Mojo::Reactor::EV it is lost as before when the call held the loop past MOJO_INACTIVITY_TIMEOUT. Streaming it would turn the 500 into a 200 with an error in the stream. Maintainer decision. Root cause: Mojo's EV reactor re-arms the timer with libev's cached clock from before a blocking callback; reporting that on Mojolicious' tracker is a public-tracker action and needs the maintainer's word.
+
+Maintainer-Entscheidung 2026-11-10: ändern: auch Fehlerantworten eines In-Process-Calls werden gestreamt (200 mit dem JSON-RPC-Fehler im Stream statt gerenderter 500), damit sie unter EV nicht verloren gehen. Meldung an Mojolicious: nicht von uns, bleibt beim Maintainer.
