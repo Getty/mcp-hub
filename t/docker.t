@@ -1370,6 +1370,65 @@ subtest 'compose: what the service waits for is ready before the handshake' => s
   is_deeply \@unhandled, [], 'a wait that fails or is stopped leaves no promise rejection unhandled';
 };
 
+subtest 'compose: a start that waits on a dependency says what for, in the log and the status' => sub {
+  # Rootless Podman runs no healthchecks, so a service_healthy dependency is
+  # never healthy there, and the start waited without a word (k27). It still
+  # waits -- compose sets no bound either, and a stop ends it -- but says so.
+  my $fake = fake_docker;
+  my %svc  = (
+    tool => {'x-kind' => 'stdio', depends_on => {
+      db      => {condition => 'service_healthy'},
+      migrate => {condition => 'service_completed_successfully'},
+    }},
+    db      => {'x-kind' => 'idle', healthcheck => {test => ['CMD', 'true']}, 'x-healthy-after' => 3600},
+    migrate => {'x-kind' => 'oneshot', 'x-runtime' => 3600},
+  );
+  my $dir   = compose_project(%svc);
+  my $polls = sub { scalar grep { $_->{cwd} eq $dir && "@{$_->{argv}}" =~ /^compose ps -a/ } @{calls($fake)} };
+  my $warns = sub ($name) { [grep {/^warn: \[\Q$name\E\] still waiting/} @LOG] };
+  my $both  = qr/db to be healthy \(running, health starting\), migrate to complete \(running\)/;
+
+  my $default = upstream($fake, {compose => $dir, service => 'tool'}, name => 'default');
+  is $default->depends_warn_after,    30, 'by default the first warning comes after 30 s';
+  is $default->depends_warn_interval, 60, 'and another one every 60 s';
+
+  # The status says it from the first look on; the log only once it is long.
+  my $quiet = upstream($fake, {compose => $dir, service => 'tool'}, name => 'quiet', depends_warn_after => 3600);
+  my $err;
+  $quiet->start_p->catch(sub ($e) { $err = $e });
+  ok wait_until(sub { $polls->() >= 2 }, 60), 'it waits';
+  my $row = $quiet->status_row;
+  is $row->{state}, 'starting', 'starting';
+  like $row->{waiting_for}, qr/^$both\z/, 'the status names each dependency it waits for, its state and health';
+  is_deeply $warns->('quiet'), [], 'the log says nothing before depends_warn_after';
+  $quiet->stop;
+  ok wait_until(sub { defined $err }, 30), 'a stop still ends the wait';
+  is $err, 'upstream quiet: stopped', 'as stopped';
+  ok !exists $quiet->status_row->{waiting_for}, 'and the status no longer says it waits';
+
+  # A long wait: a warning, and another after depends_warn_interval.
+  my $loud = upstream($fake, {compose => $dir, service => 'tool'}, name => 'loud',
+    depends_warn_after => 1, depends_warn_interval => 1);
+  undef $err;
+  $loud->start_p->catch(sub ($e) { $err = $e });
+  ok wait_until(sub { @{$warns->('loud')} >= 2 }, 60), 'a long wait is a warning, and another after the interval';
+  like $warns->('loud')->[0], qr/^warn: \[loud\] still waiting after \d+s for what tool depends on: $both$/,
+    'naming each dependency it waits for, its state and health';
+
+  # A dependency that is met drops out of what is said.
+  $svc{db}{'x-healthy-after'} = 0;
+  Mojo::File->new($dir, 'fake-compose.json')->spew(encode_json({name => 'k21proj', services => \%svc}));
+  my $said = @{$warns->('loud')};
+  ok wait_until(sub { @{$warns->('loud')} > $said && $warns->('loud')->[-1] !~ /\bdb\b/ }, 60),
+    'once the database is healthy, the warning no longer names it';
+  like $warns->('loud')->[-1], qr/depends on: migrate to complete \(running\)$/, 'only what it still waits for';
+  is $loud->status_row->{waiting_for}, 'migrate to complete (running)', 'and neither does the status';
+  $loud->stop;
+  ok wait_until(sub { defined $err }, 30), 'stopped';
+  ok !exists $loud->status_row->{waiting_for}, 'and the status no longer says it waits';
+  system("cd '$dir' && '$fake->{command}' compose stop db migrate >/dev/null 2>&1");
+};
+
 subtest 'compose: the manifest hash' => sub {
   my $fake = fake_docker;
   my $dir  = compose_project(%SERVICES);

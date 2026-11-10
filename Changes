@@ -432,3 +432,7 @@ Revision history for MCP-Hub
     …" on stderr when no hub answers, as `mcp-hub status` does.
   - A negative `idle_timeout` (global or per server) is a configuration error
     naming its JSON path; `0` still means never stop.
+  - A compose stdio start that waits on `depends_on` conditions says what
+    for: `waiting_for` in `mcp-hub status`/`hub_status`, and a log warning
+    after 30 s and every 60 s after, naming each dependency with its state
+    and health.

@@ -396,7 +396,9 @@ a reload that changes them rebuilds exactly those servers.
   a one-shot dependency (compose 5.x: "container … exited (0)", exit 1), and a
   stop cannot cut it short. Not `compose wait` either: it does not see a
   container that has already exited. A one-shot dependency runs again on every start, as
-  compose runs it. No timeout — compose has none for `depends_on` either.
+  compose runs it. No timeout — compose has none for `depends_on` either. While it
+  waits, the status row carries `waiting_for` (each dependency still waited for,
+  with its state and health) and the log warns after 30 s, then every 60 s.
 - *Docker Compose 2 or later.* podman-compose has no `config --format json` and
   is not supported; a compose that rejects a flag the hub uses fails the start
   with "the hub needs Docker Compose 2 or later (docker compose version);

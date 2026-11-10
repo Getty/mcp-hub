@@ -420,9 +420,13 @@ active one does not take over.
 ## Troubleshooting
 
 Start with `mcp-hub status` (or the `hub_status` tool): it lists every
-configured server with its state, and for a `failed` one a `MESSAGE` column with
-the reason.
+configured server with its state, and a `MESSAGE` column with the reason a
+`failed` one failed, or what a starting compose service still waits for.
 
+- **A compose server stays `starting`, `waiting for db to be healthy (running,
+  health starting)`.** The dependency's healthcheck has not passed yet, or never
+  runs, as on a host whose container engine runs no healthchecks. The hub has no
+  timeout here, as compose has none; `docker compose ps` shows the health.
 - **A server answers `503`.** It is either still fetching its first manifest
   (just retry) or it has `failed`. A server fails when its entry cannot be built
   (a `class` that does not load, for instance), when the fetch of its first
@@ -626,8 +630,11 @@ compose stop <service>` stops it again. For stdio, the hub does first what
 missing image, runs `docker compose up -d --no-recreate` for the dependencies,
 and waits until each `service_healthy` one is healthy and each
 `service_completed_successfully` one has exited 0 — all without a timeout, so
-none of it counts against `request_timeout`. The dependencies are left running,
-as `compose run` leaves them; a one-shot dependency runs again on every start,
+none of it counts against `request_timeout`. While it waits, `mcp-hub
+status` shows what for in its `MESSAGE` column (`waiting_for` in `hub_status`),
+and the log warns after 30 s and every 60 s after, naming each dependency with
+its state and health. The dependencies are left running, as `compose run` leaves
+them; a one-shot dependency runs again on every start,
 as compose runs it. As nothing is recreated, a change in the compose file
 reaches a container that already exists — a dependency's, or an HTTP service's —
 only once you recreate it yourself (`docker compose up -d --force-recreate

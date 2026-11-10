@@ -80,10 +80,12 @@ sub _print_table ($report) {
   printf "%-16s %-7s %-9s %-8s %-10s %-10s %-6s %-6s %s\n",
     qw(NAME TYPE STATE PID RSS_KB PSS_KB CALLS ERRORS MESSAGE);
   for my $row (@{$report->{upstreams} // []}) {
+    # A compose start that waits on what its service depends on says what for.
+    my $message = defined $row->{waiting_for} ? "waiting for $row->{waiting_for}" : $row->{error} // '';
     printf "%-16s %-7s %-9s %-8s %-10s %-10s %-6s %-6s %s\n",
       $row->{name}, $row->{type}, $row->{state},
       $row->{pid} // '-', $row->{rss_kb} // '-', $row->{pss_kb} // '-', $row->{calls} // 0, $row->{errors} // 0,
-      $row->{error} // '';
+      $message;
   }
   if (my @clients = @{$report->{clients} // []}) {
     print "\nclients:\n";
@@ -117,7 +119,9 @@ sub _ago ($epoch) {
 
 L<MCP::Hub::Command::status> calls C<GET /_hub/status> on the running daemon and
 prints a table of every upstream's state, pid, memory, call counts and, for a
-failed one, why it failed -- plus the known clients and when each was last seen.
+failed one, why it failed -- or, for a compose service whose start waits on
+what it depends on, what it waits for (L<MCP::Hub::Upstream::Compose/status_row>)
+-- plus the known clients and when each was last seen.
 C<PSS_KB> is filled for a forked class worker only
 (L<MCP::Hub::Upstream::Fork/pss_kb>): its C<RSS_KB> counts every page it shares
 with the hub.

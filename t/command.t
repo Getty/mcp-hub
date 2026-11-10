@@ -83,6 +83,8 @@ subtest 'the status table names a failure and when a client was last seen' => su
       {name => 'echo',   type => 'stdio', state => 'ready',  pid => 42, rss_kb => 1234, calls => 2, errors => 0},
       {name => 'broken', type => 'perl',  state => 'failed', calls => 0, errors => 0,
         error => 'cannot load class No::Such::Class'},
+      {name => 'stack', type => 'compose', state => 'starting', calls => 0, errors => 0,
+        waiting_for => 'db to be healthy (running, health starting)'},
     ],
     clients => [
       {name => 'main',   profile => 'full',    last_seen => time - 120},
@@ -98,6 +100,8 @@ subtest 'the status table names a failure and when a client was last seen' => su
 
   like $out, qr/broken\s+perl\s+failed.*cannot load class No::Such::Class/,
     'a failed upstream prints its reason';
+  like $out, qr/stack\s+compose\s+starting.*waiting for db to be healthy \(running, health starting\)$/m,
+    'a compose start that waits on a dependency prints what for';
   like $out, qr/main\s+full\s+2m ago/,      'last_seen is printed as an age';
   like $out, qr/worker\s+limited\s+never/,  'a client that never authenticated says never';
 };

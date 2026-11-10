@@ -85,7 +85,9 @@ attribute) and offers two tools.
 The same structure as C<GET /_hub/status>: a row per upstream with C<name>,
 C<type>, C<state>, C<pid>, C<rss_kb>, C<manifest_fetched_at>, C<last_used>,
 C<calls>, C<errors> and, for a C<failed> one, C<error> with the reason -- plus
-the known clients with their profile and C<last_seen>.
+the known clients with their profile and C<last_seen>. A compose row whose start
+waits on what its service depends on carries C<waiting_for>, what it waits for
+(L<MCP::Hub::Upstream::Compose/status_row>).
 
 =head2 hub_refresh
 

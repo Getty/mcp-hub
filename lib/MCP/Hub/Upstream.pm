@@ -699,7 +699,9 @@ L</refresh_p> leaves the C<failed> state.
 The per-upstream row of C<GET /_hub/status>: C<name>, C<type>, C<state>, C<pid>,
 C<rss_kb>, C<manifest_fetched_at>, C<last_used>, C<calls>, C<errors>, and
 C<error> when one is set. A C<fork> row adds C<pss_kb> (see
-L<MCP::Hub::Upstream::Fork/pss_kb>).
+L<MCP::Hub::Upstream::Fork/pss_kb>), a C<compose> row C<waiting_for> while its
+start waits on what the service depends on (see
+L<MCP::Hub::Upstream::Compose/status_row>).
 
 =method stop
 

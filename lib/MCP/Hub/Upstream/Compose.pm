@@ -5,10 +5,18 @@ use Mojo::Base 'MCP::Hub::Upstream::Docker', -signatures;
 use MCP::Hub::Upstream::Http;
 use Mojo::JSON qw(decode_json);
 use Mojo::Promise;
+use Mojo::Util qw(steady_time);
 
 # ABSTRACT: One service of a Docker Compose project as an MCP server
 
 use constant CLI_TIMEOUT => MCP::Hub::Upstream::Docker::CLI_TIMEOUT;
+
+# A start that waits on what its service depends on has no bound, so it says
+# so: at warn once it has waited depends_warn_after seconds, then every
+# depends_warn_interval seconds. Attributes, not config, so a test can shorten
+# them.
+has depends_warn_after    => 30;
+has depends_warn_interval => 60;
 
 # A `url` is in the entry from the start, as a url entry's is -- only the engine
 # of a start gets it. An https one needs TLS, which a running perl never gains,
@@ -24,8 +32,9 @@ sub new ($class, %args) {
 sub status_row ($self) {
   my $row = $self->SUPER::status_row;
   delete $row->{container};
-  $row->{compose} = $self->config->{compose};
-  $row->{service} = $self->config->{service};
+  $row->{compose}     = $self->config->{compose};
+  $row->{service}     = $self->config->{service};
+  $row->{waiting_for} = $self->{waiting_for} if defined $self->{waiting_for};
   return $row;
 }
 
@@ -161,11 +170,14 @@ sub _depends_on ($def, $services) {
 # one until it has exited -- with 0, or the start fails. `compose ps -a` is
 # asked every half second, so a stop is heeded at once; there is no timeout,
 # as compose has none. (`compose wait` cannot tell: it knows only containers
-# that still run.)
+# that still run.) What it still waits for is in the status row from the first
+# answer on, and in the log once the wait is long (depends_warn_after).
 sub _conditions_p ($self, $wait) {
   my $service = $self->config->{service};
   my %left    = %$wait;
   my $done    = Mojo::Promise->new;
+  my $since   = steady_time;
+  my $warn_at = $since + $self->depends_warn_after;
   my $round;
   $round = sub {
     Mojo::Promise->resolve->then(sub {
@@ -173,13 +185,25 @@ sub _conditions_p ($self, $wait) {
       return $self->_compose_p(['ps', '-a', '--format', 'json', sort keys %left]);
     })->then(sub ($res) {
       die "docker compose ps failed: " . $self->_why($res) . "\n" if $res->{code} // 1;
+      $self->_check_stop;    # no word of waiting from a start that is called off
       my %found;
       push @{$found{$_->{Service} // ''}}, $_ for _ps_json($res->{out});
       for my $dep (sort keys %left) {
         my @c = @{$found{$dep} // []} or next;
         delete $left{$dep} if _condition_met($service, $dep, $left{$dep}, @c);
       }
-      %left ? Mojo::IOLoop->timer(0.5 => $round) : $done->resolve;
+      unless (%left) {
+        $done->resolve;
+        return;
+      }
+
+      $self->{waiting_for} = _waiting_for(\%left, \%found);
+      if ((my $now = steady_time) >= $warn_at) {
+        $warn_at = $now + $self->depends_warn_interval;
+        $self->log->warn("[@{[$self->name]}] still waiting after @{[int($now - $since)]}s"
+            . " for what $service depends on: $self->{waiting_for}");
+      }
+      Mojo::IOLoop->timer(0.5 => $round);
       return;
     })->catch(sub ($err) {
       $done->reject($err);
@@ -187,7 +211,24 @@ sub _conditions_p ($self, $wait) {
     });
   };
   $round->();
-  return $done->finally(sub { undef $round });
+  return $done->finally(sub {
+    undef $round;
+    delete $self->{waiting_for};
+  });
+}
+
+# What a start still waits for, each dependency with the state -- and health --
+# compose last gave for its containers: "db to be healthy (running, health
+# starting), migrate to complete (running)".
+sub _waiting_for ($left, $found) {
+  return join ', ', map {
+    my $dep   = $_;
+    my $need  = $left->{$dep} eq 'service_completed_successfully' ? 'to complete' : 'to be healthy';
+    my @state = map {
+      lc($_->{State} // 'unknown') . (length($_->{Health} // '') ? ', health ' . lc $_->{Health} : '')
+    } @{$found->{$dep} // []};
+    "$dep $need (" . (join('; ', @state) || 'no container') . ')';
+  } sort keys %$left;
 }
 
 # Whether the containers of one dependency meet its condition yet; dies when
@@ -375,13 +416,36 @@ or builds a missing image, runs C<docker compose up -d --no-recreate> for the
 services in C<depends_on>, and polls C<docker compose ps> until each
 C<service_healthy> one is healthy and each C<service_completed_successfully> one
 has exited 0 -- without a timeout, so that the handshake's C<request_timeout>
-covers only the server. C<run --no-deps> then starts the server alone; its
-container goes away with the stdio stop. A stop during these waits ends them.
+covers only the server. While it waits, it says what for: the status row
+carries it as C<waiting_for> (see L</status_row>), and once the wait has lasted
+L</depends_warn_after> seconds the log says it at C<warn>, again every
+L</depends_warn_interval> seconds, naming each dependency it still waits for
+with the state and health compose gives for its containers:
+
+  [stack] still waiting after 30s for what mcp depends on: db to be healthy (running, health starting)
+
+C<run --no-deps> then starts the server alone; its container goes away with
+the stdio stop. A stop during these waits ends them.
 Dependencies are never stopped. Every compose command runs in the project
 directory with the entry's C<env> in its environment, so C<${VAR}> in the
 compose file sees it. Docker Compose 2 or later is needed; podman-compose lacks
 C<config --format json> and is not supported, and a compose that rejects one of
 the flags fails the start with a message that says so.
+
+=head1 ATTRIBUTES
+
+L<MCP::Hub::Upstream::Compose> inherits all attributes from
+L<MCP::Hub::Upstream::Docker> and implements the following new ones.
+
+=attr depends_warn_after
+
+Seconds a start waits on what its service depends on before it says so in the
+log, at C<warn>. Defaults to C<30>.
+
+=attr depends_warn_interval
+
+Seconds between the warnings after the first, for as long as the wait lasts.
+Defaults to C<60>.
 
 =head1 METHODS
 
@@ -390,7 +454,11 @@ L<MCP::Hub::Upstream::Docker> and implements the following new ones.
 
 =method status_row
 
-Names the C<compose> directory and the C<service> instead of a container.
+Names the C<compose> directory and the C<service> instead of a container. While
+a stdio start waits on what the service depends on, C<waiting_for> says what
+for, as the log does: each dependency it still waits for, with what it waits
+for and the state and health compose last gave for its containers --
+C<db to be healthy (running, health starting), migrate to complete (running)>.
 
 =head1 SEE ALSO
 
