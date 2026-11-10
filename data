@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-10T08:30:31Z
+created: 2026-11-10T04:53:14Z
+id: 187
+priority: low
+started: 2026-11-10T07:13:26Z
+status: done
+tags:
+- lifecycle
+- reload
+- drift
+title: After a reload, old and new stdio children of a changed server overlap for
+  up to ~7 s
+updated: 2026-11-10T08:30:31Z
+---
+
+Found by mcp-hub-worker during k125 (2026-11-10). k125 holds the upstreams a reload drops until their stopped_p settles and makes shutdown_p wait for them. A reload itself still starts the new child of a changed server while the old one is in its stop (EOF, 2 s grace, TERM, KILL 5 s later), so both can run side by side for up to about 7 s. Harmless for stateless servers; for one holding a lock or a file (a wiki doing git commits) it is a window. Decide whether the new start waits for the old stop, and test it.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes: the new start of a changed server waits for its predecessor's stopped_p (by name, the way %SETTLING already makes a container start wait), so old and new children never overlap; the wait is bounded by the old stop itself (EOF grace + KILL grace, ~7 s). The reload response does not wait. Test with a child that ignores EOF.
+
+Committed as 57a7ffe (Start a changed server's new stdio child only once the old one is gone after a reload).
