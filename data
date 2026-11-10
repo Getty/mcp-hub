@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-10T05:06:20Z
+created: 2026-11-06T03:34:40Z
+id: 75
+priority: low
+started: 2026-11-06T10:08:21Z
+status: done
+tags:
+- hazard
+- cli
+- server
+title: Refuse a pre-forking server for every way the app is served, not only via Commands::run
+updated: 2026-11-10T05:06:20Z
+---
+
+Found by mcp-hub-worker during k62 (2026-11-06). k34/k62 refuse prefork/cgi/psgi/hypnotoad only on paths that reach MCP::Hub::Commands::run (bin/mcp-hub ->start). A custom script that returns MCP::Hub->new straight to hypnotoad, or a hand-built Mojo::Server::Prefork, never reaches it and pre-forks the hub. A before_server_start hook in lib/MCP/Hub.pm (emitted by Daemon/Prefork/CGI/PSGI servers) could refuse any server that is not a plain single-process Daemon in one place. Done: such a server is refused with the k34-shaped message; test builds a Mojo::Server::Prefork around the app without forking. plackup was checked by reading Plack::Runner: PLACK_ENV is set before the app loads, so k34's psgi refusal already fires.
+
+2026-11-06 11:35: the worker for k104/k89/k75 was stopped by an API safeguard error (request req_011CgmWnQmdqQskD15HPfsSg), not by a problem in the work. No change in the repo; its partial scratch work is in scratchpad/w-hub7. Back to backlog for the maintainer.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes, as the card describes: a before_server_start hook in MCP::Hub refuses any server that is not a plain single-process Mojo::Server::Daemon, with the k34-shaped message.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green under EV and Poll with t/hub.t; combined run of t/reload.t t/shutdown.t t/reload-free.t t/command.t t/cli.t t/aggregate-auth.t t/hub.t passed under both. Apply order k89 patch, then incr.patch of k125, k75, k76, k79, k33 (scratchpad w-kNN/). k75: before_server_start hook in MCP::Hub::startup calls the new MCP::Hub::Commands::server_refusal; anything but exactly Mojo::Server::Daemon (Prefork/hypnotoad, CGI, PSGI, daemon subclasses) is refused before it listens or forks; test in t/command.t.
+
+Committed as 4275336 (Refuse any server but a plain Mojo::Server::Daemon as it starts the hub).
