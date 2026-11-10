@@ -43,7 +43,7 @@ use** — an existing `mcpServers` block is already a valid hub config:
                         "hub": { "idle_timeout": 120 } },
     "serper":         { "command": "npx", "args": ["-y", "serper-search-scrape-mcp-server@latest"],
                         "env": { "SERPER_API_KEY": "${SERPER_API_KEY}" } },
-    "claude-history": { "class": "MCP::Hub::Native::ClaudeHistory" },
+    "claude-history": { "class": "MCP::Hub::Native::ClaudeHistory", "hub": { "fork": true } },
     "hub":            { "class": "MCP::Hub::Native::Status" }
   }
 }
@@ -460,6 +460,27 @@ node process per session:
 - **`MCP::Hub::Native::ClaudeSessions`** — `list_running_sessions`, the live
   `claude` processes on the machine and what each is working on (Linux).
 - **`MCP::Hub::Native::Status`** — `hub_status` and `hub_refresh` as tools.
+
+On Linux, run `ClaudeHistory` and `ClaudeSessions` in a
+[forked worker](#forked-class-workers):
+
+```json
+{
+  "claude-history":  { "class": "MCP::Hub::Native::ClaudeHistory",
+                       "hub": { "fork": true, "idle_timeout": 1800 } },
+  "claude-sessions": { "class": "MCP::Hub::Native::ClaudeSessions", "hub": { "fork": true } }
+}
+```
+
+In-process, their calls run in the hub's event loop. The first `list_sessions`
+or a search over a large history reads every session file, and while it does,
+every other server on the hub waits. Forked, the hub keeps answering, and the
+worker's memory is freed when it idles. A worker starts with an empty metadata
+cache, so the first call after an idle stop reads the history again. A longer
+`idle_timeout` keeps the cache warm between bursts of use, and `"always_on": true`
+keeps it warm for good, at the price of the worker's memory. Nothing of the
+history is written to disk. On macOS, where there are no forked workers, leave
+them in-process.
 
 Any `MCP::Server` subclass — or a class with a `server` method that returns
 one — can be mounted in-process with a `class` entry: `MCP::Run`, `MCP::K8s`, or
