@@ -931,7 +931,9 @@ one C<DELETE> to the endpoint with its C<Mcp-Session-Id> tells the remote that
 the session is no longer needed. Nothing waits for it: a remote that answers
 C<405> -- it does not let clients end sessions -- or cannot be reached is only
 logged at debug level, and the connect and request timeouts of L</req_ua> bound
-it. One sent as the daemon shuts down may not get out before the process ends.
+it. A shutdown does not wait for it either: one sent as the daemon shuts down
+may not get out before the process ends, and the remote then times the session
+out on its own. A remote that does not answer never holds up a shutdown.
 A start that fails after the remote gave it a session ends that session the
 same way, and so does a start that a stop calls off: an answer to its
 C<initialize> that comes after the stop is turned away, but the session it
