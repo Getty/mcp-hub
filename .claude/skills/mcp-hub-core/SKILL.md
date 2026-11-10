@@ -59,7 +59,7 @@ lib/MCP/Hub/Facade/Server.pm    # MCP::Server-Subklasse: rendert die `extra`-Fel
 lib/MCP/Hub/Aggregate.pm        # der /all-Server
 lib/MCP/Hub/Native/*.pm         # ClaudeHistory, ClaudeSessions, Status
 lib/MCP/Hub/Help.pm             # die HTML-Setup-Seite an GET / (token-gated in clients mode)
-lib/MCP/Hub/Commands.pm         # Mojolicious::Commands-Subklasse: eigene Commands zuerst, prefork/cgi/psgi/hypnotoad verweigert
+lib/MCP/Hub/Commands.pm         # Mojolicious::Commands-Subklasse: eigene Commands zuerst, prefork/cgi/psgi/hypnotoad/morbo verweigert
 lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token — hinter bin/mcp-hub
 ```
 
@@ -69,9 +69,14 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   `mcp-hub daemon` ist ein einzelner `Mojo::Server::Daemon`; `MCP::Hub::Commands`
   verweigert `prefork`, `cgi` und `psgi` — auch per Env-Detection (`PLACK_ENV`,
   `PATH_INFO`/`GATEWAY_INTERFACE`) — und das Laden unter hypnotoad, jeweils mit Grund und
-  Verweis auf `daemon`. Seine Kindprozesse sind exec'te Upstreams oder geforkte
-  Class-Worker. Ein Worker fährt nie die IOLoop des Hubs, hält keinen seiner fds oder
-  Signal-Handler und endet mit `_exit` (das Rezept steht in `Upstream::Fork`; `t/fork.t`
+  Verweis auf `daemon`. Was nie durch `Commands::run` kommt (ein eigenes Skript reicht die
+  App einem Server), fängt der `before_server_start`-Hook in `MCP::Hub::startup`: jeder
+  Server, der nicht genau `Mojo::Server::Daemon` ist — Prefork/hypnotoad, CGI, PSGI,
+  Daemon-Subklassen —, stirbt dort mit derselben Meldung (`Commands::server_refusal`),
+  bevor er lauscht oder forkt; ebenso morbos Worker, ein nackter Daemon, erkannt an
+  `$INC{'Mojo/Server/Morbo.pm'}`. Die Kindprozesse des Hubs sind exec'te Upstreams oder
+  geforkte Class-Worker. Ein Worker fährt nie die IOLoop des Hubs, hält keinen seiner fds
+  oder Signal-Handler und endet mit `_exit` (das Rezept steht in `Upstream::Fork`; `t/fork.t`
   bewacht es). Alles andere (Kinder, Idle-Timer, Manifeste, In-process-Server) lebt in
   der einen IOLoop; Tool-Calls sind non-blocking Promises, damit ein langsamer Upstream
   die anderen nicht blockiert — außer einem In-process-`class`-Eintrag: dessen Tools
@@ -113,7 +118,10 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   zusätzlich am `prompts`-Event (nur `servers`, keine `tools`-Regel) — sonst listet und
   liefert `/all` Prompts von Servern außerhalb des Profils. Beide `/all`-Filter
   entscheiden nach der Herkunft (`Aggregate->origin`), **nie** nach dem Namenspräfix:
-  Servernamen dürfen `__` enthalten (`p` vs. `p__x`).
+  Servernamen dürfen `__` enthalten (`p` vs. `p__x`). Ohne Profil im Stash (kein
+  Controller, ein Weg an der Auth-Bridge vorbei) schließt `/all` in clients mode — keine
+  Tools, Prompts und Instructions, `tools/call` not found —, open mode zeigt alles
+  (`Hub::_aggregate_profile`).
 - **Mode wird abgeleitet, nicht deklariert.** `clients` leer → *open* (kein Token,
   Admin-API offen). `clients` gesetzt → *clients* (Bearer nötig, sonst 401; ohne Token
   greift `public_profile`, falls gesetzt). Ein `.mcp.json` ganz ohne `hub`-Block ist ein
@@ -136,7 +144,10 @@ lib/MCP/Hub/Command/*.pm        # daemon, config, status, refresh, reload, token
   Warming-Fetch, der `always_on`-Start oder ein `refresh` eines Upstreams **ohne**
   Manifest, ist er sofort `failed` (`Hub::_fetch_failed` → `Upstream->fail`, dasselbe
   Flag) — kein Retry, nichts versucht es von selbst wieder; mit Manifest gilt weiter die
-  Crash-Loop-Regel. Der Warm-up überspringt `failed`.
+  Crash-Loop-Regel. Sagt ein Stop den Warming-Fetch oder `always_on`-Start ab (ein Reload
+  ersetzt oder entfernt den Upstream, der Shutdown), ist das kein Fehlschlag: kein
+  error-Log, der Upstream bleibt `stopped` (`Hub::_called_off`). Der Warm-up überspringt
+  `failed`.
 - **Die Setup-Seite liest das Token ausschließlich aus `Authorization: Bearer`.** Kein
   `?token=`, kein Form-POST, keine `POST /`-Route; das Login-Formular ist Inline-JS.
   Ohne gültiges Token rendert clients mode nur das Formular — nie Servernamen.
@@ -193,8 +204,9 @@ Unbekannte Keys sind ein Fehler — mit JSON-Pfad in der Meldung.
 
 `daemon` (Vordergrund, single daemon), `config [--client NAME] [--all] [--url BASE]`
 (druckt `{"mcpServers": …}`; in clients mode ist `--client` nötig und fügt den Bearer
-hinzu), `status` (ruft `GET /_hub/status`), `refresh [NAME]` (`POST /_hub/refresh`; auch
-der einzige Weg aus `failed`), `reload` (`POST /_hub/reload`, druckt die Diff-Summary,
+hinzu), `status` (ruft `GET /_hub/status`; antwortet dort kein Hub, Exit 1 mit `hub is
+not running at …` auf stderr), `refresh [NAME]` (`POST /_hub/refresh`; auch der einzige
+Weg aus `failed`), `reload` (`POST /_hub/reload`, druckt die Diff-Summary,
 Exit ≠ 0 bei abgelehnter Config), `token` (32 Zufallsbytes base64url, fasst die Config
 nie an). `status`/`refresh`/`reload` nehmen `--client NAME` und `--url BASE`.
 
@@ -211,9 +223,12 @@ Pfad-`stat`, Intervall = Hub-Attribut `auto_reload_interval`), `POST /_hub/reloa
   Stats, selber Idle-Timer** (`t/reload.t` prüft `refaddr`); nur Timeouts →
   `apply_timeouts` in place. Geändert → nur dieser Upstream neu, Entfernt → `stop` + 404.
   Neu → gewärmt wie beim Daemon-Start, d. h. mit gecachtem Manifest **kein Spawn**.
-- **Ein ersetzter oder entfernter Upstream wendet nichts mehr an**: ein Start oder Refresh,
-  der seinen `stop` überlebt, schreibt keinen Cache und benachrichtigt niemanden
-  (`Upstream::_dropped`, per `refaddr` gegen `upstreams_by_name`).
+- **Ein ersetzter oder entfernter Upstream wird gehalten, bis sein Stop vorbei ist, und
+  wendet nichts mehr an.** `_let_go` stoppt ihn und hält ihn, bis sein `stopped_p` sich
+  setzt; `shutdown_p` wartet auch auf ihn (in den 20 s des Daemons). Der Nachfolger wartet
+  nicht: altes und neues Kind eines geänderten Servers können sich bis zu ~7 s überlappen.
+  Ein Start oder Refresh, der seinen `stop` überlebt, schreibt keinen Cache und
+  benachrichtigt niemanden (`Upstream::_dropped`, per `refaddr` gegen `upstreams_by_name`).
 - **profiles/clients/public_profile werden in place getauscht** (`auth->config($new)`);
   `Auth::last_seen` lebt auf `Auth`, nicht auf der Config, dann `notify_list_changed`.
   `/all` bekommt `tools/` **und** `prompts/list_changed`, sobald ein Eintrag added/

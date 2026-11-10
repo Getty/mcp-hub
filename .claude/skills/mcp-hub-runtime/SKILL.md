@@ -62,7 +62,9 @@ trotzdem als `stopped` ab, nicht als `exited (…)`. Nicht gezählt, das Kind bl
 (kein Signal, wenn es auf EOF endet), geloggt auf debug (`start called off by a stop`, wie
 Http), nie als `handshake failed` auf error; Kriterium ist `$child->{eof}`. Fork und
 Docker-stdio erben das mit `start_p` (Docker lehnt einen Start, den ein Stop abbricht, ebenso
-als `upstream NAME: stopped` ab).
+als `upstream NAME: stopped` ab). Der Text ist Vertrag: `Hub::_called_off` erkennt genau
+ihn, und `_warm_upstream` nimmt einen so abgesagten Start nicht als gescheiterten Fetch —
+kein error-Log, kein `failed`.
 
 Ein Refresh (`refresh_p`, nur bei `ready` mit pid) ist an das Kind gebunden, auf dem er
 begann: `_list_all_p(0, $self->{child})` reicht es als `$on` bis `_request_p`, und jeder
@@ -256,8 +258,8 @@ Jedes Tool ruft `$upstream->call_tool`, jeder Prompt `get_prompt`, jede Resource
 `read_resource` — Ergebnisse (`content`, `isError`, `structuredContent`) kommen
 unverändert zurück. Jede Primitive hält ihren Upstream **schwach** (Upstream → Server →
 Primitive → Upstream wäre ein Zyklus, ein per Reload ersetzter Upstream würde nie frei);
-die Upstream-Liste des Hubs und ein laufender Call halten ihn. Ist er weg, antwortet die
-Primitive mit einem Error-Result.
+die Upstream-Liste des Hubs (nach einem Reload `leaving`, bis sein Stop vorbei ist) und
+ein laufender Call halten ihn. Ist er weg, antwortet die Primitive mit einem Error-Result.
 
 Ein neues Manifest (Start oder Refresh, `Upstream::_show_manifest`) vergleicht
 das eigene Rendering der drei Listen vorher/nachher: der eigene Endpunkt bekommt
@@ -277,9 +279,14 @@ beides als leer — offene Maintainer-Entscheidung (k143); nur ein stdio-Kind, d
 Ende des Handshakes weg ist, lässt ihn scheitern. Ein Fehler auf `tools/list` lässt beide
 scheitern.
 
-Ein Upstream, den ein Reload ersetzt oder entfernt hat, ist gestoppt, aber ein laufender
-Start oder Refresh läuft zu Ende — und wendet nichts an: `_apply_manifest` (Basis und
-Fork; die Engine reicht an ihren Owner durch) fragt zuerst `_dropped`. Hält
+Ein Upstream, den ein Reload ersetzt oder entfernt hat, ist gestoppt und bleibt gehalten
+(`Hub::_let_go`: in `leaving` per `refaddr`), bis sein `stopped_p` sich setzt — so wartet
+`shutdown_p` auch auf sein Kind oder seinen Container. Der Nachfolger wartet nicht darauf:
+das Kind des alten kann neben dem des neuen bis zu 7 s laufen (`EOF_GRACE` +
+`KILL_GRACE`); nur ein Container-Start wartet auf den vorigen (`%SETTLING`, oben). Ein
+laufender Start oder Refresh des alten läuft zu Ende — und wendet nichts an:
+`_apply_manifest` (Basis und Fork; die Engine reicht an ihren Owner durch) fragt zuerst
+`_dropped`. Hält
 `upstreams_by_name` unter dem Namen nicht genau dieses Objekt (`refaddr`): kein
 Cache-Write (den der Nachfolger teilen kann, der Hash lässt `env` aus), keine
 Notification, nur ein debug-Log; ohne Hub ist nichts dropped. Sicher, weil `reload` die
@@ -311,6 +318,10 @@ durch Splitten des Namens am ersten `__`: ein Servername darf selbst `__` enthal
 `servers`- und `tools`-Regeln (`Auth::filter_aggregate`), am `prompts`-Event nur
 `servers` (`filter_aggregate_prompts`); ein Eintrag ohne bekannte Herkunft fällt weg.
 `tools/call`/`prompts/get` suchen in der gefilterten Liste — Verborgenes ist „not found".
+Das Profil liefert allen drei Events (auch `instructions`) `Hub::_aggregate_profile`: das
+`mcp.profile` aus dem Stash (`Auth::authenticate`); fehlt Controller oder Profil, in open
+mode `open_profile`, in clients mode eines ohne Server — fail closed. Ein Handler, der
+ohne Profil einfach zurückkehrt, ließe alles durch.
 
 Bekannte Grenze: zwei Server können denselben `/all`-Namen erzeugen (`p` mit Tool
 `x__echo`, `p__x` mit `echo` → beide `p__x__echo`). Beide werden gelistet, der Call trifft
