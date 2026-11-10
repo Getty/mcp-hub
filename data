@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T03:58:24Z
+created: 2026-11-06T07:49:57Z
+id: 111
+priority: low
+started: 2026-11-10T02:45:31Z
+status: done
+tags:
+- native
+- decision
+title: 'Decide: should list_running_sessions'' last_prompt skip user lines that hold
+  only a tool result?'
+updated: 2026-11-10T03:58:24Z
+---
+
+Found during k103. ClaudeSessions reports last_prompt = "" when the last user-typed line of a session holds only a tool_result (Claude Code writes tool results as type=user). t/native/claude-sessions-tail.t asserts this existing behaviour. Arguably the "most recent user prompt" should be the last user line with text. Product question for the maintainer; if yes, the head/tail scan keeps looking past text-less user lines.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes. last_prompt is the last user line that carries text; a user line holding only tool results is skipped. claude-sessions-tail.t's assertion of '' is replaced by that claim.
+
+Done by mcp-hub-worker in worktree main (uncommitted); red on a clean HEAD export, green with the patch; t/native/ + t/hub.t pass under EV and Poll (22 files, 350 tests) with all six natives cards applied. Apply order k99, k111, k163, k172, k173, k179 (scratchpad w-kNNN/incr.patch each). k111: _prompt skips user lines with no text (tool results only); the tail is read back without a bound to the last prompt with text; null when none. Replaced claims: a trailing tool result gave '' and now gives the earlier prompt; a session with no text gives undef, not ''.
+
+Committed as 1749961 on main (local, not pushed).
