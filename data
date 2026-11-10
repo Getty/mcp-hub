@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-10T02:55:12Z
+created: 2026-11-06T14:41:15Z
+id: 140
+priority: low
+started: 2026-11-10T02:55:12Z
+status: done
+tags:
+- decision
+- refresh
+title: 'Decide: should a refresh overtaken by a stop and a start behave the same over
+  stdio and HTTP?'
+updated: 2026-11-10T02:55:12Z
+---
+
+From k132 / k113 (worker). A refresh that a stop and a new start overtake behaves differently per transport: over Streamable HTTP it goes on, on the new session (k113: its next page waits for the start); over stdio it is bound to the child it began on and fails at once (k132). Both keep the manifest correct (the HTTP refresh asks one server's lists on one session per page, the stdio one asks no list of a second child). Options: (A) leave them different; (B) bind the HTTP refresh to the session it began on too, so it fails like stdio; (C) let the stdio refresh start over on the new child. Maintainer call; current state is (A).
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: (A) leave them different. Both keep the manifest correct; the difference follows from what a session and a child are. Closed without code.
