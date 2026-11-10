@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-10T04:01:05Z
+created: 2026-11-06T04:47:29Z
+id: 87
+priority: low
+started: 2026-11-10T03:43:35Z
+status: done
+tags:
+- native
+- fork
+- performance
+title: 'ClaudeHistory: keep the metadata cache across forked-worker restarts'
+updated: 2026-11-10T04:01:05Z
+---
+
+From k40 research (2026-11-06, results: /tmp/claude-1000/-home-getty-dev-p5-mcp-hub/d1e8d208-c505-48f1-902e-2c21679c51f7/scratchpad/w-k40/results.md). Forked, the worker loses its metadata cache at every idle stop (default 300 s), so the next list rescans everything (36 s on L). Decide: persist the cache, or document always_on. If persisted: cache file named by a class argument, written atomically, validated per file by device, inode, size and mtime; a fresh worker's first list on L <= 1 s. Note: it would put sessions' first prompts on disk -- maintainer call.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: document, no cache on disk (it would put first prompts on disk). The README recommends a longer idle_timeout or always_on for a forked ClaudeHistory to keep its cache warm.
+
+Decided: document, no disk cache. README (worktree main, uncommitted), Native Perl servers: a forked ClaudeHistory starts with an empty cache after an idle stop; a longer idle_timeout (the recommendation says 1800) or always_on keeps it warm; nothing is written to disk.
+
+Committed as b88791e on main (local, not pushed).
