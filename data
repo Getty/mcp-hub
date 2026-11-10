@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-11-10T12:51:55Z
+id: 206
+priority: medium
+started: 2026-11-10T16:03:20Z
+status: todo
+tags:
+- docker
+- compose
+title: HTTP compose start can still hang silently on depends_on health
+updated: 2026-11-10T16:03:20Z
+---
+
+Found by mcp-hub-worker during k27 (2026-11-10). k27 made a compose stdio start say what it waits for (waiting_for in the status row, warn after 30 s and every 60 s). An HTTP compose start does not go through _conditions_p: Compose.pm _launch_http_p runs `docker compose up -d --no-recreate SERVICE` with no timeout, and compose itself waits for depends_on health inside that call. Under rootless Podman (no healthchecks run) that is the same silent hang k27 fixed for stdio: no log, nothing in status. Options: (a) give HTTP the stdio path: `up DEPS`, then _conditions_p, then `up --no-deps SERVICE`; (b) poll `compose ps` alongside `up`, only to report. Done: an HTTP compose start waiting on a dependency is visible in log and status, test in t/docker.t.
+
+Maintainer-Entscheidung 2026-11-10: Option (a): HTTP nimmt den stdio-Pfad: up DEPS, dann _conditions_p (waiting_for, warn nach 30 s / alle 60 s), dann up --no-deps SERVICE. Test in t/docker.t.
