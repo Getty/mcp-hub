@@ -844,7 +844,7 @@ session's C<session_id> and C<project>. The limit counts them all.
 Arguments C<session_id> (required), C<offset> (0), C<limit> (50), C<roles>
 (C<["user","assistant"]>), C<agent_id?>. Returns
 C<< {entries, total, has_more} >>, with C<tool_use> blocks rendered as
-C<[tool_use <name>]> (C<[tool_use]> for one without a name or with an empty
+C<< [tool_use <name>] >> (C<[tool_use]> for one without a name or with an empty
 one) and C<tool_result> as C<[tool_result]>. An entry's C<text> is a string,
 or null for a message without content. With C<agent_id>, the messages of that
 subagent run of the session, in the same shape; an C<agent_id> that names no
