@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-10T10:20:26Z
+created: 2026-11-10T08:11:40Z
+id: 199
+priority: medium
+started: 2026-11-10T08:31:16Z
+status: done
+tags:
+- tests
+- flake
+- stdio
+title: 't/stdio-stop.t subtest 8 fails on a loaded host: echo.pl starts slower than
+  the 2 s EOF grace'
+updated: 2026-11-10T10:20:26Z
+---
+
+Found by mcp-hub-worker during wave C (k185/k191/k187, 2026-11-10). Subtest 8 ('a child being stopped is stopping until it is gone', from k124, assertion near line 243) fails under both reactors at host load ~5-6, on HEAD 8d223ee too: t/upstream/echo.pl takes about 3 s to start there, longer than EOF_GRACE (2 s), so the child gets SIGTERM before it answers and the upstream is already stopped when the test looks for stopping. Passed in the full runs at load < 1. Done when the test stops the child at a point that does not depend on perl start-up time (wait for its handshake or a ready line first), without weakening the claim, and 5 runs under EV and 5 under Poll pass at the existing load.
+
+Committed as d4e4311 (Stop the child in t/stdio-stop.t once it has answered initialize, not before perl has started it).
