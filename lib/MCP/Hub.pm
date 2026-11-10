@@ -555,19 +555,34 @@ sub _warm_upstream ($self, $up) {
   # has nothing to fetch: its start would only reject with the build error,
   # which was logged when it was built.
   return $self if $up->state eq 'failed';
+
+  # A start that a stop called off -- a reload replaced or removed the
+  # upstream, or the hub is shutting down -- did not fail: the upstream says so
+  # itself, at debug level, and is left stopped. Taken for a failed fetch, it
+  # left the upstream failed, with "stopped" for the reason.
+  my $failed = sub ($err) {
+    return if _called_off($up, $err);
+    $self->log->error("$err");
+    $self->_fetch_failed($up, $err);
+  };
   if ($up->always_on) {
-    $up->start_p->catch(sub ($err) { $self->log->error("$err"); $self->_fetch_failed($up, $err) });
+    $up->start_p->catch($failed);
   }
   elsif (!$up->manifest_fetched_at) {
     # No cached manifest yet: fetch it once in the background, do not wait.
     # A stdio child or a container is stopped again afterwards (lazy); an
     # http upstream holds no process, so it just stays ready. A fetch that
     # fails leaves it failed (see _fetch_failed).
-    $up->start_p->then(sub ($u) { $u->stop if $LAZY{$u->type} && !$u->always_on })
-      ->catch(sub ($err) { $self->log->error("$err"); $self->_fetch_failed($up, $err) });
+    $up->start_p->then(sub ($u) { $u->stop if $LAZY{$u->type} && !$u->always_on })->catch($failed);
   }
   return $self;
 }
+
+# Whether $err is how a start that a stop called off is rejected: every
+# upstream that starts something -- stdio and fork, http, docker and compose --
+# rejects it as "upstream NAME: stopped", whichever step of the start the stop
+# cut short.
+sub _called_off ($up, $err) { return "$err" eq 'upstream ' . $up->name . ': stopped' ? 1 : 0 }
 
 # A fetch the hub ran for an upstream that has no manifest yet -- its warming
 # fetch, an always_on start, a refresh -- failed. Nothing would try again: with
@@ -1034,7 +1049,10 @@ manifest (a stdio child or a container is stopped again right afterwards).
 Nothing tries again on its own: a fetch, or an C<always_on> start, that fails
 while the upstream has no manifest leaves it C<failed> with the reason
 (L<MCP::Hub::Upstream/fail>), its path answers C<503> with it, and
-L</refresh_p> is the way back. A failed placeholder is skipped. Called by the
+L</refresh_p> is the way back. One that a stop calls off -- a L</reload>
+replaces or removes the upstream, or L</shutdown_p> stops it -- has not
+failed: nothing is logged as an error and the upstream is left C<stopped>. A
+failed placeholder is skipped. Called by the
 C<daemon> command, so that C<config>, C<status>, C<token> and
 C<refresh> never spawn a child just by loading the application.
 

@@ -6,6 +6,7 @@ use Mojo::File        qw(curfile tempdir);
 use Mojo::IOLoop;
 use Mojo::IOLoop::Server;
 use Mojo::JSON        qw(encode_json);
+use Mojo::Log;
 use Mojo::Promise;
 use Mojo::Server::Daemon;
 use Mojo::UserAgent;
@@ -607,6 +608,55 @@ subtest 'a failed warming fetch is left alone by a reload, like a crash loop' =>
   settle(0.3);
   is $up->state, 'failed', 'still failed';
   is $up->stats->{started_at}, $started, 'and nothing was started';
+};
+
+subtest 'a reload during warming calls the fetch off, it does not fail it' => sub {
+  # A reload that replaces or removes a server whose first manifest is still
+  # being fetched stops it, and its start is rejected as "upstream echo:
+  # stopped" (MCP::Hub::Upstream::Stdio). The warming logged that at error
+  # level and recorded it as a failed fetch: the upstream the reload had let go
+  # of was left failed, with "stopped" for the reason. A start that a stop
+  # called off did not fail.
+  for my $case (
+    [removed => {mcpServers => {history => history_entry()}}],
+    [changed => {mcpServers => {echo => echo_entry_alt(), history => history_entry()}}],
+  ) {
+    my ($what, $next) = @$case;
+    my $dir   = tempdir;
+    my $cache = $dir->child('cache');
+    my $file  = write_config($dir->child('config.json'),
+      {mcpServers => {echo => echo_entry(), history => history_entry()}, hub => {cache_dir => "$cache"}});
+    my @logged;
+    my $log = Mojo::Log->new;
+    $log->unsubscribe('message');
+    $log->on(message => sub ($l, $level, @msg) { push @logged, "$level @msg" });
+    my $app = MCP::Hub->new(log => $log, hub_config_input => "$file");
+    my $old = $app->upstreams_by_name->{echo};
+    ok !$old->manifest_fetched_at, "$what: nothing cached, so it is warmed";
+    $app->start_background_fetches;
+    is $old->state, 'starting', "$what: its fetch is under way";
+
+    write_config($file, {%$next, hub => {cache_dir => "$cache"}});
+    is_deeply $app->reload->{$what}, ['echo'], "$what: the reload counts it as $what";
+
+    # A child's perl can take seconds to start on a loaded host.
+    my $deadline = time + 30;
+    settle(0.05) until ($old->state ne 'starting' && !$old->stats->{pid}) || time > $deadline;
+    settle(0.2);
+    is $old->state, 'stopped', "$what: the start is called off, and the upstream left stopped";
+    is $old->error, undef, "$what: not failed";
+    is_deeply [grep { /^(?:warn|error|fatal) / } @logged], [], "$what: nor logged as a failure"
+      or diag explain \@logged;
+
+    # The replacement of a changed one is warmed in its own right.
+    my $new = $app->upstreams_by_name->{echo};
+    if ($new) {
+      settle(0.05) until $new->manifest_fetched_at || time > $deadline + 30;
+      ok $new->manifest_fetched_at, "$what: the new upstream fetched its manifest";
+    }
+    $_->stop for @{$app->upstreams};
+    settle;
+  }
 };
 
 subtest 'the reload endpoint is admin-only' => sub {

@@ -388,3 +388,5 @@ Revision history for MCP-Hub
     are cut and that get_conversation returns the whole text.
   - search_conversations' since and until keep a match by its own time, not by
     the last activity of its session.
+  - A reload or shutdown that calls off a warming manifest fetch no longer
+    logs an error or leaves the upstream failed with "stopped".
