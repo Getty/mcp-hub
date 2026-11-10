@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-10T07:03:37Z
+id: 195
+priority: low
+started: 2026-11-10T16:02:24Z
+status: todo
+tags:
+- docker
+- lifecycle
+title: 'Docker: a call let through before a stop fails ''not running'', and an engine
+  refresh page can reach a retired engine'
+updated: 2026-11-10T16:02:24Z
+---
+
+Found by mcp-hub-worker during wave B2 (k146/k124/k149/k112, 2026-11-10). k112 made a Streamable HTTP or SSE call let through just before a stop start the upstream again. Docker's _forward_p still fails such a call as 'not running'; and a Docker::Http engine's refresh page can be sent to an engine a restart retired. Bring Docker to the k112 behavior; tests in t/docker.t.
