@@ -1,0 +1,18 @@
+---
+class: standard
+completed: 2026-11-10T02:03:31Z
+created: 2026-11-09T22:17:28Z
+id: 178
+priority: low
+started: 2026-11-10T01:17:54Z
+status: done
+tags:
+- native
+- drift
+title: ClaudeHistory sorts sessions and runs by time string, not instant
+updated: 2026-11-10T02:03:31Z
+---
+
+From k176 (2026-11-09). list_sessions, list_projects and _runs sort on the time strings (last_activity, started_at). That is right for the UTC millisecond times Claude Code writes, but wrong when formats mix within a second ("…:00.500Z" sorts older than "…:00Z") or a time carries an offset. Not a live bug, since Claude Code writes one format; it bites only on hand-written or foreign files. Done when sorting goes through _iso_ms (k176) with string order as tie-break, or the card is closed as not worth it. Lane: mcp-hub-worker.
+
+Committed as 5942b3a
