@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-10T06:05:41Z
+created: 2026-11-06T05:14:52Z
+id: 92
+priority: medium
+started: 2026-11-10T05:07:48Z
+status: done
+tags:
+- reload
+- memory
+- bug
+title: 'A served MCP::Server outlives its freed upstream: server <-> Transport::HTTP
+  cycle from to_action'
+updated: 2026-11-10T06:05:41Z
+---
+
+Found by mcp-hub-worker during k73 (2026-11-06). After k73 a removed/replaced upstream is freed, but MCP 0.15's to_action sets up a strong server <-> MCP::Server::Transport::HTTP cycle, so any server that was served once -- a façade server or an in-process class instance -- outlives its upstream, with all its tools, schemas and extras. Confirmed in scratch: weakening transport->{server} frees the stdio and fork façades. Fix belongs in the Upstream::action builder (lib/MCP/Hub/Upstream.pm), or upstream in MCP itself (then: a ticket for the MCP dist, not a silent edit). Done: a served-then-removed upstream's server is freed after reload; extend t/reload-free.t (k73) with 'served on its endpoint before the reload' for each type.
+
+From k93 (natives worker probe): the façade server of every upstream type -- stdio, http, perl, fork, docker -- and a native instance served on its own endpoint stay alive after a reload through this cycle (to_action gives the server its Transport::HTTP, which holds the server strongly), although the Upstream object itself is freed since k73. k93's t/reload-free.t subtest therefore drives the class entries through /all only; once k92 is fixed, extend it to the per-server endpoint.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: fix it in the hub: the Upstream::action builder weakens the transport's hold on its server (transport->{server}) where the upstream already holds the server strongly, so a served-then-removed upstream's server is freed. No ticket or edit on the MCP dist (not ours; a public tracker falls under the publish gate). Extend t/reload-free.t with 'served on its endpoint before the reload' for each type, and the k93 class subtest to the per-server endpoint.
+
+Committed as 395b969 (Hold an endpoint's server weakly from its transport, so a reload that drops an upstream frees its server too).
