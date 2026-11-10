@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-11-10T12:02:31Z
+id: 205
+priority: low
+started: 2026-11-10T16:03:15Z
+status: todo
+tags:
+- stdio
+- timeout
+title: Stdio initialize timeout counts the child's boot time against request_timeout
+updated: 2026-11-10T16:03:15Z
+---
+
+Found by mcp-hub-worker during k135/k143 (wave D). The stdio `initialize` request is sent, and its request_timeout timer armed, as soon as the child is spawned, so the time the child takes to boot (perl compile, npx install, …) counts against request_timeout. A slow-booting child with a short request_timeout fails its start although it would answer. Decide: arm the initialize timer from spawn (as now, documented) or give the handshake its own allowance. Done: decision recorded, test in t/idle.t or t/stdio.t if behavior changes.
+
+Maintainer-Entscheidung 2026-11-10: ändern: der stdio-Handshake bekommt eine eigene Zeitspanne statt die Boot-Zeit gegen request_timeout zu zählen. Form (JSON-Key, Default, Fehler mit JSON-Pfad) schlägt der Worker vor und setzt sie um; Test in t/stdio.t oder t/idle.t.
