@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-11-10T07:03:25Z
+id: 193
+priority: low
+started: 2026-11-10T16:02:13Z
+status: todo
+tags:
+- stdio
+- status
+title: Stdio stays ready while a child that closed its stdout lingers
+updated: 2026-11-10T16:02:13Z
+---
+
+Found by mcp-hub-worker during wave B2 (k146/k124/k149/k112, 2026-11-10). A child that closes its stdout but keeps running is not noticed until it exits; the state stays ready and calls go to it. Decide whether a closed stdout ends the child (or marks it stopping, as k124 does for a stop's grace).
+
+Maintainer-Entscheidung 2026-11-10: ein Child, das sein stdout schließt, wird beendet wie bei einem Stop (stopping, Grace, TERM/KILL, wie k124). Mit Test.
