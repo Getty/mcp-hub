@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-10T08:29:29Z
+created: 2026-11-10T04:53:04Z
+id: 185
+priority: low
+started: 2026-11-10T07:13:21Z
+status: done
+tags:
+- lifecycle
+- refresh
+- drift
+title: Hub::refresh_p marks an upstream failed when a stop calls its refresh off
+updated: 2026-11-10T08:29:29Z
+---
+
+Found by mcp-hub-worker during k89 (2026-11-10). k89 stopped _warm_upstream from logging an error and recording a failed fetch when a reload or shutdown calls off a warming start (upstream NAME: stopped). Hub::refresh_p has the same flaw: when a reload or shutdown calls off the refresh of an upstream that has no manifest yet, it is marked failed with "stopped". Done when a refresh called off by a stop leaves the upstream stopped, logs no error, and a test covers it.
+
+Decision by the main session (2026-11-10), under the maintainer's 'erledige die tickets von karr'; the maintainer may veto: yes, as the card says: refresh_p treats a start rejected with exactly 'upstream NAME: stopped' like _warm_upstream does since k89 (Hub::_called_off): no error log, no _fetch_failed, the upstream stays stopped. Test with a reload during a refresh of an upstream without a manifest.
+
+Committed as 0f5f584 (Leave an upstream stopped, not failed, when a reload or shutdown calls off its refresh).
