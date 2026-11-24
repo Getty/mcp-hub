@@ -21,7 +21,7 @@ the full lane definition and the hazards live in `.claude/rules/mcp-hub-rules.md
 
 Every subagent is a `mcp-hub-*` agent — never the built-in `general-purpose`/`Explore`/`Plan`.
 
-The agents carry their skills via `briefing.skills` (see `.claude/agents/`); the main
+The agents carry their skills via `skills:` (see `.claude/agents/`); the main
 agent delegates rather than loading them. Project skills live under `.claude/skills/`:
 `mcp-hub-core` (architecture, invariants) and `mcp-hub-runtime` are this repo's own; the
 shared Perl/Mojo/MCP/Docker/release skills are installed by skilletor from

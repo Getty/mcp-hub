@@ -2,16 +2,15 @@
 name: mcp-hub-worker
 description: "Default mcp-hub worker — implement, refactor, debug, and test code in this distribution. Pre-loaded with MCP::Hub architecture (single-process daemon, MCP::Server façades over stdio/HTTP/in-process upstreams, lazy start & idle stop, manifest cache, open-vs-clients auth, /all aggregate, native Claude-history servers) and all Getty Perl/Mojo conventions plus the Docker distribution. Leaves a commit-ready tree; never commits — commits belong to mcp-hub-release-manager."
 model: inherit
-briefing:
-  skills:
-    - mcp-hub-core
-    - mcp-hub-runtime
-    - getty-perl-core
-    - perl-mojo
-    - perl-mcp
-    - docker
-    - kanban-issues-karr-ticket
-    - getty-perl-pod
+skills:
+  - mcp-hub-core
+  - mcp-hub-runtime
+  - getty-perl-core
+  - perl-mojo
+  - perl-mcp
+  - docker
+  - kanban-issues-karr-ticket
+  - getty-perl-pod
 ---
 
 You are the mcp-hub-worker for **MCP::Hub** — a single HTTP MCP server that embeds many
